@@ -1,0 +1,12 @@
+# CubeIDE / Eclipse build output
+Debug/
+Release/
+
+# IDE metadata
+.settings/
+.metadata/
+*.launch
+
+# Optional: OS junk
+Thumbs.db
+Desktop.ini
