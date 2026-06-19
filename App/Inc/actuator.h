@@ -16,7 +16,7 @@ typedef enum {
 typedef struct {
 	can_bus_id_t bus;
 	protocol_t protocol;
-	uint32_t motor_id;
+	uint32_t motor_id;  // Typecasting to uint8_t later
 	bool enabled;
 } actuator_config_t ;
 
@@ -32,7 +32,8 @@ typedef struct {
 	float position;
 	float velocity;
 	float torque;
-	uint32_t fault;
+	float temperature;  // feedback temperature
+	uint32_t fault;     // pack ID fault bits, includes overcurrent/undervoltage fault bits for RobStride
 
 } state_t;
 

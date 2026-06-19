@@ -28,5 +28,5 @@ typedef plugin_status_t (*plugin_parse_rx_fn)(
 // Interface for packing and parsing frames, functions defines in pointer functions above
 typedef struct {
 	plugin_pack_tx_fn pack_tx;
-	plugin_pack_rx_fn parse_rx;
+	plugin_parse_rx_fn parse_rx;
 } plugin_ops_t;
