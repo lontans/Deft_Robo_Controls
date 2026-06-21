@@ -14,10 +14,10 @@ actuator_state_t  actuator_state[ACTUATOR_COUNT];
 void actuator_init(void)
 {
 	memset(actuator_table, 0, sizeof(actuator_table));
-	memset(actuator_desire, 0, sizeof(actuator_desire));
-	memset(actuator_state, 0, sizeof(actuator_state));
-	memset(desire_staging, 0, sizeof(desire_staging));
-	memset(state_staging, 0, sizeof(state_staging));
+	memset(actuator_desire, 0, sizeof(actuator_desire));// Copied by actuator apply from desire staging, executed
+	memset(actuator_state, 0, sizeof(actuator_state));  // Write by actuator consume, packaged
+	memset(desire_staging, 0, sizeof(desire_staging));  // Write by host, read by actuator apply, not executed directly
+	memset(state_staging, 0, sizeof(state_staging));    // Read by host, write by control tick
 	desire_pending = false;
 }
 
