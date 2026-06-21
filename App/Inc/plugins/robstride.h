@@ -1,5 +1,7 @@
 #pragma once
-#include "plugin.h"
+#include "actuator.h"
+#include "plugin_types.h"
+#include "can_frame.h"
 
 // Hardware RS-02 limits per RS-02 datasheet, probably not edited by Jetson
 #define RS02_P_MIN  (-12.57f)
@@ -22,7 +24,5 @@
 #define RS02_COMM_MOTOR_IN    0x03
 #define RS02_COMM_MOTOR_RESET 0x04
 
-extern const plugin_ops_t robstride_ops;
-
-// Send an enable signal frame to a specific RobStride actuator
+/* robstride_ops lives in robstride.c; plugin_table.c declares extern */
 plugin_status_t robstride_send_enable(const actuator_config_t *cfg, can_frame_t *frame_out);

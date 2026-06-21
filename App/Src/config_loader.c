@@ -9,10 +9,10 @@ void config_loader_init(void) {
 	actuator_table[0].motor_id = 0x7F;   //placeholder
 	actuator_table[0].enabled = true;
 
-	desire[0].position = 0.0f;
-	desire[0].velocity = 0.0f;
-	desire[0].kp       = 0.0f;
-	desire[0].kd       = 1.0f;
-	desire[0].torque   = 0.0f;
+	actuator_desire[0].position = 0.0f;
+	actuator_desire[0].velocity = 0.0f;
+	actuator_desire[0].kp       = 0.0f;
+	actuator_desire[0].kd       = 1.0f;
+	actuator_desire[0].torque   = 0.0f;
 
 }

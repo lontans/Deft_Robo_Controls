@@ -32,25 +32,26 @@ static void robstride_unpack_ext_id(uint32_t ext_id,
 }
 
 // pack tx into target frame
-static plugin_status_t robstride_pack_tx(const actuator_config_t *cfg, const desire_t *desire, can_frame_t *frame_out){
-	if (!cfg -> enabled) return PLUGIN_ERR_UNSUPPORTED;
+static plugin_status_t robstride_pack_tx(const actuator_config_t *cfg,
+                                         const actuator_desire_t *desire,
+                                         can_frame_t *frame_out)
+{
+	if (!cfg->enabled)
+		return PLUGIN_ERR_UNSUPPORTED;
 
-	// Read motor id nested in cfg
-	uint8_t motor_id = (uint8_t)(cfg -> motor_id &0xFF);
+	uint8_t motor_id = (uint8_t)(cfg->motor_id & 0xFF);
 
-	// create the bit-formatted torque desires, create a ext_id for mode
-	uint16_t t_u16 = (uint16_t)float_to_uint(desire->torque, RS02_T_MIN, RS02_T_MAX, 16); // wouldn't this only work for RS02?
-    uint32_t ext_id = robstride_build_ext_id(RS02_COMM_MOTOR_CTRL, t_u16, motor_id);
+	uint16_t t_u16 = (uint16_t)float_to_uint(desire->torque, RS02_T_MIN, RS02_T_MAX, 16);
+	uint32_t ext_id = robstride_build_ext_id(RS02_COMM_MOTOR_CTRL, t_u16, motor_id);
 
-    // define output frame id type, masked id, and data byte length
-    frame_out -> id_type = CAN_ID_EXT;
-    frame_out -> id      = ext_id & CAN_EXT_MASK;
-    frame_out -> dlc     = 8;
+	frame_out->id_type = CAN_ID_EXT;
+	frame_out->id      = ext_id & CAN_EXT_MASK;
+	frame_out->dlc     = 8;
 
-    uint16_t p = (uint16_t)float_to_uint(desire->position, RS02_P_MIN, RS02_P_MAX, 16);
-    uint16_t v = (uint16_t)float_to_uint(desire->velocity, RS02_V_MIN, RS02_V_MAX, 16);
-    uint16_t kp = (uint16_t)float_to_uint(desire->kp, RS02_KP_MIN, RS02_KP_MAX, 16);
-    uint16_t kd = (uint16_t)float_to_uint(desire->kd, RS02_KD_MIN, RS02_KD_MAX, 16);
+	uint16_t p = (uint16_t)float_to_uint(desire->position, RS02_P_MIN, RS02_P_MAX, 16);
+	uint16_t v = (uint16_t)float_to_uint(desire->velocity, RS02_V_MIN, RS02_V_MAX, 16);
+	uint16_t kp = (uint16_t)float_to_uint(desire->kp, RS02_KP_MIN, RS02_KP_MAX, 16);
+	uint16_t kd = (uint16_t)float_to_uint(desire->kd, RS02_KD_MIN, RS02_KD_MAX, 16);
 
     // Encoding desires into data bytes
     frame_out -> data[0] = (uint8_t)(p >> 8);
@@ -66,11 +67,14 @@ static plugin_status_t robstride_pack_tx(const actuator_config_t *cfg, const des
 }
 
 // type 2, RobStride parse
-static plugin_status_t robstride_parse_rx(const actuator_config_t *cfg, const can_frame_t *frame_in, state_t *state_out){
-	if (cfg == NULL || frame_in == NULL || state_out == NULL) {
+static plugin_status_t robstride_parse_rx(const actuator_config_t *cfg,
+                                          const can_frame_t *frame_in,
+                                          actuator_state_t *state_out)
+{
+	if (cfg == NULL || frame_in == NULL || state_out == NULL)
 		return PLUGIN_ERR_PARAM;
-	}
-	if (!cfg -> enabled || frame_in->id_type != CAN_ID_EXT) return PLUGIN_ERR_UNSUPPORTED;
+	if (!cfg->enabled || frame_in->id_type != CAN_ID_EXT)
+		return PLUGIN_ERR_UNSUPPORTED;
 
 	uint8_t mode, id_byte;
 	uint16_t data16;
@@ -96,10 +100,10 @@ static plugin_status_t robstride_parse_rx(const actuator_config_t *cfg, const ca
 	uint16_t t_raw = ((uint16_t)frame_in->data[4] << 8) | frame_in -> data[5];
 	uint16_t temp_raw = ((uint16_t)frame_in->data[6] << 8) | frame_in -> data[7];
 
-	state_out -> position = uint16_to_float(p_raw, RS02_P_MIN, RS02_P_MAX);
-	state_out -> velocity = uint16_to_float(v_raw, RS02_V_MIN, RS02_V_MAX);
-	state_out -> torque   = uint16_to_float(t_raw, RS02_T_MIN, RS02_T_MAX);
-	state_out -> temperature = (float)temp_raw / 10.0f;
+	state_out->position = uint16_to_float(p_raw, RS02_P_MIN, RS02_P_MAX);
+	state_out->velocity = uint16_to_float(v_raw, RS02_V_MIN, RS02_V_MAX);
+	state_out->torque   = uint16_to_float(t_raw, RS02_T_MIN, RS02_T_MAX);
+	state_out->temperature = (float)temp_raw / 10.0f;
 
 	// fault bits live in upper part of ID data16 field (via RS-02 docs)
 	// bit reference:
@@ -111,13 +115,13 @@ static plugin_status_t robstride_parse_rx(const actuator_config_t *cfg, const ca
 	// 12 stall            bit 5
 	// 13 uncalibrated     bit 6
 
-	state_out -> fault = 0;
-	state_out -> fault |= ((data16) >> 13 & 1u) << 6;  // map data16 bit 13 into state_out fault bit 6 etc
-	state_out -> fault |= ((data16) >> 12 & 1u) << 5;
-	state_out -> fault |= ((data16) >> 11 & 1u) << 4;
-	state_out -> fault |= ((data16) >> 10 & 1u) << 3;
-	state_out -> fault |= ((data16) >> 9 & 1u) << 2;
-	state_out -> fault |= ((data16) >> 8 & 1u) << 1;
+	state_out->fault = 0;
+	state_out->fault |= ((data16) >> 13 & 1u) << 6;
+	state_out->fault |= ((data16) >> 12 & 1u) << 5;
+	state_out->fault |= ((data16) >> 11 & 1u) << 4;
+	state_out->fault |= ((data16) >> 10 & 1u) << 3;
+	state_out->fault |= ((data16) >> 9 & 1u) << 2;
+	state_out->fault |= ((data16) >> 8 & 1u) << 1;
 
 	return PLUGIN_OK;
 }
