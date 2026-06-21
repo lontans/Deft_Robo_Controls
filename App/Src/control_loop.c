@@ -15,11 +15,9 @@ volatile uint32_t g_control_tick_count = 0; // Heartbeat/control tick counter
 
 void control_loop_init(void) {
 	can_frame_t en;
-	if (robstride_send_enable(&actuator_table[0], &en) == PLUGIN_OK){
-		can_tx_enqueue(actuator_table[0].bus, &en);
+	if (robstride_send_enable(&actuator_table[0], &en) == PLUGIN_OK &&
+	    can_tx_enqueue(actuator_table[0].bus, &en) == CAN_OK) {
 		can_router_poll(); // One-time poll + timer start
-
-		// Could implement logic to check tx queue is drained, expose tx_queues in header file
 		motor_enabled = true;
 	}
 

@@ -1,7 +1,6 @@
 #include "plugin_table.h"
 #include "plugin.h"
 #include "actuator.h"
-#include <stddef.h>
 
 extern const plugin_ops_t robstride_ops;
 
@@ -17,6 +16,8 @@ plugin_status_t plugin_pack_tx(const actuator_config_t *cfg,
 {
 	if (cfg == NULL || desire == NULL || frame_out == NULL)
 		return PLUGIN_ERR_PARAM;
+	if (cfg->protocol >= PROTO_COUNT)
+		return PLUGIN_ERR_UNSUPPORTED;
 
 	const plugin_ops_t *ops = handlers[cfg->protocol];
 	if (ops == NULL || ops->pack_tx == NULL)
@@ -31,6 +32,8 @@ plugin_status_t plugin_parse_rx(const actuator_config_t *cfg,
 {
 	if (cfg == NULL || frame_in == NULL || state_out == NULL)
 		return PLUGIN_ERR_PARAM;
+	if (cfg->protocol >= PROTO_COUNT)
+		return PLUGIN_ERR_UNSUPPORTED;
 
 	const plugin_ops_t *ops = handlers[cfg->protocol];
 	if (ops == NULL || ops->parse_rx == NULL)

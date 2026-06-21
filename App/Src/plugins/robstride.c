@@ -1,7 +1,7 @@
 #include "plugin.h"
 #include "plugins/robstride.h"
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
 
 static int float_to_uint(float x, float x_min, float x_max, int bits) { // From robstride RS-02 documentation
@@ -9,7 +9,7 @@ static int float_to_uint(float x, float x_min, float x_max, int bits) { // From 
 	float offset = x_min;
 	if(x > x_max) x=x_max;
 	else if(x < x_min) x= x_min;
-	return (int) ((x-offset)*((float)((1<<bits)-1))/span);
+	return (int)((x - offset) * ((float)(((1u << (unsigned)bits) - 1u)) / span));
 }
 
 static float uint16_to_float(uint16_t x, float x_min, float x_max) {
@@ -36,6 +36,8 @@ static plugin_status_t robstride_pack_tx(const actuator_config_t *cfg,
                                          const actuator_desire_t *desire,
                                          can_frame_t *frame_out)
 {
+	if (cfg == NULL || desire == NULL || frame_out == NULL)
+		return PLUGIN_ERR_PARAM;
 	if (!cfg->enabled)
 		return PLUGIN_ERR_UNSUPPORTED;
 

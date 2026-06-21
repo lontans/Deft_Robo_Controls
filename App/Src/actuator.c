@@ -1,6 +1,7 @@
 #include "actuator.h"
 #include "plugin_table.h"
 #include "can_router.h"
+#include "main.h"
 #include <string.h>
 
 static actuator_desire_t desire_staging[ACTUATOR_COUNT];
@@ -26,19 +27,22 @@ void actuator_stage_desires(const host_command_image_t *cmd)
 	if (cmd == NULL)
 		return;
 
+	__disable_irq();
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
 		desire_staging[i] = cmd->actuator_commands[i];
-
 	desire_pending = true;
+	__enable_irq();
 }
 
 void actuator_apply(void)
 {
+	__disable_irq();
 	if (desire_pending) {
 		for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
 			actuator_desire[i] = desire_staging[i];
 		desire_pending = false;
 	}
+	__enable_irq();
 
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		if (!actuator_table[i].enabled)
@@ -46,7 +50,7 @@ void actuator_apply(void)
 
 		can_frame_t tx;
 		if (plugin_pack_tx(&actuator_table[i], &actuator_desire[i], &tx) == PLUGIN_OK)
-			can_tx_enqueue(actuator_table[i].bus, &tx);
+			(void)can_tx_enqueue(actuator_table[i].bus, &tx);
 	}
 
 	can_router_poll();
@@ -60,8 +64,10 @@ void actuator_apply(void)
 
 void actuator_consume(void)
 {
+	__disable_irq();
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
 		state_staging[i] = actuator_state[i];
+	__enable_irq();
 }
 
 void actuator_state_snapshot(host_actuator_feedback_t *dst, uint8_t count)
@@ -71,8 +77,10 @@ void actuator_state_snapshot(host_actuator_feedback_t *dst, uint8_t count)
 
 	uint8_t n = (count < ACTUATOR_COUNT) ? count : ACTUATOR_COUNT;
 
+	__disable_irq();
 	for (uint8_t i = 0; i < n; i++)
 		dst[i] = state_staging[i];
+	__enable_irq();
 
 	for (uint8_t i = n; i < count; i++)
 		memset(&dst[i], 0, sizeof(dst[i]));

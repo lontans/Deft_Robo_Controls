@@ -1,7 +1,7 @@
 #include "feedback_image.h"
-#include "actuator.h"
-#include "host_link.h"
 #include "control_loop.h"
+#include "host_link.h"
+#include "actuator.h"
 #include <string.h>
 
 void feedback_image_build(host_feedback_image_t *out){

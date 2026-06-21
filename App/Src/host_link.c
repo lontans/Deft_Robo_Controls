@@ -1,4 +1,5 @@
 #include "host_link.h"
+#include "host_exchange.h"
 #include "host_transport.h"
 #include "actuator.h"
 #include "feedback_image.h"
@@ -9,7 +10,6 @@ static uint32_t             g_last_command_seq;
 static uint8_t              g_cmd_rx_buf[HOST_COMMAND_IMAGE_BYTES];
 static size_t               g_cmd_rx_fill;
 static host_feedback_image_t g_fb_tx_frame;
-static bool                  g_fb_tx_pending;
 
 static void host_link_rx_resync(void);
 static void host_link_rx_feed_byte(uint8_t b);
@@ -41,7 +41,6 @@ void command_image_apply(const host_command_image_t *cmd){
 void host_link_init(void) {
 	g_last_command_seq = 0;
 	g_cmd_rx_fill      = 0;
-	g_fb_tx_pending    = false;
 
 	host_transport_get()->init();  // Call the selected transport method (usb vs uart)
 }
@@ -52,51 +51,64 @@ void host_link_poll_rx(void) {
 	uint8_t chunk[64];
 	size_t n;
 
-	while ((n = tp->read(chunk,sizeof(chunk)))>0){
-		for(size_t i = 0; i < n; i++)
+	while ((n = tp->read(chunk, sizeof(chunk))) > 0) {
+		for (size_t i = 0; i < n; i++)
 			host_link_rx_feed_byte(chunk[i]);
 	}
 }
 
-static void host_link_rx_resync(void){
-	g_cmd_rx_fill = 0; // empty incoming rx, next hunt HOST_COMMAND_MAGIC to resync
+static void host_link_rx_resync(void)
+{
+	static const uint8_t magic[] = { 0x48, 0x44, 0x4D, 0x43 };
+	size_t shift = HOST_COMMAND_IMAGE_BYTES;
+
+	for (size_t i = 1; i < HOST_COMMAND_IMAGE_BYTES; i++) {
+		if (memcmp(&g_cmd_rx_buf[i], magic, sizeof(magic)) == 0) {
+			shift = i;
+			break;
+		}
+	}
+
+	if (shift < HOST_COMMAND_IMAGE_BYTES) {
+		size_t remain = HOST_COMMAND_IMAGE_BYTES - shift;
+		memmove(g_cmd_rx_buf, &g_cmd_rx_buf[shift], remain);
+		g_cmd_rx_fill = remain;
+	} else {
+		g_cmd_rx_fill = 0;
+	}
 }
 
-static void host_link_rx_feed_byte(uint8_t b){
+static void host_link_rx_feed_byte(uint8_t b)
+{
+	if (g_cmd_rx_fill >= HOST_COMMAND_IMAGE_BYTES)
+		g_cmd_rx_fill = 0;
+
 	g_cmd_rx_buf[g_cmd_rx_fill++] = b;
 
-	if(g_cmd_rx_fill < HOST_COMMAND_IMAGE_BYTES)
+	if (g_cmd_rx_fill < HOST_COMMAND_IMAGE_BYTES)
 		return;
-
-	g_cmd_rx_fill = 0;
 
 	const host_command_image_t *cmd =
 			(const host_command_image_t *)g_cmd_rx_buf;
 
-	if(!host_command_image_valid(cmd)){
-		host_link_rx_resync(); // find magic or flush, scan partial buffer for magic bytes or wait for next host frame
+	if (!host_command_image_valid(cmd)) {
+		host_link_rx_resync();
 		return;
 	}
 
+	g_cmd_rx_fill = 0;
 	command_image_apply(cmd);
 }
 
-void host_link_poll_tx(void){
+void host_link_poll_tx(void)
+{
 	const host_transport_ops_t *tp = host_transport_get();
 
-	if(!g_fb_tx_pending) {
-		feedback_image_build(&g_fb_tx_frame);
-		g_fb_tx_pending = true; // update flag that feedback is ready to be sent back
-	}
-
-	if (!tp->tx_ready()){     // transport needs to be ready for tx frame
+	if (!tp->tx_ready())
 		return;
-	}
 
-	if (tp->write((const uint8_t *)&g_fb_tx_frame, HOST_FEEDBACK_IMAGE_BYTES)) { // once written, no tx pending anymore
-		g_fb_tx_pending = false;
-		// TODO: implement ROTS for predictability
-	}
+	feedback_image_build(&g_fb_tx_frame);
+	(void)tp->write((const uint8_t *)&g_fb_tx_frame, HOST_FEEDBACK_IMAGE_BYTES);
 }
 
 
