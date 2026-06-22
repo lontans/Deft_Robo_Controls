@@ -2,7 +2,7 @@
 
 ## 1. Select host transport (firmware)
 
-Edit `App/Inc/host_transport.h` before building:
+Edit `App/Inc/host/host_transport.h` before building:
 
 ```c
 #define HOST_TRANSPORT_UART 1   // dev board: UART4
@@ -18,7 +18,7 @@ Rebuild and flash from STM32CubeIDE (Debug).
 
 ## 2. Motor and CAN (bench)
 
-Current `config_loader.c` stub:
+Current `plant_config.c` stub:
 
 - One actuator, `PROTO_ROBSTRIDE`, `CAN_BUS_CH1`, motor ID `0x7F`, enabled
 - FDCAN1 @ 1 Mbit/s, extended IDs accepted (mask filter)

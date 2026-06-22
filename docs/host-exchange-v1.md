@@ -2,7 +2,7 @@
 
 Fixed **562-byte** binary images in both directions. Same layout on USB CDC and UART; only the Linux device path differs.
 
-**Source of truth:** `App/Inc/host_exchange.h` (C structs + `_Static_assert`) and `scripts/host_teleop.py` (Python pack/parse).
+**Source of truth:** `App/Inc/host/host_exchange_schema.h` (C structs + `_Static_assert`) and `scripts/host_teleop.py` (Python pack/parse).
 
 ## Identifiers
 
@@ -86,11 +86,11 @@ Host sends periodically (**hold-last-command**); plant does not depend on host r
 
 ## Validation (MCU)
 
-`host_command_image_valid()` checks magic, layout_version, and byte_size before `command_image_apply()`.
+`host_command_image_valid()` checks magic, layout_version, and byte_size before `host_command_image_dispatch()`.
 
 ## Version bump checklist
 
-1. Update `HOST_LAYOUT_VERSION` and structs in `host_exchange.h`
-2. Update `_Static_assert` block in `host_exchange.c`
+1. Update `HOST_LAYOUT_VERSION` and structs in `host_exchange_schema.h`
+2. Update `_Static_assert` block in `host_exchange_schema.c`
 3. Update `scripts/host_teleop.py` magics/offsets/sizes
 4. Add `docs/host-exchange-vN.md`; keep v1 doc immutable

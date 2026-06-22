@@ -1,15 +1,11 @@
 #include "app.h"
-#include "config_loader.h"
-#include "actuator.h"
-#include "control_loop.h"
-#include "host_link.h"
-
-// Eventually build own test suite
-#include "can_router.h"
-#include "can_frame.h"
-#include "plugin_table.h"
-
-
+#include "plant/plant_config.h"
+#include "plant/actuator.h"
+#include "plant/control_loop.h"
+#include "host/host_link.h"
+#include "plant/can/can_router.h"
+#include "plant/can/can_frame.h"
+#include "plant/plugin_schema/plugin_table.h"
 
 #define APP_CAN_HW_LOOPBACK_TEST 0
 
@@ -47,7 +43,7 @@ static void can_loopback_self_test(void)
 static void robstride_pack_test(void)
 {
 	can_frame_t f = {0};
-	if (plugin_pack_tx(&actuator_table[0], &actuator_desire[0], &f) != PLUGIN_OK)
+	if (plugin_pack_tx(&actuator_table[0], &actuator_desire_live[0], &f) != PLUGIN_OK)
 		return;
 
 	if (f.id == 0x017FFF7F && f.id_type == CAN_ID_EXT && f.dlc == 8 && f.data[6] == 0x33)
@@ -70,10 +66,10 @@ static void robstride_parse_test(void)
 	f.data[6] = 0x00;
 	f.data[7] = 0xFA;
 
-	if (plugin_parse_rx(&actuator_table[0], &f, &actuator_state[0]) != PLUGIN_OK)
+	if (plugin_parse_rx(&actuator_table[0], &f, &actuator_state_live[0]) != PLUGIN_OK)
 		return;
 
-	if (actuator_state[0].temperature > 24.9f && actuator_state[0].temperature < 25.1f)
+	if (actuator_state_live[0].temperature > 24.9f && actuator_state_live[0].temperature < 25.1f)
 		robstride_parse_ok = 1;
 }
 
@@ -82,7 +78,7 @@ void app_init(void)
 	can_router_init();
 	plugin_table_init();
 	actuator_init();
-	config_loader_init();
+	plant_config_init();
 
 	host_link_init();
 
@@ -95,7 +91,7 @@ void app_init(void)
 
 void app_run(void)
 {
-	for(;;){
+	for (;;) {
 		host_link_poll_rx();
 		host_link_poll_tx();
 	}
