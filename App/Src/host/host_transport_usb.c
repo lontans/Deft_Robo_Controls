@@ -58,11 +58,12 @@ static bool usb_write(const uint8_t *src, size_t len)
 		return false;
 
 	memcpy(UserTxBufferFS, src, len);
-
-	if (CDC_Transmit_FS(UserTxBufferFS, (uint16_t)len) == USBD_BUSY)
-		return false;
-
 	tx_busy = true;
+
+	if (CDC_Transmit_FS(UserTxBufferFS, (uint16_t)len) != USBD_OK) {
+		tx_busy = false;
+		return false;
+	}
 	return true;
 }
 
@@ -73,10 +74,15 @@ static bool usb_tx_ready(void)
 	USBD_CDC_HandleTypeDef *hcdc =
 			(USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
 
-	return (hcdc == NULL || hcdc->TxState == 0);
+	return (hcdc != NULL && hcdc->TxState == 0);
 }
 
 void host_transport_usb_tx_complete(void)
+{
+	tx_busy = false;
+}
+
+void host_transport_usb_tx_reset(void)
 {
 	tx_busy = false;
 }

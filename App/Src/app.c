@@ -66,20 +66,21 @@ static void robstride_parse_test(void)
 	f.data[6] = 0x00;
 	f.data[7] = 0xFA;
 
-	if (plugin_parse_rx(&actuator_table[0], &f, &actuator_state_live[0]) != PLUGIN_OK)
+	actuator_state_t tmp = {0};
+	if (plugin_parse_rx(&actuator_table[0], &f, &tmp) != PLUGIN_OK)
 		return;
 
-	if (actuator_state_live[0].temperature > 24.9f && actuator_state_live[0].temperature < 25.1f)
+	if (tmp.temperature > 24.9f && tmp.temperature < 25.1f)
 		robstride_parse_ok = 1;
 }
 
 void app_init(void)
 {
-	can_router_init();
 	plugin_table_init();
 	actuator_init();
 	plant_config_init();
 
+	can_router_init();
 	host_link_init();
 
 	can_loopback_self_test();
@@ -91,8 +92,7 @@ void app_init(void)
 
 void app_run(void)
 {
-	for (;;) {
-		host_link_poll_rx();
-		host_link_poll_tx();
-	}
+	control_loop_service();
+	host_link_poll_rx();
+	host_link_poll_tx();
 }

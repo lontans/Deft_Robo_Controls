@@ -4,7 +4,7 @@
 #include <stdbool.h>
 
 #ifndef HOST_TRANSPORT_UART
-#define HOST_TRANSPORT_UART 1   // 1 = UART, 0 = USB
+#define HOST_TRANSPORT_UART 0   // 1 = UART, 0 = USB
 #endif
 
 typedef struct {

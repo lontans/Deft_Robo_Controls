@@ -1,6 +1,10 @@
 #include "plant/can/can_router.h"
 #include <string.h>
 #include "fdcan.h"
+#include "main.h"
+
+#define CAN_ACTIVITY_PORT  GPIOC
+#define CAN_ACTIVITY_PIN   GPIO_PIN_7
 
 #define CAN_QUEUE_DEPTH 32
 
@@ -41,10 +45,8 @@ static uint32_t dlc_to_hal(uint8_t dlc)
 
 static uint8_t dlc_from_hal(uint32_t hal_dlc)
 {
-	if (hal_dlc > CAN_MAX_DATA_LEN) {
-		return CAN_MAX_DATA_LEN;
-	}
-	return (uint8_t)hal_dlc;
+	uint32_t n = hal_dlc >> 16;
+	return (n > CAN_MAX_DATA_LEN) ? CAN_MAX_DATA_LEN : (uint8_t)n;
 }
 
 void can_router_init(void)
@@ -127,6 +129,7 @@ static can_status_t backend_send(can_bus_id_t bus, const can_frame_t *frame)
 		return CAN_ERR_HAL;
 	}
 
+	HAL_GPIO_WritePin(CAN_ACTIVITY_PORT, CAN_ACTIVITY_PIN, GPIO_PIN_SET);
 	return CAN_OK;
 }
 
@@ -160,6 +163,7 @@ static can_status_t backend_recv(can_bus_id_t bus, can_frame_t *frame)
 	memset(frame->data, 0, sizeof(frame->data));
 	memcpy(frame->data, rx_data, frame->dlc);
 
+	HAL_GPIO_WritePin(CAN_ACTIVITY_PORT, CAN_ACTIVITY_PIN, GPIO_PIN_RESET);
 	return CAN_OK;
 }
 

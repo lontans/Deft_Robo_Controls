@@ -1,10 +1,10 @@
 #include "host/host_transport.h"
 #include "host/host_transport_uart.h"
+#include "host/host_exchange_schema.h"
 #include "usart.h"
 #include <string.h>
 
 #define UART_TRANSPORT_RX_RING_SIZE 2048u
-#define HOST_IMAGE_BYTES            562u
 
 static uint8_t           rx_ring[UART_TRANSPORT_RX_RING_SIZE];
 static volatile uint16_t rx_head;
@@ -50,7 +50,7 @@ static size_t uart_read(uint8_t *dst, size_t max_len)
 
 static bool uart_write(const uint8_t *src, size_t len)
 {
-	if (src == NULL || len == 0 || len > HOST_IMAGE_BYTES)
+	if (src == NULL || len == 0 || len > HOST_FEEDBACK_IMAGE_BYTES)
 		return false;
 	if (tx_busy)
 		return false;

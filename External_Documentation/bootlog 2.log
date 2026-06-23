@@ -1,0 +1,477 @@
+17:41:13 : STM32CubeProgrammer API v2.22.0 | Windows-64Bits 
+17:41:16 : UR connection mode is defined with the HWrst reset mode
+17:41:16 : ST-LINK SN  : 0017003A3235511237333439
+17:41:16 : ST-LINK FW  : V3J17M10
+17:41:16 : Board       : STLINK-V3MINIE
+17:41:16 : Voltage     : 3.28V
+17:41:16 : SWD freq    : 8000 KHz
+17:41:16 : Connect mode: Normal
+17:41:16 : Reset mode  : Hardware reset
+17:41:16 : Device ID   : 0x469
+17:41:16 : Revision ID : Rev X
+17:41:16 : Debug in Low Power mode enabled.
+17:41:16 : UPLOADING OPTION BYTES DATA ...
+17:41:16 :   Bank          : 0x00
+17:41:16 :   Address       : 0x40022020 
+17:41:16 :   Size          : 20 Bytes
+17:41:16 :   Bank          : 0x01
+17:41:16 :   Address       : 0x40022044 
+17:41:16 :   Size          : 16 Bytes
+17:41:16 :   Bank          : 0x02
+17:41:16 :   Address       : 0x40022070 
+17:41:16 :   Size          : 8 Bytes
+17:41:16 : UPLOADING ...
+17:41:16 :   Size          : 1024 Bytes
+17:41:16 :   Address       : 0x8000000
+17:41:16 : Read progress:
+17:41:16 : Data read successfully
+17:41:16 : Time elapsed during the read operation is: 00:00:00.003
+17:41:40 : Option byte command : -ob  nSWBOOT0=0 
+17:41:40 : qCmd : -ob  nSWBOOT0=0 
+17:41:40 : PROGRAMMING OPTION BYTES AREA ...
+17:41:40 :   Bank          : 0x00
+17:41:40 :   Address       : 0x40022020 
+17:41:40 :   Size          : 20 Bytes
+17:41:40 : Reconnecting...
+17:41:42 : Reconnected !
+17:41:42 : UPLOADING OPTION BYTES DATA ...
+17:41:42 :   Bank          : 0x00
+17:41:42 :   Address       : 0x40022020 
+17:41:42 :   Size          : 20 Bytes
+17:41:42 :   Bank          : 0x01
+17:41:42 :   Address       : 0x40022044 
+17:41:42 :   Size          : 16 Bytes
+17:41:42 :   Bank          : 0x02
+17:41:42 :   Address       : 0x40022070 
+17:41:42 :   Size          : 8 Bytes
+17:41:42 : OPTION BYTE PROGRAMMING VERIFICATION:
+17:41:42 : Option Bytes successfully programmed
+17:41:42 : Time elapsed during option Bytes configuration: 00:00:01.195
+17:41:48 : Opening and parsing file: DeftRoboticsControlsPCB.elf
+17:41:48 : Memory Programming ...
+17:41:48 :   File          : DeftRoboticsControlsPCB.elf
+17:41:48 :   Size          : 52.94 KB 
+17:41:48 :   Address       : 0x08000000
+17:41:48 : Erasing memory corresponding to segment 0:
+17:41:48 : Erasing internal memory sectors [0 26]
+17:41:49 : Download in Progress:
+17:41:50 : File download complete
+17:41:50 : Time elapsed during download operation: 00:00:01.443
+17:41:58 : Opening and parsing file: DeftRoboticsControlsPCB.elf
+17:41:58 : Memory Programming ...
+17:41:58 :   File          : DeftRoboticsControlsPCB.elf
+17:41:58 :   Size          : 52.94 KB 
+17:41:58 :   Address       : 0x08000000
+17:41:58 : Erasing memory corresponding to segment 0:
+17:41:58 : Erasing internal memory sectors [0 26]
+17:41:59 : Download in Progress:
+17:41:59 : File download complete
+17:41:59 : Time elapsed during download operation: 00:00:01.398
+17:41:59 : RUNNING Program ... 
+17:41:59 :   Address:      : 0x08000000
+17:42:00 : Application is running, Please Hold on...
+17:42:00 : Start operation achieved successfully
+17:43:16 : Error: Unable to get core ID
+17:43:17 : Error: Unable to get core ID
+17:43:17 : Warning: Connection to device 0x469 is lost
+17:43:17 : Disconnected from device.
+17:44:19 : UR connection mode is defined with the HWrst reset mode
+17:44:19 : ST-LINK SN  : 0017003A3235511237333439
+17:44:19 : ST-LINK FW  : V3J17M10
+17:44:19 : Board       : STLINK-V3MINIE
+17:44:19 : Voltage     : 3.28V
+17:44:19 : SWD freq    : 8000 KHz
+17:44:19 : Connect mode: Normal
+17:44:19 : Reset mode  : Hardware reset
+17:44:19 : Device ID   : 0x469
+17:44:19 : Revision ID : Rev X
+17:44:19 : Debug in Low Power mode enabled.
+17:44:19 : UPLOADING OPTION BYTES DATA ...
+17:44:19 :   Bank          : 0x00
+17:44:19 :   Address       : 0x40022020 
+17:44:19 :   Size          : 20 Bytes
+17:44:19 :   Bank          : 0x01
+17:44:19 :   Address       : 0x40022044 
+17:44:19 :   Size          : 16 Bytes
+17:44:19 :   Bank          : 0x02
+17:44:19 :   Address       : 0x40022070 
+17:44:19 :   Size          : 8 Bytes
+17:44:19 : UPLOADING ...
+17:44:19 :   Size          : 1024 Bytes
+17:44:19 :   Address       : 0x8000000
+17:44:19 : Read progress:
+17:44:19 : Data read successfully
+17:44:19 : Time elapsed during the read operation is: 00:00:00.003
+17:49:33 : Error: Unable to get core ID
+17:49:33 : Error: Unable to get core ID
+17:49:33 : Warning: Connection to device 0x469 is lost
+17:49:33 : Disconnected from device.
+17:49:43 : UR connection mode is defined with the HWrst reset mode
+17:49:43 : ST-LINK SN  : 0017003A3235511237333439
+17:49:43 : ST-LINK FW  : V3J17M10
+17:49:43 : Board       : STLINK-V3MINIE
+17:49:43 : Voltage     : 3.27V
+17:49:43 : SWD freq    : 8000 KHz
+17:49:43 : Connect mode: Normal
+17:49:43 : Reset mode  : Hardware reset
+17:49:43 : Device ID   : 0x469
+17:49:43 : Revision ID : Rev X
+17:49:43 : Debug in Low Power mode enabled.
+17:49:44 : UPLOADING OPTION BYTES DATA ...
+17:49:44 :   Bank          : 0x00
+17:49:44 :   Address       : 0x40022020 
+17:49:44 :   Size          : 20 Bytes
+17:49:44 :   Bank          : 0x01
+17:49:44 :   Address       : 0x40022044 
+17:49:44 :   Size          : 16 Bytes
+17:49:44 :   Bank          : 0x02
+17:49:44 :   Address       : 0x40022070 
+17:49:44 :   Size          : 8 Bytes
+17:49:44 : UPLOADING ...
+17:49:44 :   Size          : 1024 Bytes
+17:49:44 :   Address       : 0x8000000
+17:49:44 : Read progress:
+17:49:44 : Data read successfully
+17:49:44 : Time elapsed during the read operation is: 00:00:00.003
+17:49:51 : Option byte command : -ob  nSWBOOT0=0  nBOOT0=0 
+17:49:51 : qCmd : -ob  nSWBOOT0=0  nBOOT0=0 
+17:49:51 : PROGRAMMING OPTION BYTES AREA ...
+17:49:51 :   Bank          : 0x00
+17:49:51 :   Address       : 0x40022020 
+17:49:51 :   Size          : 20 Bytes
+17:49:51 : Reconnecting...
+17:49:52 : Reconnected !
+17:49:52 : UPLOADING OPTION BYTES DATA ...
+17:49:52 :   Bank          : 0x00
+17:49:52 :   Address       : 0x40022020 
+17:49:52 :   Size          : 20 Bytes
+17:49:52 :   Bank          : 0x01
+17:49:52 :   Address       : 0x40022044 
+17:49:52 :   Size          : 16 Bytes
+17:49:52 :   Bank          : 0x02
+17:49:52 :   Address       : 0x40022070 
+17:49:52 :   Size          : 8 Bytes
+17:49:52 : OPTION BYTE PROGRAMMING VERIFICATION:
+17:49:52 : Option Bytes successfully programmed
+17:49:52 : Time elapsed during option Bytes configuration: 00:00:01.198
+17:49:58 : Opening and parsing file: DeftRoboticsControlsPCB.elf
+17:49:58 : Memory Programming ...
+17:49:58 :   File          : DeftRoboticsControlsPCB.elf
+17:49:58 :   Size          : 52.94 KB 
+17:49:58 :   Address       : 0x08000000
+17:49:58 : Erasing memory corresponding to segment 0:
+17:49:58 : Erasing internal memory sectors [0 26]
+17:49:58 : Download in Progress:
+17:49:59 : File download complete
+17:49:59 : Time elapsed during download operation: 00:00:01.429
+17:49:59 : RUNNING Program ... 
+17:49:59 :   Address:      : 0x08000000
+17:49:59 : Application is running, Please Hold on...
+17:49:59 : Start operation achieved successfully
+17:50:04 : Opening and parsing file: DeftRoboticsControlsPCB.elf
+17:50:04 : Memory Programming ...
+17:50:04 :   File          : DeftRoboticsControlsPCB.elf
+17:50:04 :   Size          : 52.94 KB 
+17:50:04 :   Address       : 0x08000000
+17:50:04 : Erasing memory corresponding to segment 0:
+17:50:04 : Erasing internal memory sectors [0 26]
+17:50:05 : Download in Progress:
+17:50:05 : File download complete
+17:50:05 : Time elapsed during download operation: 00:00:01.302
+17:50:05 : RUNNING Program ... 
+17:50:05 :   Address:      : 0x08000000
+17:50:05 : Application is running, Please Hold on...
+17:50:05 : Start operation achieved successfully
+17:50:27 : Opening and parsing file: DeftRoboticsControlsPCB.elf
+17:50:27 : Memory Programming ...
+17:50:27 :   File          : DeftRoboticsControlsPCB.elf
+17:50:27 :   Size          : 52.94 KB 
+17:50:27 :   Address       : 0x08000000
+17:50:27 : Erasing memory corresponding to segment 0:
+17:50:27 : Erasing internal memory sectors [0 26]
+17:50:27 : Download in Progress:
+17:50:28 : File download complete
+17:50:28 : Time elapsed during download operation: 00:00:01.335
+17:50:28 : RUNNING Program ... 
+17:50:28 :   Address:      : 0x08000000
+17:50:28 : Application is running, Please Hold on...
+17:50:28 : Start operation achieved successfully
+17:50:50 : Error: Unable to get core ID
+17:50:50 : Error: Unable to get core ID
+17:50:50 : Warning: Connection to device 0x469 is lost
+17:50:51 : Disconnected from device.
+17:51:10 : UR connection mode is defined with the HWrst reset mode
+17:51:10 : ST-LINK SN  : 0017003A3235511237333439
+17:51:10 : ST-LINK FW  : V3J17M10
+17:51:10 : Board       : STLINK-V3MINIE
+17:51:10 : Voltage     : 3.26V
+17:51:10 : SWD freq    : 8000 KHz
+17:51:10 : Connect mode: Normal
+17:51:10 : Reset mode  : Hardware reset
+17:51:10 : Device ID   : 0x469
+17:51:10 : Revision ID : Rev X
+17:51:10 : Debug in Low Power mode enabled.
+17:51:10 : UPLOADING OPTION BYTES DATA ...
+17:51:10 :   Bank          : 0x00
+17:51:10 :   Address       : 0x40022020 
+17:51:10 :   Size          : 20 Bytes
+17:51:10 :   Bank          : 0x01
+17:51:10 :   Address       : 0x40022044 
+17:51:10 :   Size          : 16 Bytes
+17:51:10 :   Bank          : 0x02
+17:51:10 :   Address       : 0x40022070 
+17:51:10 :   Size          : 8 Bytes
+17:51:10 : UPLOADING ...
+17:51:10 :   Size          : 1024 Bytes
+17:51:10 :   Address       : 0x8000000
+17:51:10 : Read progress:
+17:51:10 : Data read successfully
+17:51:10 : Time elapsed during the read operation is: 00:00:00.003
+17:55:00 : UPLOADING ...
+17:55:00 :   Size          : 4 Bytes
+17:55:00 :   Address       : 0xE000EE08
+17:55:00 : Read progress:
+17:55:00 : Data read successfully
+17:55:00 : Time elapsed during the read operation is: 00:00:00.001
+17:55:00 : UPLOADING ...
+17:55:00 :   Size          : 4 Bytes
+17:55:00 :   Address       : 0xE000EE08
+17:55:00 : Read progress:
+17:55:00 : Data read successfully
+17:55:00 : Time elapsed during the read operation is: 00:00:00.001
+17:55:00 : UPLOADING ...
+17:55:00 :   Size          : 4 Bytes
+17:55:00 :   Address       : 0xE000EE08
+17:55:00 : Read progress:
+17:55:00 : Data read successfully
+17:55:00 : Time elapsed during the read operation is: 00:00:00.001
+17:55:17 : Disconnected from device.
+17:55:32 : UR connection mode is defined with the SWrst reset mode
+17:55:32 : ST-LINK SN  : 0017003A3235511237333439
+17:55:32 : ST-LINK FW  : V3J17M10
+17:55:32 : Board       : STLINK-V3MINIE
+17:55:32 : Voltage     : 3.27V
+17:55:32 : SWD freq    : 8000 KHz
+17:55:32 : Connect mode: Normal
+17:55:32 : Reset mode  : Software reset
+17:55:32 : Device ID   : 0x469
+17:55:32 : Revision ID : Rev X
+17:55:32 : Debug in Low Power mode enabled.
+17:55:33 : UPLOADING OPTION BYTES DATA ...
+17:55:33 :   Bank          : 0x00
+17:55:33 :   Address       : 0x40022020 
+17:55:33 :   Size          : 20 Bytes
+17:55:33 :   Bank          : 0x01
+17:55:33 :   Address       : 0x40022044 
+17:55:33 :   Size          : 16 Bytes
+17:55:33 :   Bank          : 0x02
+17:55:33 :   Address       : 0x40022070 
+17:55:33 :   Size          : 8 Bytes
+17:55:33 : UPLOADING ...
+17:55:33 :   Size          : 1024 Bytes
+17:55:33 :   Address       : 0x8000000
+17:55:33 : Read progress:
+17:55:33 : Data read successfully
+17:55:33 : Time elapsed during the read operation is: 00:00:00.003
+17:55:39 : Opening and parsing file: DeftRoboticsControlsPCB.elf
+17:55:39 : Memory Programming ...
+17:55:39 :   File          : DeftRoboticsControlsPCB.elf
+17:55:39 :   Size          : 52.94 KB 
+17:55:39 :   Address       : 0x08000000
+17:55:39 : Erasing memory corresponding to segment 0:
+17:55:39 : Erasing internal memory sectors [0 26]
+17:55:39 : Download in Progress:
+17:55:40 : File download complete
+17:55:40 : Time elapsed during download operation: 00:00:01.408
+17:55:40 : RUNNING Program ... 
+17:55:40 :   Address:      : 0x08000000
+17:55:40 : Application is running, Please Hold on...
+17:55:40 : Start operation achieved successfully
+17:55:54 : UPLOADING ...
+17:55:54 :   Size          : 4 Bytes
+17:55:54 :   Address       : 0xE000EE08
+17:55:54 : Read progress:
+17:55:54 : Data read successfully
+17:55:54 : Time elapsed during the read operation is: 00:00:00.001
+17:55:55 : UPLOADING ...
+17:55:55 :   Size          : 4 Bytes
+17:55:55 :   Address       : 0xE000EE08
+17:55:55 : Read progress:
+17:55:55 : Data read successfully
+17:55:55 : Time elapsed during the read operation is: 00:00:00.000
+17:55:58 : UPLOADING ...
+17:55:58 :   Size          : 4 Bytes
+17:55:58 :   Address       : 0xE000EE08
+17:55:58 : Read progress:
+17:55:58 : Data read successfully
+17:55:58 : Time elapsed during the read operation is: 00:00:00.000
+17:55:59 : UPLOADING ...
+17:55:59 :   Size          : 4 Bytes
+17:55:59 :   Address       : 0xE000EE08
+17:55:59 : Read progress:
+17:55:59 : Data read successfully
+17:55:59 : Time elapsed during the read operation is: 00:00:00.001
+17:56:00 : UPLOADING ...
+17:56:00 :   Size          : 4 Bytes
+17:56:00 :   Address       : 0xE000EE08
+17:56:00 : Read progress:
+17:56:00 : Data read successfully
+17:56:00 : Time elapsed during the read operation is: 00:00:00.001
+17:56:03 : UPLOADING ...
+17:56:03 :   Size          : 4 Bytes
+17:56:03 :   Address       : 0xE000EE08
+17:56:03 : Read progress:
+17:56:03 : Data read successfully
+17:56:03 : Time elapsed during the read operation is: 00:00:00.001
+17:56:04 : UPLOADING ...
+17:56:04 :   Size          : 4 Bytes
+17:56:04 :   Address       : 0xE000EE08
+17:56:04 : Read progress:
+17:56:04 : Data read successfully
+17:56:04 : Time elapsed during the read operation is: 00:00:00.000
+17:56:05 : UPLOADING ...
+17:56:05 :   Size          : 4 Bytes
+17:56:05 :   Address       : 0xE000EE08
+17:56:05 : Read progress:
+17:56:05 : Data read successfully
+17:56:05 : Time elapsed during the read operation is: 00:00:00.000
+17:56:05 : UPLOADING ...
+17:56:05 :   Size          : 4 Bytes
+17:56:05 :   Address       : 0xE000EE08
+17:56:05 : Read progress:
+17:56:05 : Data read successfully
+17:56:05 : Time elapsed during the read operation is: 00:00:00.000
+17:56:10:797 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:11:801 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:12:520 : reset ap 0 
+17:56:12:805 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:13:809 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:14:430 : reset ap 0 
+17:56:14:812 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:15:813 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:16:816 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:17:823 : reset ap 0 
+17:56:17:824 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:18:824 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:19:829 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:20:344 : halt ap 0 
+17:56:20:345 : halt ap 0 
+17:56:20:345 : r ap 0 reg 0 R0   0x07824550
+17:56:20:345 : r ap 0 reg 1 R1   0x07824550
+17:56:20:345 : r ap 0 reg 2 R2   0x07824550
+17:56:20:345 : r ap 0 reg 3 R3   0x07824550
+17:56:20:345 : r ap 0 reg 4 R4   0x07824550
+17:56:20:346 : r ap 0 reg 5 R5   0x07824550
+17:56:20:347 : r ap 0 reg 6 R6   0x07824550
+17:56:20:347 : r ap 0 reg 7 R7   0x07824550
+17:56:20:347 : r ap 0 reg 8 R8   0x07824550
+17:56:20:347 : r ap 0 reg 9 R9   0x07824550
+17:56:20:347 : r ap 0 reg 10 R10  0x07824550
+17:56:20:347 : r ap 0 reg 11 R11  0x07824550
+17:56:20:347 : r ap 0 reg 12 R12  0x07824550
+17:56:20:347 : r ap 0 reg 13 SP   0x07824550
+17:56:20:348 : r ap 0 reg 14 LR   0x07824550
+17:56:20:348 : r ap 0 reg 15 PC   0x07824550
+17:56:20:348 : r ap 0 reg 17 MSP  0x07824550
+17:56:20:348 : r ap 0 reg 18 PSP  0x07824550
+17:56:20:348 : r ap 0 reg 16 xPSR 0x07824550
+17:56:20:348 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:20:348 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:20:348 : UPLOADING ...
+17:56:20:348 :   Size          : 4 Bytes
+17:56:20:348 :   Address       : 0xE000EE08
+17:56:20:348 : Read progress:
+17:56:20:348 : Reading data...
+17:56:20:348 : r ap 0 @0xE000EE08 0x00000004 bytes Data 0x00000000
+17:56:20:348 : Data read successfully
+17:56:20:348 : Time elapsed during the read operation is: 00:00:00.000
+17:56:20:833 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:21:838 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:22:599 : halt ap 0 
+17:56:22:599 : halt ap 0 
+17:56:22:600 : r ap 0 reg 0 R0   0x07824550
+17:56:22:600 : r ap 0 reg 1 R1   0x07824550
+17:56:22:600 : r ap 0 reg 2 R2   0x07824550
+17:56:22:601 : r ap 0 reg 3 R3   0x07824550
+17:56:22:601 : r ap 0 reg 4 R4   0x07824550
+17:56:22:601 : r ap 0 reg 5 R5   0x07824550
+17:56:22:601 : r ap 0 reg 6 R6   0x07824550
+17:56:22:601 : r ap 0 reg 7 R7   0x07824550
+17:56:22:601 : r ap 0 reg 8 R8   0x07824550
+17:56:22:601 : r ap 0 reg 9 R9   0x07824550
+17:56:22:602 : r ap 0 reg 10 R10  0x07824550
+17:56:22:602 : r ap 0 reg 11 R11  0x07824550
+17:56:22:602 : r ap 0 reg 12 R12  0x07824550
+17:56:22:602 : r ap 0 reg 13 SP   0x07824550
+17:56:22:602 : r ap 0 reg 14 LR   0x07824550
+17:56:22:602 : r ap 0 reg 15 PC   0x07824550
+17:56:22:603 : r ap 0 reg 17 MSP  0x07824550
+17:56:22:603 : r ap 0 reg 18 PSP  0x07824550
+17:56:22:606 : r ap 0 reg 16 xPSR 0x07824550
+17:56:22:606 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:22:607 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:22:609 : UPLOADING ...
+17:56:22:610 :   Size          : 4 Bytes
+17:56:22:611 :   Address       : 0xE000EE08
+17:56:22:612 : Read progress:
+17:56:22:613 : Reading data...
+17:56:22:614 : r ap 0 @0xE000EE08 0x00000004 bytes Data 0x00000000
+17:56:22:615 : Data read successfully
+17:56:22:615 : Time elapsed during the read operation is: 00:00:00.001
+17:56:22:844 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:23:850 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:24:757 : halt ap 0 
+17:56:24:758 : halt ap 0 
+17:56:24:758 : r ap 0 reg 0 R0   0x07824550
+17:56:24:758 : r ap 0 reg 1 R1   0x07824550
+17:56:24:758 : r ap 0 reg 2 R2   0x07824550
+17:56:24:758 : r ap 0 reg 3 R3   0x07824550
+17:56:24:759 : r ap 0 reg 4 R4   0x07824550
+17:56:24:759 : r ap 0 reg 5 R5   0x07824550
+17:56:24:759 : r ap 0 reg 6 R6   0x07824550
+17:56:24:760 : r ap 0 reg 7 R7   0x07824550
+17:56:24:760 : r ap 0 reg 8 R8   0x07824550
+17:56:24:760 : r ap 0 reg 9 R9   0x07824550
+17:56:24:760 : r ap 0 reg 10 R10  0x07824550
+17:56:24:760 : r ap 0 reg 11 R11  0x07824550
+17:56:24:760 : r ap 0 reg 12 R12  0x07824550
+17:56:24:761 : r ap 0 reg 13 SP   0x07824550
+17:56:24:761 : r ap 0 reg 14 LR   0x07824550
+17:56:24:761 : r ap 0 reg 15 PC   0x07824550
+17:56:24:762 : r ap 0 reg 17 MSP  0x07824550
+17:56:24:762 : r ap 0 reg 18 PSP  0x07824550
+17:56:24:762 : r ap 0 reg 16 xPSR 0x07824550
+17:56:24:762 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:24:762 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:24:762 : UPLOADING ...
+17:56:24:763 :   Size          : 4 Bytes
+17:56:24:768 :   Address       : 0xE000EE08
+17:56:24:768 : Read progress:
+17:56:24:769 : Reading data...
+17:56:24:770 : r ap 0 @0xE000EE08 0x00000004 bytes Data 0x00000000
+17:56:24:771 : Data read successfully
+17:56:24:772 : Time elapsed during the read operation is: 00:00:00.000
+17:56:24:856 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:25:861 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:26:301 : reset ap 0 
+17:56:26:867 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:27:551 : reset ap 0 
+17:56:27:869 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:28:300 : reset ap 0 
+17:56:28:875 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:29:877 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:31:455 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:32:062 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:32:891 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:33:896 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:34:900 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:35:904 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:36:908 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:37:910 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:38:915 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:39:921 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:40:924 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:41:928 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:42:934 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:43:937 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5
+17:56:44:942 : r ap 0 @0x1FFF6FFE 0x00000001 bytes Data 0xFFFFFFD5

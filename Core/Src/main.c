@@ -22,13 +22,13 @@
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
-#include "usb_device.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app.h"
-#include "control_loop.h"
+#include "plant/control_loop.h"
+#include "usb_device.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,7 +38,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define CPU_ACTIVITY_PORT            GPIOC
+#define CPU_ACTIVITY_PIN             GPIO_PIN_2
+#define CPU_BOOT_PULSE_DELAY_LOOPS   500000u    /* ~375 ms at 4 MHz MSI (before PLL) */
+#define CPU_ACTIVITY_DELAY_LOOPS     4000000u   /* ~71 ms at 170 MHz PLL             */
+#define CPU_ACTIVITY_BOOT_PULSES     3u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,10 +60,29 @@
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
+/* USER CODE BEGIN PFP */
+static void cpu_activity_delay(uint32_t loops);
+static void cpu_activity_boot_pulses(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static void cpu_activity_delay(uint32_t loops)
+{
+	for (volatile uint32_t d = 0; d < loops; d++) {
+	}
+}
+
+static void cpu_activity_boot_pulses(void)
+{
+	for (uint32_t n = 0; n < CPU_ACTIVITY_BOOT_PULSES; n++) {
+		HAL_GPIO_WritePin(CPU_ACTIVITY_PORT, CPU_ACTIVITY_PIN, GPIO_PIN_SET);
+		cpu_activity_delay(CPU_BOOT_PULSE_DELAY_LOOPS);
+		HAL_GPIO_WritePin(CPU_ACTIVITY_PORT, CPU_ACTIVITY_PIN, GPIO_PIN_RESET);
+		cpu_activity_delay(CPU_BOOT_PULSE_DELAY_LOOPS);
+	}
+}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -89,6 +112,9 @@ int main(void)
 
   /* USER CODE END Init */
 
+  MX_GPIO_Init();
+  cpu_activity_boot_pulses();
+
   /* Configure the system clock */
   SystemClock_Config();
 
@@ -96,8 +122,10 @@ int main(void)
 
   /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
+  MX_TIM6_Init();
+  control_loop_start();
+
+  /* Initialize remaining peripherals */
   MX_FDCAN1_Init();
   MX_FDCAN2_Init();
   MX_FDCAN3_Init();
@@ -105,7 +133,6 @@ int main(void)
   MX_UART4_Init();
   MX_UART5_Init();
   MX_SPI3_Init();
-  MX_TIM6_Init();
   MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
 
@@ -141,7 +168,7 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_HSI48;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -182,10 +209,12 @@ void SystemClock_Config(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_2);
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_3);
+    cpu_activity_delay(CPU_ACTIVITY_DELAY_LOOPS);
   }
   /* USER CODE END Error_Handler_Debug */
 }
