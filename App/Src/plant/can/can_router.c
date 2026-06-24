@@ -3,8 +3,10 @@
 #include "fdcan.h"
 #include "main.h"
 
-#define CAN_ACTIVITY_PORT  GPIOC
-#define CAN_ACTIVITY_PIN   GPIO_PIN_7
+#define CAN_ACTIVITY_PORT   GPIOC
+#define CAN_ACTIVITY_PIN    GPIO_PIN_7
+#define CAN_LED_ACTIVE_MS   250u
+#define CAN_LED_BLINK_MS    125u
 
 #define CAN_QUEUE_DEPTH 32
 
@@ -22,6 +24,31 @@ typedef struct {
 
 static can_rx_ring_t rx_rings[CAN_BUS_COUNT];
 static can_tx_queue_t tx_queues[CAN_BUS_COUNT];
+static uint32_t g_last_traffic_ms;
+static uint32_t g_blink_last_ms;
+static bool g_blink_on;
+
+static void can_led_mark_traffic(void)
+{
+	g_last_traffic_ms = HAL_GetTick();
+}
+
+static void can_led_poll(void)
+{
+	uint32_t now = HAL_GetTick();
+
+	if (g_last_traffic_ms != 0u && (now - g_last_traffic_ms) <= CAN_LED_ACTIVE_MS) {
+		if ((now - g_blink_last_ms) >= CAN_LED_BLINK_MS) {
+			g_blink_last_ms = now;
+			g_blink_on = !g_blink_on;
+			HAL_GPIO_WritePin(CAN_ACTIVITY_PORT, CAN_ACTIVITY_PIN,
+			                  g_blink_on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+		}
+	} else {
+		HAL_GPIO_WritePin(CAN_ACTIVITY_PORT, CAN_ACTIVITY_PIN, GPIO_PIN_SET);
+		g_blink_on = true;
+	}
+}
 
 static uint32_t dlc_to_hal(uint8_t dlc)
 {
@@ -57,6 +84,11 @@ void can_router_init(void)
 		tx_queues[i].head = 0;
 		tx_queues[i].tail = 0;
 	}
+
+	g_last_traffic_ms = 0u;
+	g_blink_last_ms = 0u;
+	g_blink_on = true;
+	HAL_GPIO_WritePin(CAN_ACTIVITY_PORT, CAN_ACTIVITY_PIN, GPIO_PIN_SET);
 
 	FDCAN_FilterTypeDef filter = {0};
 	filter.IdType = FDCAN_EXTENDED_ID;
@@ -129,7 +161,7 @@ static can_status_t backend_send(can_bus_id_t bus, const can_frame_t *frame)
 		return CAN_ERR_HAL;
 	}
 
-	HAL_GPIO_WritePin(CAN_ACTIVITY_PORT, CAN_ACTIVITY_PIN, GPIO_PIN_SET);
+	can_led_mark_traffic();
 	return CAN_OK;
 }
 
@@ -163,7 +195,7 @@ static can_status_t backend_recv(can_bus_id_t bus, can_frame_t *frame)
 	memset(frame->data, 0, sizeof(frame->data));
 	memcpy(frame->data, rx_data, frame->dlc);
 
-	HAL_GPIO_WritePin(CAN_ACTIVITY_PORT, CAN_ACTIVITY_PIN, GPIO_PIN_RESET);
+	can_led_mark_traffic();
 	return CAN_OK;
 }
 
@@ -184,6 +216,17 @@ can_status_t can_tx_flush(can_bus_id_t bus)
 		tx_queues[bus].tail = (tx_queues[bus].tail + 1) % CAN_QUEUE_DEPTH;
 		return CAN_OK;
 	}
+}
+
+void can_rx_drain(can_bus_id_t bus)
+{
+	can_frame_t junk;
+
+	if (bus >= CAN_BUS_COUNT)
+		return;
+
+	while (can_rx_pop(bus, &junk) == CAN_OK)
+		;
 }
 
 can_status_t can_rx_pop(can_bus_id_t bus, can_frame_t *frame)
@@ -226,4 +269,6 @@ void can_router_poll(void)
 			;
 		}
 	}
+
+	can_led_poll();
 }

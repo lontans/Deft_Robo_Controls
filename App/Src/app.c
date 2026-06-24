@@ -23,4 +23,5 @@ void app_run(void)
 	control_loop_service();
 	host_link_poll_rx();
 	host_link_poll_tx();
+	can_router_poll();
 }

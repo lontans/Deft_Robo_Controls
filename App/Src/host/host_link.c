@@ -4,9 +4,11 @@
 #include "plant/plant_command.h"
 #include "plant/plant_feedback.h"
 #include "plant/control_loop.h"
+#include "main.h"
 #include <string.h>
 
 static uint32_t              g_last_command_seq;
+static uint32_t              g_last_command_ms;
 static uint8_t               g_cmd_rx_buf[HOST_COMMAND_IMAGE_BYTES];
 static size_t                g_cmd_rx_fill;
 static host_feedback_image_t g_fb_tx_frame;
@@ -41,11 +43,21 @@ void host_command_image_dispatch(const host_command_image_t *cmd)
 
 	plant_command_image_dispatch(cmd);
 	g_last_command_seq = cmd->header.seq;
+	g_last_command_ms  = HAL_GetTick();
+}
+
+bool host_link_command_is_fresh(uint32_t max_age_ms)
+{
+	if (g_last_command_ms == 0u)
+		return false;
+
+	return (HAL_GetTick() - g_last_command_ms) <= max_age_ms;
 }
 
 void host_link_init(void)
 {
 	g_last_command_seq = 0;
+	g_last_command_ms  = 0;
 	g_cmd_rx_fill      = 0;
 
 	host_transport_get()->init();

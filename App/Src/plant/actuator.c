@@ -1,8 +1,13 @@
 #include "plant/actuator.h"
 #include "plant/plugin_schema/plugin_table.h"
 #include "plant/can/can_router.h"
+#include "plant/plugins/robstride.h"
+#include "plant/plant_diag.h"
+#include "host/host_link.h"
 #include "main.h"
 #include <string.h>
+
+#define ACTUATOR_HOST_STALE_MS 500u
 
 static actuator_desire_t actuator_desire_stage[ACTUATOR_COUNT];
 static actuator_state_t  actuator_state_stage[ACTUATOR_COUNT];
@@ -44,9 +49,22 @@ void actuator_apply_desire(void)
 	}
 	__enable_irq();
 
+	if (plant_diag_skip_actuator_can())
+		return;
+
+	if (!host_link_command_is_fresh(ACTUATOR_HOST_STALE_MS))
+		return;
+
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		if (!actuator_table[i].enabled)
 			continue;
+
+		if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
+			robstride_apply_cycle(&actuator_table[i],
+			                      &actuator_desire_live[i],
+			                      &actuator_state_live[i]);
+			continue;
+		}
 
 		can_frame_t tx;
 		if (plugin_pack_tx(&actuator_table[i], &actuator_desire_live[i], &tx) == PLUGIN_OK)
@@ -56,6 +74,9 @@ void actuator_apply_desire(void)
 	can_router_poll();
 
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		if (actuator_table[i].protocol == PROTO_ROBSTRIDE)
+			continue;
+
 		can_frame_t rx;
 		while (can_rx_pop(actuator_table[i].bus, &rx) == CAN_OK)
 			plugin_parse_rx(&actuator_table[i], &rx, &actuator_state_live[i]);
