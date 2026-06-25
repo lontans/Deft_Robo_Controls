@@ -121,8 +121,8 @@ App/
 | `can_bus_id_t` | MCU peripheral | Pins | Actuators |
 |----------------|----------------|------|-----------|
 | `CAN_BUS_CH1` | FDCAN1 | PB8 / PB9 | `0x70`, `0x74` (daisy) |
-| `CAN_BUS_CH2` | FDCAN3 | PA8 / PA15 | `0x73` |
-| `CAN_BUS_CH3` | FDCAN2 | PB12 / PB13 | `0x75` |
+| `CAN_BUS_CH2` | FDCAN2 | PA8 / PA15 | `0x73` |
+| `CAN_BUS_CH3` | FDCAN3 | PB12 / PB13 | `0x75` |
 
 ## Host transport selection
 
