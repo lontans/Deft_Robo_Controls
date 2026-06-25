@@ -1,8 +1,8 @@
 # Host exchange — layout v1
 
-Fixed **562-byte** binary images in both directions. Same layout on USB CDC and UART; only the Linux device path differs.
+Fixed **562-byte** binary images in both directions. Same layout on USB CDC and UART; only the Linux/Windows device path differs.
 
-**Source of truth:** `App/Inc/host/host_exchange_schema.h` (C structs + `_Static_assert`) and `scripts/host_teleop.py` (Python pack/parse).
+**Source of truth:** `App/Inc/host/host_exchange_schema.h` (C structs + `_Static_assert`), `scripts/host_teleop_laptop_usb.py`, and `scripts/rs02_can_scan.py` (Python pack/parse).
 
 ## Identifiers
 
@@ -23,7 +23,7 @@ Bump `HOST_LAYOUT_VERSION` and add `host-exchange-v2.md` when the layout changes
 | 16 | 500 | `actuator_commands[25]` — 20 B each |
 | 516 | 12 | `servos[2]` — 6 B each |
 | 528 | 2 | `leds[1]` |
-| 530 | 32 | `pdu` — opaque payload |
+| 530 | 32 | `pdu` — opaque payload (RS2 bench backdoor when tagged) |
 
 ### Actuator command (20 B per slot)
 
@@ -35,7 +35,25 @@ Bump `HOST_LAYOUT_VERSION` and add `host-exchange-v2.md` when the layout changes
 | 12 | float | kd |
 | 16 | float | torque (Nm) |
 
-Slot 0 starts at **byte offset 16** in the image (`ACTUATOR0_CMD_OFF` in teleop).
+Slot 0 starts at **byte offset 16** in the image (`ACTUATOR0_CMD_OFF` in scripts).
+
+**Plant teleop** patches slots **0–3** (four configured actuators). Unused wire slots remain zero.
+
+### RS2 PDU backdoor (`pdu` offset 530)
+
+When `pdu.data[0..2] == 'R','S','2'`, firmware runs `plant_diag` instead of (or in addition to) the normal plant path:
+
+| `pdu` offset | Field |
+|-------------|-------|
+| 0–2 | Tag `'R','S','2'` |
+| 3 | Motor ID |
+| 4 | Probe kind (`PLANT_DIAG_PROBE_*`, session 254/255) |
+| 5–10 | Probe parameters (pararead index, cal timeout, …) |
+| **11** | **Schematic CAN bus: `1` = CH1, `2` = CH2 (PA8/PA15), `3` = CH3 (PB12/PB13)** |
+
+Feedback probe results are mirrored in `pdu` on the feedback image (see `parse_probe_pdu` in Python).
+
+**Plant teleop:** leave `pdu` zero — only `actuator_commands[]` are consumed at 500 Hz.
 
 ## Feedback image layout (562 B)
 
@@ -60,9 +78,9 @@ Same structure with feedback types:
 | 12 | float | temperature (°C) |
 | 16 | uint32 | fault flags |
 
-### System feedback word (offset 12, u32 LE)
+Slots 0–3 are populated when the corresponding motor is enabled and talking on CAN.
 
-Packed bitfield; Python reads as one `uint32`:
+### System feedback word (offset 12, u32 LE)
 
 | Bits | Field |
 |------|-------|
@@ -71,7 +89,7 @@ Packed bitfield; Python reads as one `uint32`:
 | 17–24 | `last_command_seq` (8-bit echo of command header seq) |
 | 25–31 | reserved |
 
-Teleop: `tick = sys_word & 0xFFF`, `last_cmd_seq = (sys_word >> 17) & 0xFF`.
+Python: `tick = sys_word & 0xFFF`, `last_cmd_seq = (sys_word >> 17) & 0xFF`.
 
 **Note:** Feedback `header.seq` is not incremented by firmware yet (always 0).
 
@@ -79,10 +97,11 @@ Teleop: `tick = sys_word & 0xFFF`, `last_cmd_seq = (sys_word >> 17) & 0xFF`.
 
 | Transport | Typical host cmd rate | Notes |
 |-----------|----------------------|--------|
-| USB CDC | ~30 Hz default | Full duplex comfortable |
-| UART 115200 | ~10 Hz default | ~11.5 kiB/s → ~10 full round-trips/s for 562×2 B |
+| USB CDC | ~40 Hz (`--plant-teleop`) | Primary laptop bench |
+| USB CDC | ~30 Hz (legacy Jetson script) | `host_teleop.py` default |
+| UART 115200 | ~10 Hz | Jetson UART path |
 
-Host sends periodically (**hold-last-command**); plant does not depend on host rate.
+Host sends periodically (**hold-last-command**); plant applies at **500 Hz** with hold-last desires. Stale host commands stop applying after `ACTUATOR_HOST_STALE_MS` (500 ms).
 
 ## Validation (MCU)
 
@@ -92,5 +111,5 @@ Host sends periodically (**hold-last-command**); plant does not depend on host r
 
 1. Update `HOST_LAYOUT_VERSION` and structs in `host_exchange_schema.h`
 2. Update `_Static_assert` block in `host_exchange_schema.c`
-3. Update `scripts/host_teleop.py` magics/offsets/sizes
+3. Update `scripts/host_teleop_laptop_usb.py` and `scripts/rs02_can_scan.py`
 4. Add `docs/host-exchange-vN.md`; keep v1 doc immutable
