@@ -21,7 +21,7 @@ typedef struct {
 typedef host_actuator_command_t  actuator_desire_t;
 typedef host_actuator_feedback_t actuator_state_t;
 
-#define ACTUATOR_COUNT 1u
+#define ACTUATOR_COUNT 4u
 
 extern actuator_config_t actuator_table[ACTUATOR_COUNT];
 extern actuator_desire_t actuator_desire_live[ACTUATOR_COUNT];
@@ -34,3 +34,6 @@ void actuator_apply_desire(void);
 void actuator_capture_state(void);
 
 void actuator_feedback_snapshot(host_actuator_feedback_t *dst, uint8_t count);
+
+void actuator_desire_clear(void);
+void plant_recovery_all(void);

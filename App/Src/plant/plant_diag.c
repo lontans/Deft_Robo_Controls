@@ -1,11 +1,26 @@
 #include "plant/plant_diag.h"
+#include "plant/actuator.h"
 #include "plant/plugins/robstride.h"
+#include "plant/can/can_router.h"
 #include <string.h>
 
 static robstride_probe_result_t g_last_probe;
 static volatile bool g_rs2_session_active;
 static volatile bool g_probe_in_progress;
 static uint8_t g_rs2_motor_id;
+static can_bus_id_t g_rs2_can_bus;
+
+static can_bus_id_t plant_diag_pdu_can_bus(const host_pdu_command_t *pdu)
+{
+	if (pdu == NULL)
+		return CAN_BUS_CH1;
+
+	uint8_t host_bus = pdu->data[PLANT_DIAG_PDU_CAN_BUS];
+	if (host_bus >= 1u && host_bus <= (uint8_t)CAN_BACKEND_COUNT)
+		return (can_bus_id_t)(host_bus - 1u);
+
+	return CAN_BUS_CH1;
+}
 
 bool plant_diag_skip_actuator_can(void)
 {
@@ -22,14 +37,22 @@ static bool pdu_is_scan_request(const host_pdu_command_t *pdu)
 	       pdu->data[2] == (uint8_t)PLANT_DIAG_PDU_TAG2;
 }
 
-static void plant_diag_reset_motor(uint8_t motor_id)
+bool plant_diag_is_rs2_command(const host_command_image_t *cmd)
+{
+	if (cmd == NULL)
+		return false;
+
+	return pdu_is_scan_request(&cmd->pdu);
+}
+
+static void plant_diag_reset_motor(uint8_t motor_id, can_bus_id_t bus)
 {
 	robstride_probe_result_t tmp;
 
 	if (motor_id == 0u)
 		return;
 
-	(void)robstride_probe_id(motor_id, PLANT_DIAG_PROBE_RESET, NULL, 0u, &tmp);
+	(void)robstride_probe_id(bus, motor_id, PLANT_DIAG_PROBE_RESET, NULL, 0u, 0u, &tmp);
 }
 
 void plant_diag_on_command(const host_command_image_t *cmd)
@@ -39,11 +62,14 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 
 	uint8_t motor_id = cmd->pdu.data[3];
 	uint8_t kind = cmd->pdu.data[4];
+	can_bus_id_t bus = plant_diag_pdu_can_bus(&cmd->pdu);
 
 	if (kind == PLANT_DIAG_SESSION_BEGIN) {
 		g_rs2_session_active = true;
 		if (motor_id != 0u)
 			g_rs2_motor_id = motor_id;
+		g_rs2_can_bus = bus;
+		actuator_desire_clear();
 		memset(&g_last_probe, 0, sizeof(g_last_probe));
 		g_last_probe.probe_kind = kind;
 		return;
@@ -51,7 +77,8 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 
 	if (kind == PLANT_DIAG_SESSION_END) {
 		g_rs2_session_active = false;
-		plant_diag_reset_motor(g_rs2_motor_id);
+		plant_diag_reset_motor(g_rs2_motor_id, g_rs2_can_bus);
+		actuator_desire_clear();
 		memset(&g_last_probe, 0, sizeof(g_last_probe));
 		g_last_probe.probe_kind = kind;
 		return;
@@ -59,6 +86,7 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 
 	if (motor_id != 0u)
 		g_rs2_motor_id = motor_id;
+	g_rs2_can_bus = bus;
 
 	if (kind != PLANT_DIAG_PROBE_CTRL_FAST) {
 		memset(&g_last_probe, 0, sizeof(g_last_probe));
@@ -72,14 +100,24 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 	g_probe_in_progress = true;
 	uint16_t param_index = (uint16_t)cmd->pdu.data[5] |
 	                       ((uint16_t)cmd->pdu.data[6] << 8);
-	bool got = robstride_probe_id(motor_id, kind,
+	uint32_t param_raw_value = (uint32_t)cmd->pdu.data[7] |
+	                           ((uint32_t)cmd->pdu.data[8] << 8) |
+	                           ((uint32_t)cmd->pdu.data[9] << 16) |
+	                           ((uint32_t)cmd->pdu.data[10] << 24);
+	bool got = robstride_probe_id(bus, motor_id, kind,
 	                              &cmd->actuator_commands[0],
 	                              param_index,
+	                              param_raw_value,
 	                              &g_last_probe);
 	g_probe_in_progress = false;
 
 	if (kind == PLANT_DIAG_PROBE_PARAREAD && !got) {
-		g_last_probe.found = false;
+		if (g_last_probe.raw_frames_seen > 0u &&
+		    (g_last_probe.comm_mode == RS02_COMM_PARAREAD ||
+		     g_last_probe.comm_mode == RS02_COMM_PARAWRITE))
+			g_last_probe.found = true;
+		else
+			g_last_probe.found = false;
 		g_last_probe.probe_kind = kind;
 		g_last_probe.motor_id = motor_id;
 	} else if (kind == PLANT_DIAG_PROBE_CTRL_FAST)

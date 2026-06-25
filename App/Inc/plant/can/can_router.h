@@ -2,6 +2,8 @@
 #include <stdbool.h>
 #include "plant/can/can_frame.h"
 
+#define CAN_BACKEND_COUNT 3u
+
 typedef enum {
 	CAN_OK = 0,
 	CAN_ERR_PARAM,

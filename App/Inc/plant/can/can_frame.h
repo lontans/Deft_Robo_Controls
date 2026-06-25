@@ -13,9 +13,9 @@ typedef enum {
 #define CAN_DEFAULT_ID_TYPE CAN_ID_EXT
 
 typedef enum {
-	CAN_BUS_CH1 = 0,
-	CAN_BUS_CH2,
-	CAN_BUS_CH3,
+	CAN_BUS_CH1 = 0, /* PB8/PB9   FDCAN1  LED PC7  daisy chain */
+	CAN_BUS_CH2,     /* PA8/PA15  FDCAN3  LED PC6  motor 0x72 (schematic CH2) */
+	CAN_BUS_CH3,     /* PB12/PB13 FDCAN2  LED PB15 motor 0x75 (schematic CH3) */
 	CAN_BUS_CH4,
 	CAN_BUS_CH5,
 	CAN_BUS_CH6,

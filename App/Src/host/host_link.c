@@ -130,6 +130,7 @@ static void host_feedback_image_fetch(host_feedback_image_t *out)
 
 	out->system.control_tick_count = (uint32_t)(g_control_tick_count & 0xFFFu);
 	out->system.last_command_seq   = (uint32_t)(host_link_last_command_seq() & 0xFFu);
+	out->system.mcu_state_readback = (uint32_t)plant_command_mcu_state_readback();
 
 	plant_feedback_image_fetch(out);
 }

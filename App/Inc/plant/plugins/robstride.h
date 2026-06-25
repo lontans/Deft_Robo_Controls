@@ -31,7 +31,9 @@
 #define RS02_PARAM_RUN_MODE   0x7005u
 #define RS02_PARAM_MECH_ANGLE 0x7016u
 #define RS02_PARAM_MECH_POS   0x7019u
+#define RS02_PARAM_MECH_VEL   0x701Bu
 #define RS02_PARAM_BUS_VOLT   0x701Cu
+#define RS02_PARAM_IQ_TEST    0x702Du
 #define RS02_RUN_MODE_MOVE    0u
 
 #define RS02_PROBE_FULL        0u
@@ -46,6 +48,7 @@
 #define RS02_PROBE_CALI        16u
 #define RS02_PROBE_ZERO        17u
 #define RS02_PROBE_DATA_SAVE   18u
+#define RS02_PROBE_PARAWRITE   19u
 
 typedef struct {
 	bool found;
@@ -73,14 +76,20 @@ plugin_status_t robstride_send_data_save(const actuator_config_t *cfg, can_frame
 plugin_status_t robstride_send_para_read(const actuator_config_t *cfg,
                                          uint16_t param_index,
                                          can_frame_t *frame_out);
+plugin_status_t robstride_send_para_write(const actuator_config_t *cfg,
+                                          uint16_t param_index,
+                                          uint32_t raw_value,
+                                          can_frame_t *frame_out);
 plugin_status_t robstride_send_proactive(const actuator_config_t *cfg,
                                          uint8_t enable,
                                          can_frame_t *frame_out);
 void robstride_apply_cycle(const actuator_config_t *cfg,
                            const actuator_desire_t *desire,
                            actuator_state_t *state_out);
-bool robstride_probe_id(uint8_t motor_id,
+bool robstride_probe_id(can_bus_id_t bus,
+                        uint8_t motor_id,
                         uint8_t probe_kind,
                         const actuator_desire_t *desire_in,
                         uint16_t param_index,
+                        uint32_t param_raw_value,
                         robstride_probe_result_t *out);

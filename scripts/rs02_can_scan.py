@@ -12,9 +12,11 @@ Requires firmware with plant_diag (PDU tag RS2).
 
 Examples:
   python scripts/rs02_can_scan.py --port COM9 --discover
+  python scripts/rs02_can_scan.py --port COM9 --discover --discover-all
   python scripts/rs02_can_scan.py --port COM9 --discover --discover-quick
+  python scripts/rs02_can_scan.py --port COM9 --discover --start 0x40 --end 0x80
   python scripts/rs02_can_scan.py --port COM9 --probe-id 0x7F
-  python scripts/rs02_can_scan.py --port COM5 --exercise --target 0x70
+  python scripts/rs02_can_scan.py --port COM9 --bench-cmds --bus 3 --target 0x74
 """
 
 from __future__ import annotations
@@ -40,7 +42,22 @@ HOST_FEEDBACK_MAGIC = 0x46424848
 HOST_LAYOUT_VERSION = 1
 IMAGE_BYTES = 562
 ACTUATOR0_OFF = 16
+ACTUATOR_SLOT_BYTES = 20
 PDU_OFF = 530
+# RS2 bench PDU: pdu.data[11] = FDCAN bus (1=CH1, 2=CH2, 3=CH3). MCU Phase 4 must read this byte.
+PDU_BUS_OFF = PDU_OFF + 11
+MIN_CAN_BUS = 1
+MAX_CAN_BUS = 3
+
+# Mirror App/Src/plant/plant_config.c — (fdcan_bus, motor_id) per actuator slot.
+# Mirror plant_config + schematic CH2/CH3 (not Cube FDCAN2/3 peripheral numbers).
+PLANT_ACTUATOR_TABLE: Tuple[Tuple[int, int], ...] = (
+    (1, 0x70),  # slot 0 CH1 RS02
+    (1, 0x74),  # slot 1 CH1 RS01
+    (2, 0x73),  # slot 2 CH2 RS01
+    (3, 0x75),  # slot 3 CH3 RS01
+)
+PLANT_ACTUATOR_MOTOR_IDS: Tuple[int, ...] = tuple(mid for _, mid in PLANT_ACTUATOR_TABLE)
 
 PROBE_FULL = 0
 PROBE_ENABLE_CTRL = 1
@@ -54,6 +71,7 @@ PROBE_PROACTIVE = 15
 PROBE_CALI = 16
 PROBE_ZERO = 17
 PROBE_DATA_SAVE = 18
+PROBE_PARAWRITE = 19
 SESSION_BEGIN = 254
 SESSION_END = 255
 
@@ -84,6 +102,31 @@ def rs2_comm_label(comm_mode: int) -> str:
     return f"0x{comm_mode:02X} {name}"
 
 
+def normalize_can_bus(bus: int) -> int:
+    b = int(bus)
+    if b < MIN_CAN_BUS or b > MAX_CAN_BUS:
+        raise ValueError(f"CAN bus must be {MIN_CAN_BUS}..{MAX_CAN_BUS}, got {b}")
+    return b
+
+
+def can_bus_label(bus: int) -> str:
+    b = normalize_can_bus(bus)
+    pins = {1: "PB8/9", 2: "PA8/PA15", 3: "PB12/13"}
+    return f"CH{b} ({pins[b]})"
+
+
+def probe_target_label(motor_id: int, bus: int) -> str:
+    return f"0x{motor_id & 0xFF:02X} on {can_bus_label(bus)}"
+
+
+def print_can_bus_note(bus: int) -> None:
+    pass
+
+
+def patch_pdu_bus(buf: bytearray, bus: int) -> None:
+    buf[PDU_BUS_OFF] = normalize_can_bus(bus) & 0xFF
+
+
 DEFAULT_BAUD = 115200
 DEFAULT_TARGET = 0x70
 STM32_VID = 0x0483
@@ -93,10 +136,15 @@ COMMON_IDS = (
     0x10, 0x11, 0x20, 0x7F, 0xFD,
 )
 
-# Factory default 0x7F first, then common bench IDs (new RS02 discovery).
-DISCOVER_PRIORITY_IDS = (
-    0x7F, 0x70, 0x7E, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-    0x09, 0x0A, 0x10, 0x11, 0x20, 0x6F,
+# Deep-wake first on these, then light (enable+promisc) on the rest of 1–127.
+DISCOVER_PRIORITY_IDS: Tuple[int, ...] = (
+    0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x7A, 0x79, 0x78, 0x77, 0x76, 0x75, 0x74, 0x73, 0x72, 0x71,
+    0x70, 0x6F,
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E,
+    0x1F,
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E,
+    0x2F,
 )
 
 # Per probed ID: (label, probe_kind, timeout_s, repeat)
@@ -253,7 +301,8 @@ def decode_ext_id(ext_id: int) -> ExtIdInfo:
     )
 
 
-def build_scan_command(motor_id: int, probe_kind: int, seq: int) -> bytes:
+def build_scan_command(motor_id: int, probe_kind: int, seq: int, bus: int = 1) -> bytes:
+    """RS2 PDU only — actuator_commands stay zero unless send_diag patches them."""
     buf = bytearray(IMAGE_BYTES)
     struct.pack_into("<I", buf, 0, HOST_COMMAND_MAGIC)
     struct.pack_into("<H", buf, 4, HOST_LAYOUT_VERSION)
@@ -264,7 +313,46 @@ def build_scan_command(motor_id: int, probe_kind: int, seq: int) -> bytes:
     buf[PDU_OFF + 2] = ord("2")
     buf[PDU_OFF + 3] = motor_id & 0xFF
     buf[PDU_OFF + 4] = probe_kind & 0xFF
+    patch_pdu_bus(buf, bus)
     return bytes(buf)
+
+
+def actuator_slot_for_motor(motor_id: int, bus: int = 1) -> int:
+    """Map --target + --bus to plant_config actuator_table slot."""
+    mid = motor_id & 0xFF
+    b = normalize_can_bus(bus)
+    for slot, (configured_bus, configured_id) in enumerate(PLANT_ACTUATOR_TABLE):
+        if configured_bus == b and configured_id == mid:
+            return slot
+    for slot, (_, configured_id) in enumerate(PLANT_ACTUATOR_TABLE):
+        if configured_id == mid:
+            return slot
+    return 0
+
+
+def actuator_slot_offset(slot: int) -> int:
+    return ACTUATOR0_OFF + slot * ACTUATOR_SLOT_BYTES
+
+
+def patch_actuator_desire(
+    buf: bytearray,
+    position: float = 0.0,
+    velocity: float = 0.0,
+    kp: float = 0.0,
+    kd: float = 0.0,
+    torque: float = 0.0,
+    slot: int = 0,
+) -> None:
+    struct.pack_into(
+        "<fffff",
+        buf,
+        actuator_slot_offset(slot),
+        position,
+        velocity,
+        kp,
+        kd,
+        torque,
+    )
 
 
 def build_rs2_probe_command(
@@ -272,10 +360,21 @@ def build_rs2_probe_command(
     probe_kind: int,
     seq: int,
     param_index: int = 0,
+    param_raw_value: int = 0,
+    position: float = 0.0,
+    kp: float = 0.0,
+    kd: float = 1.0,
+    bus: int = 1,
 ) -> bytes:
-    buf = bytearray(build_scan_command(motor_id, probe_kind, seq))
+    buf = bytearray(build_scan_command(motor_id, probe_kind, seq, bus=bus))
+    if position != 0.0 or kp != 0.0 or kd != 0.0:
+        patch_actuator_desire(buf, position=position, kp=kp, kd=kd)
     buf[PDU_OFF + 5] = param_index & 0xFF
     buf[PDU_OFF + 6] = (param_index >> 8) & 0xFF
+    buf[PDU_OFF + 7] = param_raw_value & 0xFF
+    buf[PDU_OFF + 8] = (param_raw_value >> 8) & 0xFF
+    buf[PDU_OFF + 9] = (param_raw_value >> 16) & 0xFF
+    buf[PDU_OFF + 10] = (param_raw_value >> 24) & 0xFF
     return bytes(buf)
 
 
@@ -286,13 +385,30 @@ def build_actuator_command(
     kd: float,
     torque: float,
     seq: int,
+    slot: int = 0,
 ) -> bytes:
     buf = bytearray(IMAGE_BYTES)
     struct.pack_into("<I", buf, 0, HOST_COMMAND_MAGIC)
     struct.pack_into("<H", buf, 4, HOST_LAYOUT_VERSION)
     struct.pack_into("<H", buf, 6, IMAGE_BYTES)
     struct.pack_into("<I", buf, 8, seq & 0xFFFFFFFF)
-    struct.pack_into("<fffff", buf, ACTUATOR0_OFF, position, velocity, kp, kd, torque)
+    patch_actuator_desire(buf, position, velocity, kp, kd, torque, slot=slot)
+    return bytes(buf)
+
+
+def build_plant_command(
+    seq: int,
+    slot_commands: Optional[Dict[int, Tuple[float, float, float, float, float]]] = None,
+) -> bytes:
+    """562 B plant teleop: actuator_commands[] only (no RS2 PDU). 500 Hz path on MCU."""
+    buf = bytearray(IMAGE_BYTES)
+    struct.pack_into("<I", buf, 0, HOST_COMMAND_MAGIC)
+    struct.pack_into("<H", buf, 4, HOST_LAYOUT_VERSION)
+    struct.pack_into("<H", buf, 6, IMAGE_BYTES)
+    struct.pack_into("<I", buf, 8, seq & 0xFFFFFFFF)
+    if slot_commands:
+        for slot, (pos, vel, kp, kd, tau) in slot_commands.items():
+            patch_actuator_desire(buf, pos, vel, kp, kd, tau, slot=slot)
     return bytes(buf)
 
 
@@ -305,6 +421,7 @@ def build_rs2_teleop_command(
     kd: float,
     torque: float,
     seq: int,
+    bus: int = 1,
 ) -> bytes:
     """Actuator desire + RS2 PDU in one 562 B image (firmware probe uses both)."""
     buf = bytearray(
@@ -315,6 +432,7 @@ def build_rs2_teleop_command(
     buf[PDU_OFF + 2] = ord("2")
     buf[PDU_OFF + 3] = motor_id & 0xFF
     buf[PDU_OFF + 4] = probe_kind & 0xFF
+    patch_pdu_bus(buf, bus)
     return bytes(buf)
 
 
@@ -340,14 +458,15 @@ def parse_probe_pdu(frame: bytes) -> Optional[dict]:
     }
 
 
-def parse_actuator_feedback(frame: bytes) -> Optional[dict]:
+def parse_actuator_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
     magic, = struct.unpack_from("<I", frame, 0)
     if magic != HOST_FEEDBACK_MAGIC:
         return None
     sys_word, = struct.unpack_from("<I", frame, 12)
-    pos, vel, torque, temp, fault = struct.unpack_from("<ffffI", frame, ACTUATOR0_OFF)
+    off = actuator_slot_offset(slot)
+    pos, vel, torque, temp, fault = struct.unpack_from("<ffffI", frame, off)
     return {
         "tick": sys_word & 0xFFF,
         "ack": (sys_word >> 17) & 0xFF,
@@ -396,6 +515,27 @@ def wait_probe_response(
     return None
 
 
+def send_parawrite(
+    ser: serial.Serial,
+    reader: FrameReader,
+    motor_id: int,
+    param_index: int,
+    raw_value: int,
+    seq: int,
+    timeout_s: float,
+    bus: int = 1,
+) -> Tuple[Optional[dict], int]:
+    reader.drain()
+    ser.write(
+        build_rs2_probe_command(
+            motor_id, PROBE_PARAWRITE, seq, param_index, raw_value, bus=bus
+        )
+    )
+    ser.flush()
+    resp = wait_probe_response(reader, motor_id, timeout_s, probe_kind=PROBE_PARAWRITE)
+    return resp, seq + 1
+
+
 def send_diag(
     ser: serial.Serial,
     reader: FrameReader,
@@ -403,9 +543,32 @@ def send_diag(
     probe_kind: int,
     seq: int,
     timeout_s: float,
+    probe_param: int = 0,
+    position: float = 0.0,
+    velocity: float = 0.0,
+    kp: float = 0.0,
+    kd: float = 0.0,
+    bus: int = 1,
 ) -> Optional[dict]:
     reader.drain()
-    ser.write(build_scan_command(motor_id, probe_kind, seq))
+    if probe_param != 0:
+        ser.write(
+            build_rs2_probe_command(
+                motor_id,
+                probe_kind,
+                seq,
+                probe_param,
+                position=position,
+                kp=kp,
+                kd=kd,
+                bus=bus,
+            )
+        )
+    else:
+        buf = bytearray(build_scan_command(motor_id, probe_kind, seq, bus=bus))
+        if position != 0.0 or velocity != 0.0 or kp != 0.0 or kd != 0.0:
+            patch_actuator_desire(buf, position=position, velocity=velocity, kp=kp, kd=kd)
+        ser.write(bytes(buf))
     ser.flush()
     return wait_probe_response(reader, motor_id, timeout_s, probe_kind=probe_kind)
 
@@ -415,9 +578,14 @@ def pararead_index_echo(resp: dict) -> int:
 
 
 def pararead_is_hit(resp: dict, param_index: int) -> bool:
-    if not resp.get("found") or resp["comm_mode"] not in (0x11, 0x12):
+    if resp["comm_mode"] not in (0x11, 0x12):
         return False
-    return pararead_index_echo(resp) == (param_index & 0xFFFF)
+    if not resp.get("found") and resp.get("raw_frames", 0) == 0:
+        return False
+    # RS02 does not echo the param index in data[0:1]; accept any comm=0x11/0x12 response.
+    # The float value is always at data[4:7] (LE IEEE 754).
+    echo = pararead_index_echo(resp)
+    return echo == 0 or echo == (param_index & 0xFFFF)
 
 
 def send_pararead(
@@ -473,16 +641,17 @@ def format_param_scan_line(
         return f"  ----  {tag}  (no USB feedback — MCU busy?)"
     if resp is not None:
         idx_echo = pararead_index_echo(resp)
+        echo_note = "(no echo — RS02 normal)" if idx_echo == 0 else f"echo=0x{idx_echo:04X}"
         return (
             f"  HIT   {tag}  {rs2_comm_label(resp['comm_mode'])}  "
-            f"echo=0x{idx_echo:04X}  float={resp['position']:+.4f}  "
+            f"{echo_note}  float={resp['position']:+.4f}  "
             f"raw={resp['can_data'].hex()}"
         )
     if sniff is not None:
         raw_n = sniff.get("raw_frames", 0)
         if sniff["comm_mode"] in (0x11, 0x12):
             idx_echo = pararead_index_echo(sniff)
-            if idx_echo != (index & 0xFFFF):
+            if idx_echo != 0 and idx_echo != (index & 0xFFFF):
                 return (
                     f"  EMPTY {tag}  {rs2_comm_label(sniff['comm_mode'])}  "
                     f"echo=0x{idx_echo:04X} (want 0x{index:04X})  "
@@ -524,6 +693,8 @@ def run_wake_short(
     seq: int,
     timeout: float,
     running: bool = False,
+    ctrl_pos: float = 0.0,
+    bus: int = 1,
 ) -> int:
     short_wake: Tuple[Tuple[str, int, float, int, float], ...] = (
         ("reset", PROBE_RESET, 0.45, 1, 0.15),
@@ -533,11 +704,19 @@ def run_wake_short(
     if running:
         short_wake = short_wake + (("ctrl x12", PROBE_CTRL_ONLY, 0.25, 12, 0.04),)
     label_mode = "running ctrl" if running else "rest/enable (vendor pararead style)"
-    print(f"Wake motor 0x{target:02X} before scan ({label_mode})...")
+    if running and ctrl_pos != 0.0:
+        label_mode += f" pos={ctrl_pos:+.3f} rad"
+    print(f"Wake motor {probe_target_label(target, bus)} before scan ({label_mode})...")
     for name, kind, step_timeout, repeat, pause in short_wake:
         for n in range(repeat):
             label = name if repeat == 1 else f"{name} [{n + 1}/{repeat}]"
-            resp = send_diag(ser, reader, target, kind, seq, max(timeout, step_timeout))
+            pos = ctrl_pos if kind == PROBE_CTRL_ONLY else 0.0
+            ctrl_kp = 50.0 if kind == PROBE_CTRL_ONLY else 0.0
+            ctrl_kd = 1.0 if kind == PROBE_CTRL_ONLY else 0.0
+            resp = send_diag(
+                ser, reader, target, kind, seq, max(timeout, step_timeout),
+                position=pos, kp=ctrl_kp, kd=ctrl_kd, bus=bus,
+            )
             seq += 1
             if resp is not None and resp.get("found"):
                 ext = decode_ext_id(resp["ext_id"])
@@ -549,6 +728,15 @@ def run_wake_short(
                     f"faults=[{fault_s}]"
                 )
             time.sleep(pause)
+
+    # After a non-zero ctrl burst, reset to de-energize before pararead.
+    # Without this, robstride_maintain_enable keeps the motor fighting at ctrl_pos.
+    if running and ctrl_pos != 0.0:
+        send_diag(ser, reader, target, PROBE_RESET, seq, 0.45, bus=bus)
+        seq += 1
+        time.sleep(0.15)
+        print(f"  (reset: de-energize from ctrl_pos={ctrl_pos:+.3f} rad before pararead)")
+
     print()
     return seq
 
@@ -559,13 +747,15 @@ def run_param_scan(ser: serial.Serial, target: int, args: argparse.Namespace) ->
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
 
     target &= 0xFF
+    bus = normalize_can_bus(args.bus)
     seq = 1
     indices = build_param_index_list(args)
     hits: List[Tuple[int, dict]] = []
     sniffs: List[Tuple[int, dict]] = []
     usb_miss = 0
 
-    print(f"Param scan motor 0x{target:02X} on {ser.port}  ({len(indices)} indices)")
+    print(f"Param scan motor {probe_target_label(target, bus)} on {ser.port}  ({len(indices)} indices)")
+    print_can_bus_note(bus)
     print("Success = ext-CAN comm 0x11 pararead with float in data[4:8].")
     print("Sweep like ID scan — HIT / SNIFF / .... per index.")
     print()
@@ -573,14 +763,17 @@ def run_param_scan(ser: serial.Serial, target: int, args: argparse.Namespace) ->
     try:
         seq = begin_session(ser, reader, seq, args.timeout)
         if args.reset_first:
-            send_diag(ser, reader, target, PROBE_RESET, seq, max(args.timeout, 0.45))
+            send_diag(ser, reader, target, PROBE_RESET, seq, max(args.timeout, 0.45), bus=bus)
             seq += 1
             time.sleep(0.2)
-        seq = run_wake_short(ser, reader, target, seq, args.timeout, running=args.param_running)
+        seq = run_wake_short(
+            ser, reader, target, seq, args.timeout,
+            running=args.param_running, ctrl_pos=getattr(args, "ctrl_pos", 0.0), bus=bus,
+        )
 
         for index in indices:
             resp, sniff, usb_seen, seq = send_pararead(
-                ser, reader, target, index, seq, args.param_timeout,
+                ser, reader, target, index, seq, args.param_timeout, bus=bus,
             )
             if not usb_seen:
                 usb_miss += 1
@@ -607,12 +800,48 @@ def run_param_scan(ser: serial.Serial, target: int, args: argparse.Namespace) ->
             print(f"    0x{index:04X}  {rs2_comm_label(resp['comm_mode'])}  raw={resp['can_data'].hex()}")
     if not hits:
         if sniffs and all(r["comm_mode"] == 0x11 for _, r in sniffs):
-            print("  Motor sends comm 0x11 with empty/wrong echo — likely faulted or uncalibrated.")
-        print("  Wake showed comm 0x15 error_feedback? Check 48 V, then encoder cal (0x05) or Motor Studio.")
-        print("  Try: --param-running   or   --bench-cmds --cal-timeout 28")
+            print("  Motor sent comm=0x11 responses — RS02 does not echo index, but no hit detected.")
+            print("  Check: motor ID correct? MCU firmware flashed with echo-fix?")
+        print("  Encoder cal requires 48 V supply. Check --bench-cmds (cali now resets first).")
+        print("  Try: --param-running   or   --bench-cmds --cal-timeout 90")
     if usb_miss > len(indices) // 2:
         print(f"  USB probe acks missing on {usb_miss}/{len(indices)} reads — MCU busy; replug / wait 30s")
     return 0 if hits else 1
+
+
+def run_recovery(ser: serial.Serial, target: int, args: argparse.Namespace) -> int:
+    """Exit stuck mms=cali: power-cycle motor first, then reset → enable (no 0x05 cal)."""
+    reader = FrameReader()
+    stop = threading.Event()
+    threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
+
+    target &= 0xFF
+    bus = normalize_can_bus(args.bus)
+    seq = 1
+    print(f"Recovery on {probe_target_label(target, bus)} — reset → enable only (no cal).")
+    print_can_bus_note(bus)
+    print("Power-cycle motor if still mms=cali.")
+    print()
+
+    try:
+        seq = begin_session(ser, reader, seq, args.timeout)
+        for label, kind, wait_s in (
+            ("reset comm 0x04", PROBE_RESET, 0.55),
+            ("enable comm 0x03", PROBE_ENABLE_ONLY, 0.55),
+            ("full_init", PROBE_FULL, 0.45),
+        ):
+            resp = send_diag(ser, reader, target, kind, seq, wait_s, bus=bus)
+            seq += 1
+            print(format_probe_line(label, target, resp))
+            if resp and resp.get("found"):
+                ext = decode_ext_id(resp["ext_id"])
+                mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
+                print(f"         mms={mms}  faults=[{','.join(ext.faults) or 'none'}]")
+            print()
+    finally:
+        end_session(ser, reader, seq, args.timeout)
+        stop.set()
+    return 0
 
 
 def run_bench_cmds(ser: serial.Serial, target: int, args: argparse.Namespace) -> int:
@@ -622,22 +851,42 @@ def run_bench_cmds(ser: serial.Serial, target: int, args: argparse.Namespace) ->
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
 
     target &= 0xFF
+    bus = normalize_can_bus(args.bus)
     seq = 1
-    bench: Tuple[Tuple[str, int, float], ...] = (
-        ("motor_cali comm 0x05", PROBE_CALI, args.cal_timeout + 10.0),
-        ("motor_zero comm 0x06", PROBE_ZERO, 3.0),
-        ("data_save comm 0x16", PROBE_DATA_SAVE, 4.0),
+    cal_listen_s = max(10, int(args.cal_timeout))
+    cal_usb_wait = float(cal_listen_s + 15)
+    bench: Tuple[Tuple[str, int, float, int], ...] = (
+        ("motor_cali comm 0x05", PROBE_CALI, cal_usb_wait, cal_listen_s),
+        ("motor_zero comm 0x06", PROBE_ZERO, 3.0, 0),
+        ("proactive enable 0x18", PROBE_PROACTIVE, 1.0, 0),
+        ("data_save comm 0x16", PROBE_DATA_SAVE, 4.0, 0),
     )
 
-    print(f"Bench comm probes on 0x{target:02X}  (sequential — one MCU block at a time)")
+    print(f"Bench comm probes on {probe_target_label(target, bus)}  (sequential — one MCU block at a time)")
+    print_can_bus_note(bus)
+    print(f"Cali listen on MCU: {cal_listen_s}s (one 0x05, no retransmit). Shaft must spin freely.")
+    print("Prep: reset only (no enable/ctrl before cal — motor must stay at rest).")
     print()
 
     try:
         seq = begin_session(ser, reader, seq, args.timeout)
-        seq = run_wake_short(ser, reader, target, seq, args.timeout, running=True)
-        for label, kind, probe_timeout in bench:
+        print("--- prep reset (fault clear) ---")
+        resp = send_diag(ser, reader, target, PROBE_RESET, seq, 0.55, bus=bus)
+        seq += 1
+        print(format_probe_line("reset comm 0x04", target, resp))
+        print()
+        time.sleep(0.3)
+
+        if not args.skip_iq_test:
+            print("--- iq_test parawrite 0x702D=1 (unlock encoder export on teardown units) ---")
+            resp, seq = send_parawrite(ser, reader, target, 0x702D, 1, seq, 1.5, bus=bus)
+            print(format_probe_line("iq_test 0x702D=1 parawrite", target, resp))
+            print()
+            time.sleep(0.2)
+
+        for label, kind, probe_timeout, probe_param in bench:
             print(f"--- {label} (wait up to {probe_timeout:.0f}s) ---")
-            resp = send_diag(ser, reader, target, kind, seq, probe_timeout)
+            resp = send_diag(ser, reader, target, kind, seq, probe_timeout, probe_param, bus=bus)
             seq += 1
             print(format_probe_line(label, target, resp))
             if resp is None:
@@ -646,7 +895,78 @@ def run_bench_cmds(ser: serial.Serial, target: int, args: argparse.Namespace) ->
             if resp.get("found"):
                 ext = decode_ext_id(resp["ext_id"])
                 mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
-                print(f"         mms={mms}  data={resp['can_data'].hex()}")
+                disc = resp.get("discovered_id") or ext.motor_id
+                valid = disc == (target & 0xFF) and resp["comm_mode"] in (0x02, 0x18)
+                print(f"         mms={mms}  valid_0x70={'yes' if valid else 'NO'}  data={resp['can_data'].hex()}")
+                if kind == PROBE_CALI:
+                    if resp.get("comm_mode") != 0x02:
+                        print(f"         Comm=0x{resp['comm_mode']:02X} (cali stream?) — no mms field. Motor still calibrating.")
+                        print("         Power-cycle motor, wait for shaft to stop, then retry.")
+                        break
+                    cal_ok = ext.mode_status in (0, 2)
+                    if ext.mode_status == 1:
+                        print("         MCU listen ended with mms=cali — polling enable (may have missed rest/running)...")
+                        poll_deadline = time.monotonic() + max(15.0, cal_listen_s * 0.5)
+                        while time.monotonic() < poll_deadline:
+                            poll = send_diag(ser, reader, target, PROBE_ENABLE_ONLY, seq, 0.6, bus=bus)
+                            seq += 1
+                            if poll and poll.get("found"):
+                                ext = decode_ext_id(poll["ext_id"])
+                                if ext.mode_status in (0, 2):
+                                    cal_ok = True
+                                    print(format_probe_line("post_cal enable", target, poll))
+                                    break
+                            time.sleep(0.5)
+                        if not cal_ok:
+                            print("         CALI TIMED OUT (mms=cali) — sweep still running, 30V too low, or other motor flooding CAN.")
+                            print("         Try: --recovery, --skip-iq-test, power-cycle, or host_teleop --calibrate. zero/save skipped.")
+                            break
+                    elif ext.mode_status == 2:
+                        print("         mms=running — cal finished (RS01 often skips rest).")
+                    elif ext.mode_status != 0:
+                        print("         WARNING: cali did not start (mms not cali/rest/running). Check shaft freedom.")
+            print()
+            time.sleep(0.2)
+    finally:
+        end_session(ser, reader, seq, args.timeout)
+        stop.set()
+    return 0
+
+
+def run_proactive_off(ser: serial.Serial, target: int, args: argparse.Namespace) -> int:
+    """Disable proactive mode and save to NVM — fixes 'comm=0x18 on every probe' symptom."""
+    reader = FrameReader()
+    stop = threading.Event()
+    threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
+
+    target &= 0xFF
+    bus = normalize_can_bus(args.bus)
+    seq = 1
+    # param_index=1 → firmware sends proactive with enable=0 (disable)
+    off_seq: Tuple[Tuple[str, int, float, int], ...] = (
+        ("proactive disable 0x18", PROBE_PROACTIVE, 1.0, 1),
+        ("data_save comm 0x16", PROBE_DATA_SAVE, 4.0, 0),
+    )
+
+    print(f"Disabling proactive mode on {probe_target_label(target, bus)} and saving to NVM...")
+    print_can_bus_note(bus)
+    print("After this, power-cycle the motor to confirm proactive broadcasts stop.")
+    print()
+    try:
+        seq = begin_session(ser, reader, seq, args.timeout)
+        resp = send_diag(ser, reader, target, PROBE_RESET, seq, 0.55, bus=bus)
+        seq += 1
+        print(format_probe_line("reset", target, resp))
+        time.sleep(0.3)
+
+        for label, kind, probe_timeout, probe_param in off_seq:
+            print(f"--- {label} ---")
+            resp = send_diag(ser, reader, target, kind, seq, probe_timeout, probe_param, bus=bus)
+            seq += 1
+            print(format_probe_line(label, target, resp))
+            if resp is None:
+                print("  stopped — MCU did not ack")
+                break
             print()
             time.sleep(0.2)
     finally:
@@ -668,9 +988,12 @@ def format_probe_line(label: str, motor_id: int, resp: Optional[dict]) -> str:
 
     ext = decode_ext_id(resp["ext_id"])
     disc = resp["discovered_id"] or ext.motor_id or (motor_id & 0xFF)
+    valid = disc == (motor_id & 0xFF) and resp["comm_mode"] in (0x02, 0x18)
     fault_s = ",".join(ext.faults) if ext.faults else "none"
     mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else f"mode{ext.mode_status}"
     tag = "HIT" if resp["found"] else "SNIFF"
+    if resp["found"] and not valid:
+        tag = "NOISE"
     data_hex = resp["can_data"].hex()
 
     return (
@@ -684,6 +1007,11 @@ def format_probe_line(label: str, motor_id: int, resp: Optional[dict]) -> str:
 def begin_session(ser: serial.Serial, reader: FrameReader, seq: int, timeout: float) -> int:
     if send_diag(ser, reader, 0, SESSION_BEGIN, seq, timeout) is None:
         print("Warning: scan session begin not acknowledged (flash firmware with plant_diag?)")
+    else:
+        # Clear stale slot-0 desires (e.g. teleop kp=50) before bench probes.
+        ser.write(build_actuator_command(0.0, 0.0, 0.0, 0.0, 0.0, seq + 1))
+        ser.flush()
+        seq += 1
     time.sleep(0.05)
     return seq + 1
 
@@ -698,17 +1026,23 @@ def run_exercise(ser: serial.Serial, target: int, args: argparse.Namespace) -> i
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
 
     target &= 0xFF
+    bus = normalize_can_bus(args.bus)
     seq = 1
     any_can = False
     any_parsed = False
     session_ended = False
 
-    print(f"Exercise target motor 0x{target:02X} on {ser.port}")
+    print(f"Exercise {probe_target_label(target, bus)} on {ser.port}")
+    plant_slot = actuator_slot_for_motor(target, bus)
+    print_can_bus_note(bus)
+    print(
+        f"RS2 PDU probes use --target/--bus. "
+        f"Actuator-slot path (--actuator-test) uses plant_config slot {plant_slot}."
+    )
     if args.wake:
         print("Mode: --wake (reset → enable-only → full → sustained ctrl)")
     print("RS2 bench channel in host image byte 530 (not a power-distribution board).")
-    print("PC7 ON = CAN activity; if it blinks but every line says 'no ext-CAN RX', the motor")
-    print("is not replying (fault, supply, or needs power-cycle + --reset-first).")
+    print("CAN activity LEDs: PC7=CH1  PC6=CH2 (PA8/PA15)  PB15=CH3 (PB12/13) — blink on TX/RX.")
     print()
 
     try:
@@ -716,7 +1050,7 @@ def run_exercise(ser: serial.Serial, target: int, args: argparse.Namespace) -> i
 
         if args.reset_first:
             print("Pre-resetting target motor...")
-            resp = send_diag(ser, reader, target, PROBE_RESET, seq, max(args.timeout, 0.45))
+            resp = send_diag(ser, reader, target, PROBE_RESET, seq, max(args.timeout, 0.45), bus=bus)
             seq += 1
             print(format_probe_line("pre_reset", target, resp))
             time.sleep(0.25)
@@ -727,7 +1061,7 @@ def run_exercise(ser: serial.Serial, target: int, args: argparse.Namespace) -> i
         ):
             for n in range(repeat):
                 label = name if repeat == 1 else f"{name} [{n + 1}/{repeat}]"
-                resp = send_diag(ser, reader, target, kind, seq, timeout)
+                resp = send_diag(ser, reader, target, kind, seq, timeout, bus=bus)
                 seq += 1
                 print(format_probe_line(label, target, resp))
                 if resp is not None and (resp["found"] or resp.get("raw_frames", 0) > 0):
@@ -743,7 +1077,10 @@ def run_exercise(ser: serial.Serial, target: int, args: argparse.Namespace) -> i
 
     if args.actuator_test:
         print("--- Actuator-slot path (normal --monitor / teleop; CAN LED may stay dark) ---")
-        print("Session ended — MCU 500 Hz loop may TX via actuator_commands[0] again.")
+        print(
+            f"Session ended — MCU 500 Hz loop TX on plant slot {plant_slot} "
+            f"(motor 0x{target:02X}), not always slot 0 / 0x70."
+        )
         print()
         reader.drain()
         period = 1.0 / max(args.actuator_hz, 1.0)
@@ -751,12 +1088,12 @@ def run_exercise(ser: serial.Serial, target: int, args: argparse.Namespace) -> i
             print(f"  profile: {profile_name}  (8 frames @ {args.actuator_hz:.0f} Hz)")
             last_fb: Optional[dict] = None
             for _ in range(8):
-                ser.write(build_actuator_command(pos, vel, kp, kd, 0.0, seq))
+                ser.write(build_actuator_command(pos, vel, kp, kd, 0.0, seq, slot=plant_slot))
                 ser.flush()
                 seq += 1
                 time.sleep(period)
                 for frame in reader.drain():
-                    fb = parse_actuator_feedback(frame)
+                    fb = parse_actuator_feedback(frame, slot=plant_slot)
                     if fb is not None:
                         last_fb = fb
             if last_fb is None:
@@ -817,29 +1154,55 @@ def format_discover_line(probed_id: int, probe_label: str, resp: dict) -> str:
     )
 
 
-def build_discover_id_list(args: argparse.Namespace) -> List[int]:
-    if args.ids:
-        return parse_id_list(args.ids)
-    start = max(1, int(args.start) & 0xFF)
-    end = min(127, int(args.end) & 0xFF)
-    if end < start:
-        start, end = end, start
-    full_range = list(range(start, end + 1))
-    if args.discover_quick:
-        candidates = list(DISCOVER_PRIORITY_IDS)
-    else:
-        candidates = list(DISCOVER_PRIORITY_IDS) + full_range
+def dedupe_id_list(ids: List[int]) -> List[int]:
     seen: Set[int] = set()
     out: List[int] = []
-    for i in candidates:
+    for i in ids:
         if 1 <= i <= 127 and i not in seen:
             seen.add(i)
             out.append(i)
     return out
 
 
+def discover_range_bounds(args: argparse.Namespace) -> Tuple[int, int]:
+    start = max(1, int(args.start) & 0xFF)
+    end = min(127, int(args.end) & 0xFF)
+    if end < start:
+        start, end = end, start
+    return start, end
+
+
+def build_discover_id_list(args: argparse.Namespace) -> List[int]:
+    if args.ids:
+        return dedupe_id_list(parse_id_list(args.ids))
+
+    start, end = discover_range_bounds(args)
+    full_range = list(range(start, end + 1))
+    custom_range = (start, end) != (1, 127)
+
+    # Full 1–127 (or --start/--end): priority IDs ordered first, then the rest.
+    if args.discover_all or not args.discover_quick:
+        return dedupe_id_list(list(DISCOVER_PRIORITY_IDS) + full_range)
+
+    # --discover-quick: still sweep full 1–127 (light probes); custom --start/--end narrows/widens.
+    if custom_range:
+        return dedupe_id_list(list(DISCOVER_PRIORITY_IDS) + full_range)
+    return dedupe_id_list(list(DISCOVER_PRIORITY_IDS) + list(range(1, 128)))
+
+
+def describe_discover_scan(args: argparse.Namespace, id_list: List[int]) -> str:
+    start, end = discover_range_bounds(args)
+    if args.ids:
+        return f"custom list ({len(id_list)} IDs from --ids)"
+    if start == 1 and end == 127:
+        if args.discover_quick:
+            return f"full 1–127 / 0x01–0x7F ({len(id_list)} addresses, light probes)"
+        return f"full 1–127 / 0x01–0x7F ({len(id_list)} addresses, deep wake on priority IDs first)"
+    return f"0x{start:02X}–0x{end:02X} ({len(id_list)} addresses)"
+
+
 def discover_probe_steps(probed_id: int, args: argparse.Namespace) -> Tuple[Tuple[str, int, float, int], ...]:
-    if args.discover_light:
+    if args.discover_light or args.discover_quick:
         return DISCOVER_PROBES_LIGHT
     if args.discover_deep or probed_id in DISCOVER_PRIORITY_IDS:
         return DISCOVER_PROBES_DEEP
@@ -862,6 +1225,7 @@ def probe_one_id(
             resp = send_diag(
                 ser, reader, probed_id, probe_kind, seq,
                 max(args.timeout, probe_timeout),
+                bus=normalize_can_bus(args.bus),
             )
             seq += 1
             if verbose_steps:
@@ -886,8 +1250,10 @@ def run_probe_id(ser: serial.Serial, args: argparse.Namespace) -> int:
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
 
     motor_id = int(args.probe_id) & 0xFF
+    bus = normalize_can_bus(args.bus)
     seq = 1
-    print(f"Deep probe motor 0x{motor_id:02X} on {ser.port}  (same wake as --bench-cmds)")
+    print(f"Deep probe {probe_target_label(motor_id, bus)} on {ser.port}  (same wake as --bench-cmds)")
+    print_can_bus_note(bus)
     print("Only ONE motor should be on CAN. Power on, shaft free.")
     print()
 
@@ -919,15 +1285,23 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
 
     id_list = build_discover_id_list(args)
+    bus = normalize_can_bus(args.bus)
     seq = 1
     # replied_id -> list of (probed_id, probe_label, resp)
     findings: Dict[int, List[Tuple[int, str, dict]]] = {}
 
-    print(f"Discover RS02 CAN ID on {ser.port}  ({len(id_list)} addresses)")
-    probe_mode = "light (enable+promisc)" if args.discover_light else "deep on priority IDs (reset→enable→full→ctrl×8)"
-    print(f"Probe mode: {probe_mode} — matches --bench-cmds wake on 0x7F/0x70/…")
-    print("Only ONE motor on the bus. Swap units between tests — old 0x70 will not find a new motor.")
-    print("Factory default is often 0x7F.")
+    scan_desc = describe_discover_scan(args, id_list)
+    print(f"Discover RobStride CAN ID on {ser.port}  ({scan_desc})  bus={can_bus_label(bus)}")
+    print_can_bus_note(bus)
+    if args.discover_light or args.discover_deep:
+        probe_mode = "light (enable+promisc)" if args.discover_light else "deep wake on every ID"
+    else:
+        probe_mode = "deep on priority IDs, light (enable+promisc) on the rest"
+    print(f"Probe mode: {probe_mode}")
+    print("Only ONE unknown motor on the bus (daisy chain OK if IDs differ).")
+    print("Factory default is often 0x7F; RS01 may use any ID in 0x01–0x7F.")
+    if args.discover_quick:
+        print("Quick mode: enable+promisc on every ID (fast). Omit --discover-quick for deep wake on 0x7F/0x70/… first.")
     print()
 
     try:
@@ -935,13 +1309,16 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
 
         if args.reset_first:
             for rid in (0x7F, 0x70, 0x7E):
-                send_diag(ser, reader, rid, PROBE_RESET, seq, 0.45)
+                send_diag(ser, reader, rid, PROBE_RESET, seq, 0.45, bus=bus)
                 seq += 1
                 time.sleep(0.08)
             print("Pre-reset sent to 0x7F, 0x70, 0x7E")
             print()
 
-        for probed_id in id_list:
+        total = len(id_list)
+        for idx, probed_id in enumerate(id_list):
+            if total > 40 and idx > 0 and idx % 20 == 0:
+                print(f"  ... progress {idx}/{total} (probing 0x{probed_id:02X})")
             best, seq = probe_one_id(ser, reader, probed_id, seq, args, verbose_steps=False)
 
             if best is not None:
@@ -961,11 +1338,12 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
     print("Summary")
     if not findings:
         print("  No motor replies on any probed ID.")
-        print("  If another RS02 works at 0x70 but this one shows nothing on 0x7F/0x70:")
-        print("    → CAN wiring on THIS motor, JST orientation, or dead drive (no TX from motor).")
-        print("  Try deep single-ID probe:")
+        print("  If another motor works but this RS01 shows nothing:")
+        print("    → CAN wiring, JST orientation, supply, or only one motor should be unconfigured.")
+        print("  Try full ID sweep or a single deep probe:")
+        print(f"    python scripts/rs02_can_scan.py --port {ser.port} --discover --discover-all")
+        print(f"    python scripts/rs02_can_scan.py --port {ser.port} --discover --start 0x50 --end 0x7F")
         print(f"    python scripts/rs02_can_scan.py --port {ser.port} --probe-id 0x7F")
-        print(f"    python scripts/rs02_can_scan.py --port {ser.port} --probe-id 0x70")
         return 1
 
     print(f"  Unique replied motor ID(s): {len(findings)}")
@@ -998,10 +1376,12 @@ def run_scan(ser: serial.Serial, id_list: List[int], args: argparse.Namespace) -
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
 
     hits: List[tuple[int, dict]] = []
+    bus = normalize_can_bus(args.bus)
     seq = 1
     use_fast = False
 
-    print(f"Scanning {len(id_list)} IDs on {ser.port}")
+    print(f"Scanning {len(id_list)} IDs on {ser.port}  ({can_bus_label(bus)})")
+    print_can_bus_note(bus)
     print("Probe: RobStride private ext-CAN. Background actuator TX paused during session.")
     print()
 
@@ -1015,7 +1395,7 @@ def run_scan(ser: serial.Serial, id_list: List[int], args: argparse.Namespace) -
         reset_ids = [i for i in reset_ids if not (i in seen or seen.add(i))]
         print(f"Sending motor reset to: {', '.join(f'0x{i:02X}' for i in reset_ids)}")
         for rid in reset_ids:
-            send_diag(ser, reader, rid, PROBE_RESET, seq, max(args.timeout, 0.35))
+            send_diag(ser, reader, rid, PROBE_RESET, seq, max(args.timeout, 0.35), bus=bus)
             seq += 1
             time.sleep(0.1)
         print()
@@ -1028,7 +1408,7 @@ def run_scan(ser: serial.Serial, id_list: List[int], args: argparse.Namespace) -
         else:
             kind = PROBE_FULL
 
-        resp = send_diag(ser, reader, motor_id, kind, seq, args.timeout)
+        resp = send_diag(ser, reader, motor_id, kind, seq, args.timeout, bus=bus)
         seq += 1
 
         if resp is None:
@@ -1114,9 +1494,11 @@ def main() -> None:
     ap.add_argument("--port", default=None, help="Serial port (COM5, /dev/ttyACM0)")
     ap.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     ap.add_argument("--discover", action="store_true",
-                    help="Find motor CAN ID (enable + promisc per address; 0x7F first)")
+                    help="Find motor CAN ID (default: full 1–127; priority IDs deep-wake first)")
+    ap.add_argument("--discover-all", action="store_true",
+                    help="With --discover: sweep --start..--end (default 1–127); overrides --discover-quick")
     ap.add_argument("--discover-quick", action="store_true",
-                    help="With --discover: only priority IDs (0x7F, 0x70, …) not full 1–127")
+                    help="With --discover: full 1–127 with fast light probes (~3 min; was ~20 IDs only)")
     ap.add_argument("--discover-light", action="store_true",
                     help="Fast discover: enable+promisc only (weaker than --bench-cmds wake)")
     ap.add_argument("--discover-deep", action="store_true",
@@ -1127,8 +1509,19 @@ def main() -> None:
                     help="Run probe matrix on --target (default 0x70)")
     ap.add_argument("--param-scan", action="store_true",
                     help="Sweep param indices via comm 0x11 pararead (default 0x7005..0x702E)")
+    ap.add_argument(
+        "--bus",
+        type=int,
+        default=1,
+        choices=[1, 2, 3],
+        help="Plant CAN branch: 1=PB8/9 CH1, 2=PA8/PA15 CH2 (0x73), 3=PB12/13 CH3 (0x75). Sets pdu.data[11].",
+    )
     ap.add_argument("--bench-cmds", action="store_true",
-                    help="Sequential cal/zero/save probes (one MCU block at a time)")
+                    help="Sequential iq_test/cal/zero/save probes (one MCU block at a time)")
+    ap.add_argument("--recovery", action="store_true",
+                    help="Reset+enable only (no cal). Use after power-cycle if stuck mms=cali")
+    ap.add_argument("--skip-iq-test", action="store_true",
+                    help="Skip iq_test=1 parawrite in --bench-cmds (use if motor already initialized)")
     ap.add_argument("--params", default=None,
                     help="Param scan: comma list e.g. 0x7019,0x701C (overrides --param-start/end)")
     ap.add_argument("--param-start", type=lambda x: int(x, 0), default=DEFAULT_PARAM_START,
@@ -1141,8 +1534,12 @@ def main() -> None:
                     help="Seconds to wait per pararead (default 0.75; MCU listen ~220ms)")
     ap.add_argument("--param-running", action="store_true",
                     help="Param scan: ctrl burst to mms=running before reads (default: reset+enable only)")
-    ap.add_argument("--cal-timeout", type=float, default=28.0,
-                    help="Seconds for --bench-cmds cal probe on MCU (default 28)")
+    ap.add_argument("--ctrl-pos", type=float, default=0.0,
+                    help="Position setpoint (rad) sent in ctrl-burst probes (default 0.0; use with --param-running)")
+    ap.add_argument("--cal-timeout", type=float, default=90.0,
+                    help="Seconds for --bench-cmds cal probe on MCU (default 90)")
+    ap.add_argument("--proactive-off", action="store_true",
+                    help="Disable proactive mode and data_save — fixes 'comm=0x18 on every probe'")
     ap.add_argument("--wake", action="store_true",
                     help="With --exercise: reset, enable-only, then ctrl burst (needs fw probe kind 12)")
     ap.add_argument(
@@ -1153,7 +1550,7 @@ def main() -> None:
         help="Motor CAN ID for --exercise/--param-scan/--bench-cmds (default 0x70; use 0x71 after --probe-id)",
     )
     ap.add_argument("--actuator-test", action="store_true",
-                    help="After exercise, test normal actuator_commands path (like --monitor)")
+                    help="After exercise, test actuator_commands path on plant slot for --target (0x74→slot 1)")
     ap.add_argument("--actuator-hz", type=float, default=30.0,
                     help="Rate for --actuator-test (default 30)")
     ap.add_argument("--start", type=lambda x: int(x, 0), default=1, help="Scan: first ID")
@@ -1180,6 +1577,10 @@ def main() -> None:
             rc = run_discover(ser, args)
         elif args.param_scan:
             rc = run_param_scan(ser, args.target, args)
+        elif args.recovery:
+            rc = run_recovery(ser, args.target, args)
+        elif args.proactive_off:
+            rc = run_proactive_off(ser, args.target, args)
         elif args.bench_cmds:
             rc = run_bench_cmds(ser, args.target, args)
         elif args.exercise or args.wake:

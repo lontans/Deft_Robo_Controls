@@ -39,6 +39,34 @@ void actuator_command_mount(const host_command_image_t *cmd)
 	__enable_irq();
 }
 
+void actuator_desire_clear(void)
+{
+	__disable_irq();
+	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
+		memset(&actuator_desire_live[i], 0, sizeof(actuator_desire_t));
+	memset(actuator_desire_stage, 0, sizeof(actuator_desire_stage));
+	actuator_desire_pending = false;
+	__enable_irq();
+}
+
+void plant_recovery_all(void)
+{
+	can_frame_t frame;
+
+	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		if (!actuator_table[i].enabled)
+			continue;
+		if (actuator_table[i].protocol != PROTO_ROBSTRIDE)
+			continue;
+
+		if (robstride_send_reset(&actuator_table[i], &frame) == PLUGIN_OK)
+			(void)can_tx_enqueue(actuator_table[i].bus, &frame);
+	}
+
+	can_router_poll();
+	actuator_desire_clear();
+}
+
 void actuator_apply_desire(void)
 {
 	__disable_irq();

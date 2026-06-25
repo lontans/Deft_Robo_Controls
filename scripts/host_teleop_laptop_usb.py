@@ -12,10 +12,19 @@ Windows (Lenovo X1 etc.):
 
 Arrow-key teleop (default, RS2 CAN path — works without encoder feedback):
   Left / Right   small position steps (hold for continuous motion)
-  r              command zero
+  r              re-sync cmd to shaft + zero velocity (stop coast)
   q              quit
 
-Other modes: --monitor  --nudge  --read-params  --calibrate  --legacy-actuator
+Dual motor (alternating CAN, same arrow keys):
+  python scripts/host_teleop_laptop_usb.py --port COM9 --motor-ids 0x70,0x74
+
+Other modes: --monitor  --nudge  --read-params  --calibrate  --plant-teleop  --legacy-actuator
+
+Calibrate on a specific FDCAN branch (host sets pdu.data[11]; MCU Phase 4 must read it):
+  python scripts/host_teleop_laptop_usb.py --port COM9 --calibrate --bus 3 --motor-id 0x74
+
+Multi-bus runtime teleop (500 Hz plant slots — auto-homes to 0, then all actuators):
+  python scripts/host_teleop_laptop_usb.py --port COM9 --plant-teleop
 """
 
 from __future__ import annotations
@@ -30,7 +39,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Optional
+from typing import Deque, List, Optional, Tuple
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
@@ -46,17 +55,25 @@ from rs02_can_scan import (  # noqa: E402
     PROBE_PROACTIVE,
     PROBE_RESET,
     PROBE_ZERO,
+    PLANT_ACTUATOR_TABLE,
     RS2_COMM_NAMES,
     SESSION_BEGIN,
     SESSION_END,
+    build_plant_command,
     build_rs2_probe_command,
     build_rs2_teleop_command,
+    can_bus_label,
     decode_ext_id,
     format_probe_line,
+    normalize_can_bus,
+    parse_actuator_feedback,
     parse_probe_pdu,
+    print_can_bus_note,
+    probe_target_label,
     rs2_comm_label,
     pararead_is_hit,
     pararead_index_echo,
+    parse_id_list,
     send_diag,
 )
 
@@ -65,6 +82,7 @@ PARAM_MECH_POS = 0x7019
 PARAM_RUN_MODE = 0x7005
 PARAM_SPEED = 0x700A
 PARAM_BUS_VOLT = 0x701C
+VBUS_POLL_TIMEOUT_S = 0.45
 DEFAULT_CAL_TIMEOUT_S = 28.0
 CALI_CHUNK_S = 5.0
 PARAM_READ_LIST = (
@@ -96,6 +114,20 @@ DEFAULT_RAMP_UP_S = 0.06
 DEFAULT_KP = 50.0
 DEFAULT_KD = 1.0
 DEFAULT_HZ = 40.0
+# --plant-teleop defaults (gentle; RS01 slots use lower kp than RS02 slot 0)
+PLANT_DEFAULT_KP = 10.0
+PLANT_DEFAULT_KD = 0.5
+PLANT_DEFAULT_ARROW_VEL = 5.0
+PLANT_DEFAULT_RAMP_UP_S = 0.4
+PLANT_DEFAULT_RAMP_DOWN_S = 1.2
+PLANT_SLOT_KP: Tuple[float, ...] = (12.0, 8.0, 8.0, 8.0)
+PLANT_HOME_TARGET = 0.0
+PLANT_HOME_SLEW_RAD_S = 0.28
+PLANT_HOME_KP = 6.0
+PLANT_HOME_POS_TOL = 0.05
+PLANT_HOME_VEL_TOL = 0.15
+PLANT_HOME_DWELL_S = 0.6
+PLANT_HOME_TIMEOUT_S = 120.0
 USB_BAUD = 115200
 DEFAULT_MOTOR_ID = 0x70
 
@@ -105,8 +137,10 @@ RS2_WAKE_STEPS = (
     (PROBE_RESET, 0.45),
     (PROBE_ENABLE_ONLY, 0.55),
     (PROBE_FULL, 0.35),
-    (PROBE_PROACTIVE, 0.40),
 )
+
+# Optional: proactive 0x18 floods the bus and has tripped under_voltage on bench 53V.
+RS2_WAKE_STEPS_PROACTIVE = RS2_WAKE_STEPS + ((PROBE_PROACTIVE, 0.40),)
 
 # Proactive (comm 0x18) confuses pararead diagnostics — omit for --read-params.
 RS2_WAKE_STEPS_PARAMS = (
@@ -115,8 +149,29 @@ RS2_WAKE_STEPS_PARAMS = (
     (PROBE_FULL, 0.35),
 )
 
-# Nudge stays at 15 Hz (proven on bench). Teleop uses --hz (default 30) for smoother arrows.
 RS2_NUDGE_HZ = 15.0
+VBUS_POLL_INTERVAL_S = 2.0
+
+
+_live_line_len = 0
+
+
+def write_live_line(text: str) -> None:
+    """Overwrite one terminal row (keep short — PowerShell wraps long lines)."""
+    global _live_line_len
+    line = text.replace("\n", " ")[:118]
+    pad = max(0, _live_line_len - len(line))
+    sys.stdout.write("\r" + line + " " * pad + "\x1b[K")
+    sys.stdout.flush()
+    _live_line_len = len(line)
+
+
+def write_live_notice(text: str) -> None:
+    """One-shot message above the live row (faults, warnings)."""
+    global _live_line_len
+    sys.stdout.write("\n" + text + "\n")
+    sys.stdout.flush()
+    _live_line_len = 0
 
 
 def decode_rs02_feedback_bytes(data: bytes) -> dict:
@@ -227,8 +282,10 @@ def serial_rx_thread(ser: serial.Serial, reader: FrameReader, stop: threading.Ev
                 reader.feed(chunk)
             else:
                 time.sleep(0.001)
-    except (serial.SerialException, OSError):
-        pass
+    except Exception:
+        import traceback
+
+        traceback.print_exc()
 
 
 def list_serial_ports() -> None:
@@ -331,21 +388,114 @@ class SessionStats:
     tick_stalls: int = 0
 
 
+@dataclass
+class VbusPollState:
+    volts: Optional[float] = None
+    last_request_mono: float = 0.0
+    request_pending_mono: Optional[float] = None
+
+
+@dataclass
+class MotorTeleopState:
+    motor_id: int
+    cmd_position: float = 0.0
+    feedback_synced: bool = False
+    active_kp: float = 0.0
+    last_probe: Optional[dict] = None
+
+    def sync_kp(self, kp: float) -> None:
+        self.active_kp = kp if self.feedback_synced else 0.0
+
+
+def maybe_send_vbus_pararead(
+    ser: serial.Serial,
+    motor_id: int,
+    seq: int,
+    state: VbusPollState,
+    allow: bool,
+) -> int:
+    """Fire comm 0x11 pararead for VBUS without blocking the teleop ctrl stream."""
+    if not allow:
+        return seq
+    now = time.monotonic()
+    if state.request_pending_mono is not None:
+        if now - state.request_pending_mono > VBUS_POLL_TIMEOUT_S:
+            state.request_pending_mono = None
+        return seq
+    if now - state.last_request_mono < VBUS_POLL_INTERVAL_S:
+        return seq
+    ser.write(
+        build_rs2_probe_command(motor_id & 0xFF, PROBE_PARAREAD, seq, PARAM_BUS_VOLT)
+    )
+    ser.flush()
+    state.last_request_mono = now
+    state.request_pending_mono = now
+    return (seq + 1) & 0xFFFFFFFF
+
+
+def poll_rs2_reader(
+    reader: FrameReader,
+    motor_id: int,
+    last_probe: Optional[dict],
+    vbus: VbusPollState,
+) -> Optional[dict]:
+    """Drain USB feedback; update move telemetry and any pending VBUS pararead reply."""
+    motor = MotorTeleopState(motor_id & 0xFF, last_probe=last_probe)
+    poll_rs2_reader_all(reader, [motor], vbus)
+    return motor.last_probe
+
+
+def poll_rs2_reader_all(
+    reader: FrameReader,
+    motors: List[MotorTeleopState],
+    vbus: VbusPollState,
+) -> List[MotorTeleopState]:
+    """Drain USB feedback and route probe PDU rows to the matching motor_id."""
+    by_id = {m.motor_id & 0xFF: m for m in motors}
+    frame = reader.pop()
+    while frame is not None:
+        parsed = parse_probe_pdu(frame)
+        if parsed is not None:
+            mid = parsed.get("probe_id", 0) & 0xFF
+            target = by_id.get(mid)
+            if target is not None:
+                if (
+                    parsed.get("probe_kind") == PROBE_PARAREAD
+                    and pararead_is_hit(parsed, PARAM_BUS_VOLT)
+                ):
+                    vbus.volts = parsed["position"]
+                    vbus.request_pending_mono = None
+                else:
+                    fb = parse_feedback_image(frame)
+                    probe = dict(parsed)
+                    if fb is not None:
+                        probe["ack"] = fb["last_cmd_seq"]
+                    target.last_probe = probe
+                    decoded = decode_rs02_feedback_bytes(probe["can_data"])
+                    if not target.feedback_synced and not decoded["payload_empty"]:
+                        target.feedback_synced = True
+                        target.cmd_position = decoded["position"]
+        frame = reader.pop()
+    return motors
+
+
 def rs2_read_param(
     ser: serial.Serial,
     reader: FrameReader,
     motor_id: int,
     param_index: int,
     seq: int,
+    timeout_s: float = 0.8,
+    bus: int = 1,
 ) -> tuple[int, Optional[dict], Optional[dict]]:
     """Return (next_seq, pararead_reply_or_None, last_sniff_or_None)."""
     reader.drain()
-    buf = build_rs2_probe_command(motor_id, PROBE_PARAREAD, seq, param_index)
+    buf = build_rs2_probe_command(motor_id, PROBE_PARAREAD, seq, param_index, bus=bus)
     ser.write(buf)
     ser.flush()
     resp: Optional[dict] = None
     sniff: Optional[dict] = None
-    deadline = time.monotonic() + 0.8
+    deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         frame = reader.pop()
         while frame is not None:
@@ -426,6 +576,7 @@ def run_calibrate(
     cal_timeout_s: float,
     kp: float,
     kd: float,
+    bus: int = 1,
 ) -> None:
     reader = FrameReader()
     stop = threading.Event()
@@ -433,9 +584,11 @@ def run_calibrate(
 
     seq = 1
     motor_id &= 0xFF
+    bus = normalize_can_bus(bus)
     cal_timeout_s = max(5.0, cal_timeout_s)
 
-    print(f"RS2 encoder cal on {ser.port}  motor=0x{motor_id:02X}")
+    print(f"RS2 encoder cal on {ser.port}  {probe_target_label(motor_id, bus)}")
+    print_can_bus_note(bus)
     print("Requires firmware with PROBE_CALI/ZERO/DATA_SAVE (kinds 16-18). Reflash MCU after pull.")
     print("Safety: 48 V supply, shaft free to rotate, nothing on the output.")
     print(f"Steps: comm 0x05 cali (up to {cal_timeout_s:.0f}s) → 0x06 zero → 0x16 save → verify.")
@@ -449,57 +602,69 @@ def run_calibrate(
 
     try:
         seq = rs2_begin_session(ser, reader, motor_id, seq)
-        seq = rs2_wake_motor(ser, reader, motor_id, seq, steps=RS2_WAKE_STEPS_PARAMS)
+        seq = rs2_wake_motor(ser, reader, motor_id, seq, steps=RS2_WAKE_STEPS_PARAMS, bus=bus)
 
         print("--- enter running (ctrl burst before cal) ---")
-        seq, running = rs2_prime_running(ser, reader, motor_id, seq, kp, kd)
+        seq, running = rs2_prime_running(ser, reader, motor_id, seq, kp, kd, bus=bus)
         if running:
             print("  mms=running — motor enabled for cal")
         else:
             print("  warning: never saw mms=running (cal may still work if shaft is free)")
         print()
 
-        print(f"--- motor_cali comm 0x05 (sequential chunks, {CALI_CHUNK_S:.0f}s MCU / chunk) ---")
-        cal_attempts = max(1, int(math.ceil(cal_timeout_s / CALI_CHUNK_S)))
-        per_probe_timeout = CALI_CHUNK_S + 10.0
+        print(f"--- motor_cali comm 0x05 (listen {cal_timeout_s:.0f}s on MCU — shaft must spin) ---")
+        cal_listen_s = max(10, int(cal_timeout_s))
+        resp = send_diag(
+            ser, reader, motor_id, PROBE_CALI, seq, cal_listen_s + 15.0, cal_listen_s, bus=bus
+        )
+        seq += 1
         saw_cali_mode = False
-        saw_cal_rx = False
-        for attempt in range(cal_attempts):
-            label = f"motor_cali[{attempt + 1}/{cal_attempts}]" if cal_attempts > 1 else "motor_cali"
-            resp = send_diag(ser, reader, motor_id, PROBE_CALI, seq, per_probe_timeout)
-            seq += 1
-            if resp is None:
-                print(f"  ----  {label:<32s}  (no USB feedback)")
-                print("  stopped cal retries — MCU still busy (prior probe?) or reflash kinds 16-18")
-                break
-            if resp.get("found"):
-                saw_cal_rx = True
-                ext = decode_ext_id(resp["ext_id"])
-                mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
-                if ext.mode_status == 1:
-                    saw_cali_mode = True
-                print(format_probe_line(label, motor_id, resp))
-                print(f"         mms={mms}  can_data={resp['can_data'].hex()}  rx={resp.get('raw_frames', 0)}")
-                if saw_cali_mode:
-                    print("         saw mms=cali — encoder cal in progress")
-                    break
-            else:
-                print(format_probe_line(label, motor_id, resp))
-            time.sleep(0.15)
-        if not saw_cal_rx:
-            print("  no ext-CAN RX during cal chunks — check 48 V and firmware kinds 16-18")
-        elif not saw_cali_mode:
+        saw_running_after = False
+        if resp is None:
+            print("  ----  motor_cali  (no USB feedback)")
+            print("  stopped — MCU busy or reflash firmware with cal listen fix")
+        elif resp.get("found"):
+            ext = decode_ext_id(resp["ext_id"])
+            mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
+            if ext.mode_status == 1:
+                saw_cali_mode = True
+            if ext.mode_status == 2:
+                saw_running_after = True
+            print(format_probe_line("motor_cali", motor_id, resp))
+            print(f"         mms={mms}  can_data={resp['can_data'].hex()}  rx={resp.get('raw_frames', 0)}")
+        else:
+            print(format_probe_line("motor_cali", motor_id, resp))
+
+        if saw_cali_mode and not saw_running_after:
+            print("  waiting for mms=running after cal (poll enable, do not zero yet)...")
+            deadline = time.monotonic() + max(15.0, cal_timeout_s)
+            while time.monotonic() < deadline:
+                resp = send_diag(ser, reader, motor_id, PROBE_ENABLE_ONLY, seq, 0.6, bus=bus)
+                seq += 1
+                if resp and resp.get("found"):
+                    ext = decode_ext_id(resp["ext_id"])
+                    if ext.mode_status == 2:
+                        saw_running_after = True
+                        print(format_probe_line("post_cal enable", motor_id, resp))
+                        break
+                time.sleep(0.5)
+            if not saw_running_after:
+                print("  still not mms=running — power-cycle motor, run --recovery, retry cal")
+
+        if not resp or not resp.get("found"):
+            print("  no ext-CAN RX during cal — check 48 V and firmware kinds 16-18")
+        elif not saw_cali_mode and not saw_running_after:
             print("  motor never reported mms=cali — 0x05 may not have started encoder cal")
         print()
 
         print("--- motor_zero comm 0x06 ---")
-        resp = send_diag(ser, reader, motor_id, PROBE_ZERO, seq, 4.0)
+        resp = send_diag(ser, reader, motor_id, PROBE_ZERO, seq, 4.0, bus=bus)
         seq += 1
         print(format_probe_line("motor_zero", motor_id, resp))
         print()
 
         print("--- data_save comm 0x16 ---")
-        resp = send_diag(ser, reader, motor_id, PROBE_DATA_SAVE, seq, 5.0)
+        resp = send_diag(ser, reader, motor_id, PROBE_DATA_SAVE, seq, 5.0, bus=bus)
         seq += 1
         print(format_probe_line("data_save", motor_id, resp))
         print()
@@ -507,7 +672,7 @@ def run_calibrate(
         print("--- pararead verify ---")
         got_pararead = False
         for label, index in verify_reads:
-            seq, resp, sniff = rs2_read_param(ser, reader, motor_id, index, seq)
+            seq, resp, sniff = rs2_read_param(ser, reader, motor_id, index, seq, bus=bus)
             time.sleep(0.12)
             if resp is None:
                 line = f"  {label}: no comm=0x11 pararead reply"
@@ -560,12 +725,6 @@ def run_nudge_test(ser: serial.Serial, motor_id: int, kp: float, kd: float) -> N
 
     seq = 1
     motor_id &= 0xFF
-    targets = (
-        ("hold zero", 0.0, 1.0),
-        ("step +0.05 rad", 0.05, 1.0),
-        ("step +0.10 rad", 0.10, 1.0),
-        ("back to zero", 0.0, 1.0),
-    )
     best_p_raw = 0
     any_nonzero_data = False
 
@@ -578,12 +737,42 @@ def run_nudge_test(ser: serial.Serial, motor_id: int, kp: float, kd: float) -> N
         seq = rs2_begin_session(ser, reader, motor_id, seq)
         seq = rs2_wake_motor(ser, reader, motor_id, seq)
 
+        shaft_pos, _ = rs2_sync_cmd_from_feedback(reader)
+        if shaft_pos == 0.0:
+            print("  warning: could not read shaft position — relative steps from 0 rad")
+        else:
+            print(f"  shaft at {shaft_pos:+.4f} rad — nudge steps are relative to here")
+        print()
+
+        targets = (
+            ("hold at shaft", shaft_pos, 1.0),
+            ("step +0.05 rad", shaft_pos + 0.05, 1.0),
+            ("step +0.10 rad", shaft_pos + 0.10, 1.0),
+            ("back to shaft", shaft_pos, 1.0),
+        )
         for label, position, hold_s in targets:
             print(f"--- {label} (pos={position:+.3f} rad, {hold_s:.0f}s) ---")
             deadline = time.monotonic() + hold_s
             last_hex = "0000000000000000"
+            fault_announced = False
             while time.monotonic() < deadline:
-                seq = rs2_send_ctrl_frame(ser, motor_id, position, kp, kd, seq)
+                hold_pos = position
+                hold_kp = kp
+                probe = latest_probe_feedback(reader)
+                if probe is not None:
+                    ext = decode_ext_id(probe["ext_id"])
+                    if ext.faults:
+                        decoded = decode_rs02_feedback_bytes(probe["can_data"])
+                        if not decoded["payload_empty"]:
+                            hold_pos = decoded["position"]
+                        hold_kp = min(kp, 3.0)
+                        if not fault_announced:
+                            print(
+                                f"  fault {ext.faults} — holding at fb={hold_pos:+.4f} "
+                                f"with reduced kp={hold_kp:.1f}"
+                            )
+                            fault_announced = True
+                seq = rs2_send_ctrl_frame(ser, motor_id, hold_pos, hold_kp, kd, seq)
                 probe = latest_probe_feedback(reader)
                 if probe is not None:
                     decoded = decode_rs02_feedback_bytes(probe["can_data"])
@@ -594,7 +783,8 @@ def run_nudge_test(ser: serial.Serial, motor_id: int, kp: float, kd: float) -> N
                         best_p_raw = decoded["p_raw"]
                     ext = decode_ext_id(probe["ext_id"])
                     mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
-                    print(f"  mms={mms}  {format_payload_line(decoded)}")
+                    fault_s = ",".join(ext.faults) if ext.faults else "none"
+                    print(f"  mms={mms}  faults=[{fault_s}]  {format_payload_line(decoded)}")
                 rs2_ctrl_sleep(RS2_NUDGE_HZ)
 
         print()
@@ -608,6 +798,65 @@ def run_nudge_test(ser: serial.Serial, motor_id: int, kp: float, kd: float) -> N
     finally:
         rs2_end_session(ser, reader, motor_id, seq)
         stop.set()
+
+
+def rs2_sync_cmd_from_feedback(reader: FrameReader) -> Tuple[float, Optional[dict]]:
+    """Align command position with shaft so wake/full_init does not fight a ~6 rad offset."""
+    deadline = time.monotonic() + 0.6
+    while time.monotonic() < deadline:
+        probe = latest_probe_feedback(reader)
+        if probe is not None and probe.get("found"):
+            decoded = decode_rs02_feedback_bytes(probe["can_data"])
+            if not decoded["payload_empty"]:
+                return decoded["position"], probe
+        time.sleep(0.01)
+    return 0.0, None
+
+
+def rs2_sync_cmd_for_motor(reader: FrameReader, motor_id: int, timeout_s: float = 0.6) -> Tuple[float, Optional[dict]]:
+    """Sync cmd_pos to one motor's comm=0x02 feedback (required on a multi-motor bus)."""
+    motor_id &= 0xFF
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        frame = reader.pop()
+        while frame is not None:
+            parsed = parse_probe_pdu(frame)
+            if parsed is not None and (parsed.get("probe_id", 0) & 0xFF) == motor_id:
+                decoded = decode_rs02_feedback_bytes(parsed["can_data"])
+                if not decoded["payload_empty"]:
+                    return decoded["position"], parsed
+            frame = reader.pop()
+        time.sleep(0.01)
+    return 0.0, None
+
+
+def rs2_init_motor_teleop_state(
+    reader: FrameReader,
+    motor_id: int,
+    kp: float,
+) -> MotorTeleopState:
+    motor = MotorTeleopState(motor_id & 0xFF)
+    synced_pos, sync_probe = rs2_sync_cmd_for_motor(reader, motor.motor_id)
+    if sync_probe is not None:
+        decoded = decode_rs02_feedback_bytes(sync_probe["can_data"])
+        if not decoded["payload_empty"]:
+            motor.feedback_synced = True
+            motor.cmd_position = synced_pos
+            motor.last_probe = sync_probe
+            motor.sync_kp(kp)
+            ext = decode_ext_id(sync_probe["ext_id"])
+            mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
+            fault_s = ",".join(ext.faults) if ext.faults else "none"
+            print(
+                f"  0x{motor.motor_id:02X} synced cmd_pos to shaft  fb={synced_pos:+.4f} rad  "
+                f"mms={mms}  faults=[{fault_s}]"
+            )
+        else:
+            print(f"  0x{motor.motor_id:02X}  feedback envelope OK but payload empty")
+    else:
+        print(f"  0x{motor.motor_id:02X}  no position feedback — kp=0 until sync")
+    motor.sync_kp(kp)
+    return motor
 
 
 def rs2_begin_session(ser: serial.Serial, reader: FrameReader, motor_id: int, seq: int) -> int:
@@ -627,10 +876,11 @@ def rs2_prime_running(
     kd: float,
     bursts: int = 25,
     hz: float = 25.0,
+    bus: int = 1,
 ) -> tuple[int, bool]:
     """Ctrl burst until ext-CAN mode_status=running (needed before encoder cal on some RS02)."""
     for _ in range(bursts):
-        seq = rs2_send_ctrl_frame(ser, motor_id, 0.0, kp, kd, seq)
+        seq = rs2_send_ctrl_frame(ser, motor_id, 0.0, kp, kd, seq, bus=bus)
         probe = latest_probe_feedback(reader)
         if probe is not None:
             ext = decode_ext_id(probe["ext_id"])
@@ -644,23 +894,46 @@ def rs2_end_session(ser: serial.Serial, reader: FrameReader, motor_id: int, seq:
     send_diag(ser, reader, motor_id, SESSION_END, seq, 0.35)
 
 
+def rs2_stop_motor(
+    ser: serial.Serial,
+    reader: FrameReader,
+    motor_id: int,
+    seq: int,
+    hold_position: float = 0.0,
+    frames: int = 12,
+    hz: float = 40.0,
+) -> int:
+    """Zero-gain hold then comm 0x04 reset — de-energize after teleop."""
+    for _ in range(frames):
+        seq = rs2_send_ctrl_frame(ser, motor_id, hold_position, 0.0, 0.0, seq, 0.0)
+        rs2_ctrl_sleep(hz)
+    send_diag(ser, reader, motor_id, PROBE_RESET, seq, 0.55)
+    return (seq + 1) & 0xFFFFFFFF
+
+
 def rs2_wake_motor(
     ser: serial.Serial,
     reader: FrameReader,
     motor_id: int,
     seq: int,
     steps: tuple[tuple[int, float], ...] = RS2_WAKE_STEPS,
+    bus: int = 1,
 ) -> int:
-    print(f"RS2 wake motor 0x{motor_id:02X} (reset → enable-only → full_init)...")
+    print(f"RS2 wake motor 0x{motor_id:02X} on {can_bus_label(bus)} (reset → enable-only → full_init)...")
+    last_resp: Optional[dict] = None
     for kind, timeout in steps:
-        resp = send_diag(ser, reader, motor_id, kind, seq, timeout)
+        resp = send_diag(ser, reader, motor_id, kind, seq, timeout, bus=bus)
         seq += 1
+        if resp is not None:
+            last_resp = resp
         if resp is not None and resp.get("found"):
             ext = decode_ext_id(resp["ext_id"])
             mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
+            fault_s = ",".join(ext.faults) if ext.faults else "none"
             print(
                 f"  kind={kind:2d}  HIT  ext=0x{resp['ext_id']:08X}  "
-                f"mms={mms}  T={resp['temperature']:.1f}C  pos={resp['position']:+.4f}"
+                f"mms={mms}  faults=[{fault_s}]  "
+                f"T={resp['temperature']:.1f}C  pos={resp['position']:+.4f}"
             )
         elif resp is not None:
             kind_name = {11: "reset", 12: "enable-only", 0: "full_init", 15: "proactive_on"}.get(kind, str(kind))
@@ -668,6 +941,15 @@ def rs2_wake_motor(
         else:
             print(f"  kind={kind:2d}  (no USB feedback)")
         time.sleep(0.12)
+    if last_resp is not None and last_resp.get("found"):
+        ext = decode_ext_id(last_resp["ext_id"])
+        mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
+        if mms != "running" or ext.faults:
+            print(
+                "  WARNING: wake finished with "
+                f"mms={mms} faults=[{','.join(ext.faults) or 'none'}] — "
+                "motion may not work; run rs02_can_scan.py --recovery first."
+            )
     print()
     return seq
 
@@ -680,6 +962,7 @@ def rs2_send_ctrl_frame(
     kd: float,
     seq: int,
     velocity: float = 0.0,
+    bus: int = 1,
 ) -> int:
     """One RS2 PROBE_CTRL_FAST → comm 0x01 MOTOR_CTRL on 29-bit extended CAN."""
     motor_id &= 0xFF
@@ -694,6 +977,7 @@ def rs2_send_ctrl_frame(
             kd,
             0.0,
             seq,
+            bus=bus,
         )
     )
     ser.flush()
@@ -743,12 +1027,364 @@ def format_rs2_line(
     )
 
 
+@dataclass
+class PlantSlotTeleop:
+    slot: int
+    fdcan_bus: int
+    motor_id: int
+    max_kp: float
+    cmd_position: float = 0.0
+    cmd_velocity: float = 0.0
+    kp: float = 0.0
+    feedback_synced: bool = False
+    fb_position: float = 0.0
+    fb_velocity: float = 0.0
+
+    def label(self) -> str:
+        return f"slot{self.slot} {can_bus_label(self.fdcan_bus)} 0x{self.motor_id:02X} kp<={self.max_kp:.0f}"
+
+
+def plant_poll_feedback(reader: FrameReader, slot_states: List[PlantSlotTeleop]) -> None:
+    frame = reader.pop()
+    while frame is not None:
+        for st in slot_states:
+            fb = parse_actuator_feedback(frame, slot=st.slot)
+            if fb is not None:
+                st.fb_position = fb["position"]
+                st.fb_velocity = fb["velocity"]
+                if not st.feedback_synced:
+                    st.cmd_position = fb["position"]
+                    st.feedback_synced = True
+        frame = reader.pop()
+
+
+def plant_send_slots(
+    ser: serial.Serial,
+    cmd_seq: int,
+    slot_states: List[PlantSlotTeleop],
+    kd: float,
+) -> int:
+    slot_commands = {
+        st.slot: (st.cmd_position, st.cmd_velocity, st.kp, kd, 0.0) for st in slot_states
+    }
+    ser.write(build_plant_command(cmd_seq, slot_commands))
+    ser.flush()
+    return (cmd_seq + 1) & 0xFFFFFFFF
+
+
+def plant_home_to_zero(
+    ser: serial.Serial,
+    reader: FrameReader,
+    slot_states: List[PlantSlotTeleop],
+    cmd_seq: int,
+    dt: float,
+    send_hz: float,
+    kd: float,
+    home_kp: float,
+    home_slew: float,
+    pos_tol: float,
+    vel_tol: float,
+    timeout_s: float,
+) -> Tuple[int, bool]:
+    """Slew each slot's position setpoint to 0 before velocity teleop."""
+    active = [st for st in slot_states if st.feedback_synced]
+    if not active:
+        print("Homing skipped: no feedback yet.")
+        return cmd_seq, False
+
+    for st in active:
+        if abs(st.cmd_position - PLANT_HOME_TARGET) <= pos_tol:
+            st.cmd_position = PLANT_HOME_TARGET
+            st.kp = 0.0
+
+    print(
+        f"Homing to {PLANT_HOME_TARGET:+.2f} rad "
+        f"(slew {home_slew:.2f} rad/s, kp={home_kp:.1f}) — hold still, q aborts"
+    )
+    deadline = time.monotonic() + timeout_s
+    dwell_s = 0.0
+    line_n = 0
+    aborted = False
+    cmd_eps = max(1e-4, pos_tol * 0.1)
+
+    while time.monotonic() < deadline:
+        if poll_key_nonblocking() == "q":
+            aborted = True
+            break
+
+        slew_done = True
+        for st in active:
+            delta = PLANT_HOME_TARGET - st.cmd_position
+            step = home_slew * dt
+            if abs(delta) <= step:
+                st.cmd_position = PLANT_HOME_TARGET
+            else:
+                st.cmd_position += math.copysign(step, delta)
+                slew_done = False
+            st.cmd_position = max(P_MIN, min(P_MAX, st.cmd_position))
+            st.cmd_velocity = 0.0
+            at_cmd = abs(st.cmd_position - PLANT_HOME_TARGET) <= cmd_eps
+            st.kp = 0.0 if at_cmd else home_kp
+            if not at_cmd:
+                slew_done = False
+
+        cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
+        plant_poll_feedback(reader, slot_states)
+
+        if slew_done:
+            dwell_s += dt
+        else:
+            dwell_s = 0.0
+
+        line_n += 1
+        if line_n % max(1, int(send_hz / 3)) == 0:
+            parts = []
+            for st in active:
+                parts.append(
+                    f"{st.slot}:cmd={st.cmd_position:+.3f} fb={st.fb_position:+.3f} v={st.fb_velocity:+.2f}"
+                )
+            write_live_line("home  " + "  ".join(parts))
+
+        if slew_done and dwell_s >= PLANT_HOME_DWELL_S:
+            break
+        time.sleep(dt)
+
+    for st in slot_states:
+        st.cmd_position = PLANT_HOME_TARGET
+        st.cmd_velocity = 0.0
+        st.kp = 0.0
+
+    for _ in range(max(6, int(send_hz * 0.25))):
+        cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
+        plant_poll_feedback(reader, slot_states)
+        time.sleep(dt)
+
+    print()
+    for st in active:
+        print(
+            f"  homed {st.label()}  fb={st.fb_position:+.4f} rad  "
+            f"({'ok' if abs(st.fb_position) <= pos_tol else 'off-zero — check limits'})"
+        )
+    if aborted:
+        print("Homing aborted (q).")
+    elif dwell_s < PLANT_HOME_DWELL_S:
+        print(f"Homing timed out after {timeout_s:.0f}s — continuing at best effort.")
+    else:
+        print("Homing complete — arrow keys enabled.")
+    print()
+    return cmd_seq, aborted
+
+
+def plant_sync_feedback(
+    reader: FrameReader,
+    slot_states: List[PlantSlotTeleop],
+    dwell_s: float = 2.5,
+) -> None:
+    """Read actuator_feedback slots until each has a position (kp stays 0)."""
+    deadline = time.monotonic() + dwell_s
+    while time.monotonic() < deadline:
+        frame = reader.pop()
+        while frame is not None:
+            for st in slot_states:
+                fb = parse_actuator_feedback(frame, slot=st.slot)
+                if fb is not None:
+                    st.cmd_position = fb["position"]
+                    st.fb_position = fb["position"]
+                    st.fb_velocity = fb["velocity"]
+                    st.feedback_synced = True
+            frame = reader.pop()
+        if all(st.feedback_synced for st in slot_states):
+            break
+        time.sleep(0.02)
+    for st in slot_states:
+        if st.feedback_synced:
+            print(f"  synced {st.label()}  pos={st.cmd_position:+.4f} rad")
+        else:
+            print(f"  warning: no feedback for {st.label()} — kp=0 until sync")
+
+
+def run_plant_teleop(
+    ser: serial.Serial,
+    send_hz: float,
+    kd: float,
+    slots: List[int],
+    arrow_vel: float,
+    ramp_down_s: float,
+    ramp_up_s: float,
+    slot_kp: Tuple[float, ...] = PLANT_SLOT_KP,
+    move_all: bool = True,
+    skip_home: bool = False,
+    home_kp: float = PLANT_HOME_KP,
+    home_slew: float = PLANT_HOME_SLEW_RAD_S,
+    home_pos_tol: float = PLANT_HOME_POS_TOL,
+    home_vel_tol: float = PLANT_HOME_VEL_TOL,
+    home_timeout_s: float = PLANT_HOME_TIMEOUT_S,
+) -> None:
+    """500 Hz actuator_commands[] — all slots in one 562 B frame (no RS2 PDU)."""
+    reader = FrameReader()
+    stop = threading.Event()
+    threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
+
+    slot_states: List[PlantSlotTeleop] = []
+    for slot in slots:
+        if slot < 0 or slot >= len(PLANT_ACTUATOR_TABLE):
+            print(f"Invalid plant slot {slot} (need 0..{len(PLANT_ACTUATOR_TABLE) - 1})", file=sys.stderr)
+            sys.exit(2)
+        fdcan_bus, motor_id = PLANT_ACTUATOR_TABLE[slot]
+        max_kp = slot_kp[slot] if slot < len(slot_kp) else slot_kp[-1]
+        slot_states.append(
+            PlantSlotTeleop(
+                slot=slot,
+                fdcan_bus=fdcan_bus,
+                motor_id=motor_id,
+                max_kp=max_kp,
+                kp=0.0,
+            )
+        )
+
+    active_idx = 0
+    cmd_seq = 1
+    dt = 1.0 / max(send_hz, 0.1)
+    vel_stop = 0.08
+    fb_line = 0
+
+    print(f"Plant teleop on {ser.port} @ {send_hz:.0f} Hz  (all slots per frame, MCU 500 Hz CAN)")
+    for st in slot_states:
+        print(f"  {st.label()}")
+    print(
+        f"Motion: vel ±{arrow_vel:.1f} rad/s  ramp_up={ramp_up_s:.2f}s  ramp_down={ramp_down_s:.2f}s  kd={kd:.2f}"
+    )
+    print("Motors must be woken (probe/recovery once per branch). Auto-homes to 0.00 before teleop.")
+    print("  Left / Right     velocity ({})".format("all slots" if move_all else "active slot only"))
+    print("  1-4              select active slot (when not move-all)")
+    print("  a                toggle move-all-slots")
+    print("  r                re-sync cmd_pos from feedback + stop velocity")
+    print("  q                quit")
+    print()
+    print("Syncing feedback...")
+    reader.drain()
+    for _ in range(max(4, int(send_hz * 0.5))):
+        ser.write(build_plant_command(cmd_seq, {}))
+        ser.flush()
+        cmd_seq = (cmd_seq + 1) & 0xFFFFFFFF
+        time.sleep(dt)
+        plant_poll_feedback(reader, slot_states)
+    plant_sync_feedback(reader, slot_states, dwell_s=1.0)
+    print()
+
+    if not skip_home:
+        cmd_seq, home_aborted = plant_home_to_zero(
+            ser,
+            reader,
+            slot_states,
+            cmd_seq,
+            dt,
+            send_hz,
+            kd,
+            home_kp,
+            home_slew,
+            home_pos_tol,
+            home_vel_tol,
+            home_timeout_s,
+        )
+        if home_aborted:
+            stop.set()
+            return
+
+    try:
+        while True:
+            quit_requested = False
+            motion_dir = poll_arrow_direction()
+            while True:
+                key = poll_key_nonblocking()
+                if key is None:
+                    break
+                if key == "q":
+                    quit_requested = True
+                    break
+                if key == "a":
+                    move_all = not move_all
+                    write_live_notice(f"move-all: {'ON' if move_all else 'OFF'}")
+                elif key == "r":
+                    reader.drain()
+                    for st in slot_states:
+                        st.cmd_velocity = 0.0
+                        st.kp = 0.0
+                    plant_sync_feedback(reader, slot_states, dwell_s=0.5)
+                    write_live_notice("re-synced all slots; velocity cleared")
+                elif key in ("1", "2", "3", "4"):
+                    pick = int(key) - 1
+                    if any(s.slot == pick for s in slot_states):
+                        active_idx = next(i for i, s in enumerate(slot_states) if s.slot == pick)
+                        write_live_notice(f"active: {slot_states[active_idx].label()}")
+                elif key in ("left", "l"):
+                    motion_dir = -1
+                elif key in ("right", "o"):
+                    motion_dir = 1
+            if quit_requested:
+                break
+
+            targets = slot_states if move_all else [slot_states[active_idx]]
+            for st in targets:
+                if motion_dir != 0:
+                    target_vel = motion_dir * abs(arrow_vel)
+                    alpha = 1.0 - math.exp(-dt / max(ramp_up_s, 0.05))
+                    st.cmd_velocity += (target_vel - st.cmd_velocity) * alpha
+                else:
+                    st.cmd_velocity *= math.exp(-dt / max(ramp_down_s, 0.05))
+                if abs(st.cmd_velocity) < vel_stop:
+                    st.cmd_velocity = 0.0
+                if not st.feedback_synced:
+                    st.kp = 0.0
+                elif abs(st.cmd_velocity) < vel_stop:
+                    st.kp = 0.0
+                else:
+                    st.kp = st.max_kp
+
+            for st in slot_states:
+                if abs(st.cmd_velocity) >= vel_stop:
+                    st.cmd_position = max(
+                        P_MIN, min(P_MAX, st.cmd_position + st.cmd_velocity * dt)
+                    )
+
+            cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
+            plant_poll_feedback(reader, slot_states)
+
+            fb_line += 1
+            if fb_line % max(1, int(send_hz / 4)) == 0:
+                parts = []
+                for i, st in enumerate(slot_states):
+                    mark = "*" if (not move_all and i == active_idx) or move_all else " "
+                    parts.append(
+                        f"{mark}{st.slot}:v={st.cmd_velocity:+.1f} kp={st.kp:.0f} "
+                        f"cmd={st.cmd_position:+.3f} fb={st.fb_position:+.3f}"
+                    )
+                write_live_line("  ".join(parts))
+
+            time.sleep(dt)
+    except KeyboardInterrupt:
+        print("\nStopping plant teleop...")
+    finally:
+        for st in slot_states:
+            st.cmd_velocity = 0.0
+            st.kp = 0.0
+        for _ in range(max(8, int(send_hz * ramp_down_s))):
+            cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
+            time.sleep(dt)
+        ser.write(build_plant_command(cmd_seq, {}))
+        ser.flush()
+        stop.set()
+        print("Done.")
+
+
 def run_rs2_monitor(
     ser: serial.Serial,
     send_hz: float,
     kp: float,
     kd: float,
     motor_id: int,
+    wake_steps: tuple[tuple[int, float], ...] = RS2_WAKE_STEPS,
+    skip_wake: bool = False,
 ) -> None:
     reader = FrameReader()
     stop = threading.Event()
@@ -760,7 +1396,26 @@ def run_rs2_monitor(
     last_probe: Optional[dict] = None
 
     cmd_seq = rs2_begin_session(ser, reader, motor_id, cmd_seq)
-    cmd_seq = rs2_wake_motor(ser, reader, motor_id, cmd_seq)
+    if not skip_wake:
+        cmd_seq = rs2_wake_motor(ser, reader, motor_id, cmd_seq, steps=wake_steps)
+    else:
+        print("RS2 wake skipped (--skip-wake); motor should already be mms=running.")
+        print()
+
+    synced_pos, sync_probe = rs2_sync_cmd_from_feedback(reader)
+    if sync_probe is not None:
+        cmd_position = synced_pos
+        last_probe = sync_probe
+        ext = decode_ext_id(sync_probe["ext_id"])
+        mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
+        fault_s = ",".join(ext.faults) if ext.faults else "none"
+        print(
+            f"  synced cmd_pos to shaft  fb={synced_pos:+.4f} rad  "
+            f"mms={mms}  faults=[{fault_s}]"
+        )
+    else:
+        print("  warning: no feedback to sync cmd_pos — starting at 0 rad (may fight shaft)")
+    print()
 
     print(f"RS2 monitor on {ser.port} @ {send_hz:.0f} Hz  motor=0x{motor_id:02X}  (Ctrl+C to stop)")
     print("ack = low 8 bits of command seq (wraps 255→0). cmd trails ack by ~1 frame.")
@@ -792,32 +1447,56 @@ def run_rs2_teleop(
     send_hz: float,
     kp: float,
     kd: float,
-    motor_id: int,
+    motor_ids: List[int],
     pos_step: float,
     arrow_vel: float,
     ramp_down_s: float,
     ramp_up_s: float,
+    wake_steps: tuple[tuple[int, float], ...] = RS2_WAKE_STEPS,
+    skip_wake: bool = False,
+    vbus_poll: bool = False,
 ) -> None:
     reader = FrameReader()
     stop = threading.Event()
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
 
-    cmd_position = 0.0
+    motor_ids = [int(m) & 0xFF for m in motor_ids]
+    multi = len(motor_ids) > 1
     cmd_velocity = 0.0
     cmd_seq = 1
-    last_probe: Optional[dict] = None
+    round_robin = 0
 
-    cmd_seq = rs2_begin_session(ser, reader, motor_id, cmd_seq)
-    cmd_seq = rs2_wake_motor(ser, reader, motor_id, cmd_seq)
+    session_id = motor_ids[0]
+    cmd_seq = rs2_begin_session(ser, reader, session_id, cmd_seq)
+    if not skip_wake:
+        for mid in motor_ids:
+            cmd_seq = rs2_wake_motor(ser, reader, mid, cmd_seq, steps=wake_steps)
+    else:
+        print("RS2 wake skipped (--skip-wake); motors should already be mms=running.")
+        print()
 
+    reader.drain()
+    motors: List[MotorTeleopState] = []
+    for mid in motor_ids:
+        motors.append(rs2_init_motor_teleop_state(reader, mid, kp))
+    if not any(m.feedback_synced for m in motors):
+        print(
+            "  warning: no position feedback on any motor — teleop uses kp=0 until sync. "
+            "Run --calibrate first or use --nudge --kp 10 to test."
+        )
     print()
-    print(f"RS2 arrow teleop  {ser.port}  motor=0x{motor_id:02X}  {send_hz:.0f} Hz  kp={kp}  kd={kd}")
-    print("Same CAN path as --nudge (PROBE_CTRL_FAST). Feedback not required.")
+
+    id_label = ",".join(f"0x{m:02X}" for m in motor_ids)
+    per_motor_hz = send_hz / len(motor_ids)
+    print(f"RS2 arrow teleop  {ser.port}  motor(s) {id_label}  {send_hz:.0f} Hz host loop")
+    if multi:
+        print(f"  Alternating PROBE_CTRL_FAST — ~{per_motor_hz:.1f} Hz per motor per cycle")
+    print("Same CAN path as --nudge (PROBE_CTRL_FAST).")
     print(
         f"  Left / Right     hold to move  vel ±{arrow_vel:.1f} rad/s (MOTOR_CTRL)  "
         f"coast {ramp_down_s:.2f}s on release"
     )
-    print(f"  r                command zero (immediate stop)")
+    print(f"  r                re-sync all motors to shaft + stop velocity")
     print(f"  q                quit")
     print()
     print("Focus this terminal window, then use arrow keys.")
@@ -826,6 +1505,7 @@ def run_rs2_teleop(
     try:
         dt = 1.0 / max(send_hz, 0.1)
         vel_stop = 0.12
+        vbus = VbusPollState()
         while True:
             quit_requested = False
             motion_dir = poll_arrow_direction()
@@ -837,7 +1517,16 @@ def run_rs2_teleop(
                     quit_requested = True
                     break
                 if key == "r":
-                    cmd_position = 0.0
+                    reader.drain()
+                    for motor in motors:
+                        sync_pos, sync_probe = rs2_sync_cmd_for_motor(reader, motor.motor_id)
+                        if sync_probe is not None:
+                            decoded = decode_rs02_feedback_bytes(sync_probe["can_data"])
+                            if not decoded["payload_empty"]:
+                                motor.cmd_position = sync_pos
+                                motor.feedback_synced = True
+                                motor.last_probe = sync_probe
+                                motor.sync_kp(kp)
                     cmd_velocity = 0.0
                     motion_dir = 0
                 elif key in ("left", "l"):
@@ -857,47 +1546,66 @@ def run_rs2_teleop(
                     cmd_velocity = 0.0
 
             cmd_velocity = max(V_MIN, min(V_MAX, cmd_velocity))
-            if abs(cmd_velocity) >= vel_stop:
-                cmd_position = max(P_MIN, min(P_MAX, cmd_position + cmd_velocity * dt))
-            elif motion_dir != 0:
-                cmd_position = max(P_MIN, min(P_MAX, cmd_position + motion_dir * pos_step))
+            for motor in motors:
+                if abs(cmd_velocity) >= vel_stop:
+                    motor.cmd_position = max(
+                        P_MIN, min(P_MAX, motor.cmd_position + cmd_velocity * dt)
+                    )
+                elif motion_dir != 0:
+                    motor.cmd_position = max(
+                        P_MIN, min(P_MAX, motor.cmd_position + motion_dir * pos_step)
+                    )
+
+            active = motors[round_robin % len(motors)]
+            round_robin += 1
+
+            cmd_seq = maybe_send_vbus_pararead(
+                ser, active.motor_id, cmd_seq, vbus, vbus_poll and motion_dir == 0
+            )
+            poll_rs2_reader_all(reader, motors, vbus)
+            for motor in motors:
+                motor.sync_kp(kp)
 
             cmd_seq = rs2_send_ctrl_frame(
-                ser, motor_id, cmd_position, kp, kd, cmd_seq, cmd_velocity
+                ser,
+                active.motor_id,
+                active.cmd_position,
+                active.active_kp,
+                kd,
+                cmd_seq,
+                cmd_velocity,
             )
-
-            probe = latest_probe_feedback(reader)
-            if probe is not None:
-                last_probe = probe
 
             coast = motion_dir == 0 and abs(cmd_velocity) >= vel_stop
             mode_s = "coast" if coast else ("drive" if motion_dir != 0 else "hold")
-            line = (
-                f"\r[live] {mode_s:5s}  cmd_pos {cmd_position:+.4f} rad  "
-                f"cmd_vel {cmd_velocity:+.2f}  seq {cmd_seq & 0xFF:3d}  | "
-            )
-            if last_probe is not None:
-                decoded = decode_rs02_feedback_bytes(last_probe["can_data"])
-                ext = decode_ext_id(last_probe["ext_id"])
-                mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
-                if decoded["payload_empty"]:
-                    line += f"mms={mms}  fb=n/a   "
+            parts = [
+                f"[live] {mode_s:5s} tx=0x{active.motor_id:02X} cmd_vel {cmd_velocity:+.2f} seq {cmd_seq & 0xFF:3d} |"
+            ]
+            for motor in motors:
+                tag = ">" if motor.motor_id == active.motor_id else " "
+                if motor.last_probe is not None:
+                    decoded = decode_rs02_feedback_bytes(motor.last_probe["can_data"])
+                    ext = decode_ext_id(motor.last_probe["ext_id"])
+                    mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
+                    if decoded["payload_empty"]:
+                        parts.append(f"{tag}0x{motor.motor_id:02X} mms={mms} fb=n/a")
+                    else:
+                        parts.append(
+                            f"{tag}0x{motor.motor_id:02X} fb={decoded['position']:+.3f} kp={motor.active_kp:.0f}"
+                        )
                 else:
-                    line += (
-                        f"mms={mms}  fb={decoded['position']:+.4f} rad  "
-                        f"T={last_probe['temperature']:.1f}C   "
-                    )
-            else:
-                line += "link=waiting...                    "
-            sys.stdout.write(line)
-            sys.stdout.flush()
+                    parts.append(f"{tag}0x{motor.motor_id:02X} waiting")
+            write_live_line("  ".join(parts))
 
             rs2_ctrl_sleep(send_hz)
     except KeyboardInterrupt:
         pass
     finally:
         print()
-        rs2_end_session(ser, reader, motor_id, cmd_seq)
+        print("Stopping motor(s) (kp=0 burst → reset)...")
+        for motor in motors:
+            cmd_seq = rs2_stop_motor(ser, reader, motor.motor_id, cmd_seq, motor.cmd_position)
+        rs2_end_session(ser, reader, session_id, cmd_seq)
         stop.set()
 
 
@@ -1058,14 +1766,17 @@ def main() -> None:
     ap.add_argument("--baud", type=int, default=USB_BAUD,
                     help="Baud for pyserial open (USB CDC ignores; default 115200)")
     ap.add_argument("--hz", type=float, default=DEFAULT_HZ, help="Command send rate (default 40)")
-    ap.add_argument("--kp", type=float, default=DEFAULT_KP)
+    ap.add_argument("--kp", type=float, default=DEFAULT_KP,
+                    help="RS02 MOTOR_CTRL kp (default 50)")
     ap.add_argument("--kd", type=float, default=DEFAULT_KD)
     ap.add_argument("--monitor", action="store_true",
                     help="Print one line per feedback frame (good first link check)")
     ap.add_argument("--legacy-actuator", action="store_true",
                     help="Actuator slot only — no RS2 PDU CAN path (bench link usually dead)")
     ap.add_argument("--motor-id", type=lambda x: int(x, 0), default=DEFAULT_MOTOR_ID,
-                    help="RobStride motor CAN ID (default 0x70)")
+                    help="RobStride motor CAN ID when --motor-ids not set (default 0x70)")
+    ap.add_argument("--motor-ids", default=None,
+                    help="Comma-separated IDs for alternating dual/multi teleop (e.g. 0x70,0x74)")
     ap.add_argument("--read-params", action="store_true",
                     help="Wake motor then read RS02 registers via comm 0x11 pararead")
     ap.add_argument("--pararead", type=lambda x: int(x, 0), action="append", default=[],
@@ -1074,6 +1785,30 @@ def main() -> None:
                     help="Small position steps to test feedback without hand-rotating the shaft")
     ap.add_argument("--calibrate", action="store_true",
                     help="Encoder cal (comm 0x05), zero (0x06), save (0x16) over Deft RS2 path")
+    ap.add_argument("--bus", type=int, default=1, choices=[1, 2, 3],
+                    help="Plant CAN branch for RS2 --calibrate (1=CH1, 2=CH2 PA8/PA15, 3=CH3 PB12/13)")
+    ap.add_argument("--plant-teleop", action="store_true",
+                    help="All 4 plant slots in one frame (CH1 0x70/0x74, CH2 0x73, CH3 0x75); gentle ramp defaults")
+    ap.add_argument("--plant-slots", default="0,1,2,3",
+                    help="Slot indices for --plant-teleop (default 0,1,2,3)")
+    ap.add_argument("--plant-kp", type=float, default=None,
+                    help="Override per-slot max kp scale for --plant-teleop (default RS02=12 RS01=8)")
+    ap.add_argument("--plant-arrow-vel", type=float, default=PLANT_DEFAULT_ARROW_VEL,
+                    help=f"Plant teleop velocity (rad/s, default {PLANT_DEFAULT_ARROW_VEL})")
+    ap.add_argument("--plant-ramp-up", type=float, default=PLANT_DEFAULT_RAMP_UP_S,
+                    help=f"Plant teleop ramp-up tau (s, default {PLANT_DEFAULT_RAMP_UP_S})")
+    ap.add_argument("--plant-ramp-down", type=float, default=PLANT_DEFAULT_RAMP_DOWN_S,
+                    help=f"Plant teleop coast-down tau (s, default {PLANT_DEFAULT_RAMP_DOWN_S})")
+    ap.add_argument("--plant-kd", type=float, default=PLANT_DEFAULT_KD,
+                    help=f"Plant teleop kd (default {PLANT_DEFAULT_KD})")
+    ap.add_argument("--plant-skip-home", action="store_true",
+                    help="Skip automatic slow homing to 0.00 rad at plant-teleop start")
+    ap.add_argument("--plant-home-slew", type=float, default=PLANT_HOME_SLEW_RAD_S,
+                    help=f"Homing setpoint slew rate rad/s (default {PLANT_HOME_SLEW_RAD_S})")
+    ap.add_argument("--plant-home-kp", type=float, default=PLANT_HOME_KP,
+                    help=f"Homing position kp (default {PLANT_HOME_KP})")
+    ap.add_argument("--single-slot", action="store_true",
+                    help="With --plant-teleop: arrow keys move one slot (default: all slots together)")
     ap.add_argument("--cal-timeout", type=float, default=DEFAULT_CAL_TIMEOUT_S,
                     help="Max seconds for comm 0x05 encoder cal on MCU (default 28)")
     ap.add_argument("--step", type=float, default=POS_STEP,
@@ -1084,6 +1819,12 @@ def main() -> None:
                     help="Velocity coast-down time constant after arrow release (s, default 0.55)")
     ap.add_argument("--ramp-up", type=float, default=DEFAULT_RAMP_UP_S,
                     help="Velocity ramp-up time constant when arrow pressed (s, default 0.06)")
+    ap.add_argument("--skip-wake", action="store_true",
+                    help="Skip RS2 wake (use after rs02_can_scan.py --recovery left mms=running)")
+    ap.add_argument("--proactive-on", action="store_true",
+                    help="Enable proactive 0x18 at end of wake (default off; can trip under_voltage)")
+    ap.add_argument("--vbus", action="store_true",
+                    help="Poll VBUS via pararead while holding (off by default; adds CAN traffic)")
     args = ap.parse_args()
 
     if args.list_ports:
@@ -1092,8 +1833,17 @@ def main() -> None:
 
     port = args.port if args.port is not None else auto_pick_port()
     use_rs2 = not args.legacy_actuator
+    if args.motor_ids:
+        teleop_motor_ids = parse_id_list(args.motor_ids)
+        if not teleop_motor_ids:
+            print("--motor-ids: need at least one ID", file=sys.stderr)
+            sys.exit(2)
+    else:
+        teleop_motor_ids = [args.motor_id & 0xFF]
     if args.read_params:
         mode = "read-params"
+    elif args.plant_teleop:
+        mode = "plant-teleop"
     elif args.calibrate:
         mode = "calibrate"
     elif args.nudge:
@@ -1105,7 +1855,9 @@ def main() -> None:
     else:
         mode = "legacy actuator"
     if use_rs2 and args.calibrate:
-        print(f"Opening {port} (USB CDC)  mode={mode}  cal_timeout={args.cal_timeout:.0f}s")
+        print(f"Opening {port} (USB CDC)  mode={mode}  bus=FDCAN{args.bus}  cal_timeout={args.cal_timeout:.0f}s")
+    elif args.plant_teleop:
+        print(f"Opening {port} (USB CDC) @ {args.hz:.0f} Hz  mode={mode}")
     elif use_rs2 and not args.read_params and not args.nudge:
         print(f"Opening {port} (USB CDC) @ {args.hz:.0f} Hz RS2 ctrl  mode={mode}")
     elif use_rs2 and args.nudge:
@@ -1113,31 +1865,76 @@ def main() -> None:
     else:
         print(f"Opening {port} (USB CDC) @ {args.baud}  mode={mode}")
     if use_rs2:
-        print(f"Motor ID 0x{args.motor_id:02X}")
+        if len(teleop_motor_ids) > 1:
+            print(f"Motor IDs {', '.join(f'0x{m:02X}' for m in teleop_motor_ids)} (alternating teleop)")
+        else:
+            print(f"Motor ID 0x{teleop_motor_ids[0]:02X}")
     print("Firmware: set HOST_TRANSPORT_UART to 0 in App/Inc/host/host_transport.h")
+
+    if len(teleop_motor_ids) > 1 and (args.read_params or args.calibrate or args.nudge or args.monitor):
+        print("--motor-ids is only supported for default arrow teleop (not --calibrate/--monitor/etc.)",
+              file=sys.stderr)
+        sys.exit(2)
+    if args.plant_teleop and (args.calibrate or args.read_params or args.nudge or args.monitor):
+        print("--plant-teleop cannot combine with --calibrate / --monitor / --nudge / --read-params",
+              file=sys.stderr)
+        sys.exit(2)
+
+    plant_slots = parse_id_list(args.plant_slots)
+    if args.plant_teleop and not plant_slots:
+        print("--plant-slots: need at least one slot index", file=sys.stderr)
+        sys.exit(2)
 
     with serial.Serial(port=port, baudrate=args.baud, timeout=0.05) as ser:
         time.sleep(0.5)
-        if args.read_params:
+        wake_steps = RS2_WAKE_STEPS_PROACTIVE if args.proactive_on else RS2_WAKE_STEPS
+        if args.plant_teleop:
+            slot_kp = PLANT_SLOT_KP
+            if args.plant_kp is not None:
+                slot_kp = tuple(args.plant_kp for _ in range(4))
+            run_plant_teleop(
+                ser,
+                args.hz,
+                args.plant_kd,
+                plant_slots,
+                args.plant_arrow_vel,
+                args.plant_ramp_down,
+                args.plant_ramp_up,
+                slot_kp=slot_kp,
+                move_all=not args.single_slot,
+                skip_home=args.plant_skip_home,
+                home_kp=args.plant_home_kp,
+                home_slew=args.plant_home_slew,
+            )
+        elif args.read_params:
             run_read_params(ser, args.motor_id, args.pararead)
         elif args.calibrate:
-            run_calibrate(ser, args.motor_id, args.cal_timeout, args.kp, args.kd)
+            run_calibrate(
+                ser, args.motor_id, args.cal_timeout, args.kp, args.kd,
+                bus=normalize_can_bus(args.bus),
+            )
         elif args.nudge:
             run_nudge_test(ser, args.motor_id, args.kp, args.kd)
         elif use_rs2:
             if args.monitor:
-                run_rs2_monitor(ser, args.hz, args.kp, args.kd, args.motor_id)
+                run_rs2_monitor(
+                    ser, args.hz, args.kp, args.kd, args.motor_id,
+                    wake_steps=wake_steps, skip_wake=args.skip_wake,
+                )
             else:
                 run_rs2_teleop(
                     ser,
                     args.hz,
                     args.kp,
                     args.kd,
-                    args.motor_id,
+                    teleop_motor_ids,
                     args.step,
                     args.arrow_vel,
                     args.ramp_down,
                     args.ramp_up,
+                    wake_steps=wake_steps,
+                    skip_wake=args.skip_wake,
+                    vbus_poll=args.vbus,
                 )
         elif args.monitor:
             run_monitor(ser, args.hz, args.kp, args.kd)

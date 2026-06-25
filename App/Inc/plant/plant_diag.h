@@ -21,9 +21,14 @@
 #define PLANT_DIAG_PROBE_CALI        16u
 #define PLANT_DIAG_PROBE_ZERO        17u
 #define PLANT_DIAG_PROBE_DATA_SAVE   18u
+#define PLANT_DIAG_PROBE_PARAWRITE   19u
 #define PLANT_DIAG_SESSION_BEGIN     254u
 #define PLANT_DIAG_SESSION_END       255u
 
+/* Host RS2 PDU: pdu.data[11] = FDCAN instance (1=CH1, 2=CH2, 3=CH3). */
+#define PLANT_DIAG_PDU_CAN_BUS       11u
+
 bool plant_diag_skip_actuator_can(void);
+bool plant_diag_is_rs2_command(const host_command_image_t *cmd);
 void plant_diag_on_command(const host_command_image_t *cmd);
 void plant_diag_feedback_fill(host_pdu_feedback_t *pdu);
