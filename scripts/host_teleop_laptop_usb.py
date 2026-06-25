@@ -25,6 +25,9 @@ Calibrate on a specific FDCAN branch (host sets pdu.data[11]; MCU Phase 4 must r
 
 Multi-bus runtime teleop (500 Hz plant slots — auto-homes to 0, then all actuators):
   python scripts/host_teleop_laptop_usb.py --port COM9 --plant-teleop
+
+Launch demo (sequential CW sweep 0x70→0x74→0x73→0x75, then all to zero):
+  python scripts/host_teleop_laptop_usb.py --port COM9 --launch-seq
 """
 
 from __future__ import annotations
@@ -128,6 +131,14 @@ PLANT_HOME_POS_TOL = 0.05
 PLANT_HOME_VEL_TOL = 0.15
 PLANT_HOME_DWELL_S = 0.6
 PLANT_HOME_TIMEOUT_S = 120.0
+# Launch sequence: slot order = 0x70, 0x74, 0x73, 0x75 (slots 0–3)
+LAUNCH_ORDER_SLOTS: Tuple[int, ...] = (0, 1, 2, 3)
+LAUNCH_START_CW = -5.0
+LAUNCH_END_CW = 10.0
+LAUNCH_MOVE_VEL = 6.0
+LAUNCH_POS_TOL = 0.06
+LAUNCH_RAMP_UP_S = 0.44
+LAUNCH_STAGGER_FRAC = 0.15
 USB_BAUD = 115200
 DEFAULT_MOTOR_ID = 0x70
 
@@ -334,7 +345,11 @@ def auto_pick_port() -> str:
     return "/dev/ttyACM0"
 
 
-def poll_key_nonblocking() -> Optional[str]:
+def poll_key_nonblocking(extra: Optional[Tuple[str, ...]] = None) -> Optional[str]:
+    """Non-blocking key poll. extra: additional single-char keys (e.g. plant bus 0–3)."""
+    allowed = frozenset(("q", "r"))
+    if extra:
+        allowed = allowed | frozenset(extra)
     if sys.platform == "win32":
         import msvcrt
 
@@ -352,7 +367,7 @@ def poll_key_nonblocking() -> Optional[str]:
             c = ch.decode("utf-8", errors="ignore").lower()
         except Exception:
             return None
-        if c in ("q", "r"):
+        if c in allowed:
             return c
         return None
 
@@ -360,7 +375,11 @@ def poll_key_nonblocking() -> Optional[str]:
 
     if select.select([sys.stdin], [], [], 0)[0]:
         line = sys.stdin.readline().strip().lower()
-        if line in ("q", "quit", "r", "left", "right", "l", "o"):
+        if line in ("q", "quit"):
+            return "q"
+        if line in allowed:
+            return line
+        if line in ("left", "right", "l", "o"):
             return line
     return None
 
@@ -1044,6 +1063,368 @@ class PlantSlotTeleop:
         return f"slot{self.slot} {can_bus_label(self.fdcan_bus)} 0x{self.motor_id:02X} kp<={self.max_kp:.0f}"
 
 
+def plant_teleop_targets(slot_states: List[PlantSlotTeleop], active_bus: int) -> List[PlantSlotTeleop]:
+    """active_bus 0 = all slots; 1–3 = schematic CH1–CH3 only."""
+    if active_bus == 0:
+        return list(slot_states)
+    return [st for st in slot_states if st.fdcan_bus == active_bus]
+
+
+def plant_teleop_bus_label(active_bus: int) -> str:
+    if active_bus == 0:
+        return "all buses"
+    return f"bus {active_bus} ({can_bus_label(active_bus)})"
+
+
+def plant_active_bus_readback(active_bus: int) -> str:
+    """Compact live status tag for teleop HUD."""
+    if active_bus == 0:
+        return "ACTIVE_BUS=ALL"
+    return f"ACTIVE_BUS={active_bus} ({can_bus_label(active_bus)})"
+
+
+def make_plant_slot_states(
+    slots: List[int],
+    slot_kp: Tuple[float, ...] = PLANT_SLOT_KP,
+) -> List[PlantSlotTeleop]:
+    slot_states: List[PlantSlotTeleop] = []
+    for slot in slots:
+        if slot < 0 or slot >= len(PLANT_ACTUATOR_TABLE):
+            print(f"Invalid plant slot {slot} (need 0..{len(PLANT_ACTUATOR_TABLE) - 1})", file=sys.stderr)
+            sys.exit(2)
+        fdcan_bus, motor_id = PLANT_ACTUATOR_TABLE[slot]
+        max_kp = slot_kp[slot] if slot < len(slot_kp) else slot_kp[-1]
+        slot_states.append(
+            PlantSlotTeleop(
+                slot=slot,
+                fdcan_bus=fdcan_bus,
+                motor_id=motor_id,
+                max_kp=max_kp,
+                kp=0.0,
+            )
+        )
+    return slot_states
+
+
+def plant_step_toward(st: PlantSlotTeleop, target: float, rate: float, dt: float) -> bool:
+    """Slew cmd_position toward target at rate rad/s; return True when at target."""
+    delta = target - st.cmd_position
+    step = rate * dt
+    if abs(delta) <= step:
+        st.cmd_position = target
+    else:
+        st.cmd_position += math.copysign(step, delta)
+    st.cmd_position = max(P_MIN, min(P_MAX, st.cmd_position))
+    return abs(st.cmd_position - target) <= max(1e-4, LAUNCH_POS_TOL * 0.25)
+
+
+def plant_at_target(st: PlantSlotTeleop, target: float, tol: float = LAUNCH_POS_TOL) -> bool:
+    return abs(st.cmd_position - target) <= tol
+
+
+def plant_startup_sync(
+    ser: serial.Serial,
+    reader: FrameReader,
+    slot_states: List[PlantSlotTeleop],
+    cmd_seq: int,
+    dt: float,
+    send_hz: float,
+) -> int:
+    print("Syncing feedback...")
+    reader.drain()
+    for _ in range(max(4, int(send_hz * 0.5))):
+        ser.write(build_plant_command(cmd_seq, {}))
+        ser.flush()
+        cmd_seq = (cmd_seq + 1) & 0xFFFFFFFF
+        time.sleep(dt)
+        plant_poll_feedback(reader, slot_states)
+    plant_sync_feedback(reader, slot_states, dwell_s=1.0)
+    print()
+    return cmd_seq
+
+
+def plant_slew_all_to(
+    ser: serial.Serial,
+    reader: FrameReader,
+    slot_states: List[PlantSlotTeleop],
+    cmd_seq: int,
+    dt: float,
+    send_hz: float,
+    kd: float,
+    target: float,
+    slew_rate: float,
+    move_kp: float,
+    label: str,
+    timeout_s: float = 90.0,
+) -> Tuple[int, bool]:
+    """Move every synced slot's cmd_position to target; return (cmd_seq, aborted)."""
+    active = [st for st in slot_states if st.feedback_synced]
+    if not active:
+        print(f"{label}: skipped (no feedback).")
+        return cmd_seq, False
+
+    print(f"{label}: → {target:+.2f} rad @ {slew_rate:.1f} rad/s (q aborts)")
+    deadline = time.monotonic() + timeout_s
+    line_n = 0
+    aborted = False
+
+    while time.monotonic() < deadline:
+        if poll_key_nonblocking() == "q":
+            aborted = True
+            break
+
+        all_done = True
+        for st in active:
+            st.cmd_velocity = 0.0
+            if not plant_at_target(st, target):
+                plant_step_toward(st, target, slew_rate, dt)
+                all_done = False
+            st.kp = 0.0 if plant_at_target(st, target) else move_kp
+
+        for st in slot_states:
+            if st not in active:
+                st.kp = 0.0
+                st.cmd_velocity = 0.0
+
+        cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
+        plant_poll_feedback(reader, slot_states)
+
+        line_n += 1
+        if line_n % max(1, int(send_hz / 3)) == 0:
+            parts = [f"{st.slot}:cmd={st.cmd_position:+.2f} fb={st.fb_position:+.2f}" for st in active]
+            write_live_line(f"{label[:12]:12s}  " + "  ".join(parts))
+
+        if all_done:
+            break
+        time.sleep(dt)
+
+    for st in slot_states:
+        st.cmd_velocity = 0.0
+        if st.feedback_synced:
+            st.cmd_position = target
+        st.kp = 0.0
+
+    for _ in range(max(4, int(send_hz * 0.15))):
+        cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
+        plant_poll_feedback(reader, slot_states)
+        time.sleep(dt)
+
+    if aborted:
+        print(f"{label}: aborted (q).")
+    print()
+    return cmd_seq, aborted
+
+
+def launch_sweep_progress(st: PlantSlotTeleop, start_pos: float, end_pos: float) -> float:
+    span = end_pos - start_pos
+    if abs(span) < 1e-6:
+        return 1.0
+    return max(0.0, min(1.0, (st.cmd_position - start_pos) / span))
+
+
+def run_plant_launch_seq(
+    ser: serial.Serial,
+    send_hz: float,
+    kd: float,
+    move_vel: float = LAUNCH_MOVE_VEL,
+    start_pos: float = LAUNCH_START_CW,
+    end_pos: float = LAUNCH_END_CW,
+    slot_kp: Tuple[float, ...] = PLANT_SLOT_KP,
+    order: Tuple[int, ...] = LAUNCH_ORDER_SLOTS,
+) -> None:
+    """
+    Demo launch: prep to start, staggered sweep to end (15% overlap),
+    then staggered return to 0 when the last motor finishes the outbound sweep.
+    """
+    reader = FrameReader()
+    stop = threading.Event()
+    threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
+
+    slots = list(order)
+    slot_states = make_plant_slot_states(slots, slot_kp)
+    by_slot = {st.slot: st for st in slot_states}
+    cmd_seq = 1
+    dt = 1.0 / max(send_hz, 0.1)
+    hold_kp = PLANT_HOME_KP
+
+    id_chain = " → ".join(f"0x{by_slot[s].motor_id:02X}" for s in order if s in by_slot)
+    print(f"Launch sequence on {ser.port} @ {send_hz:.0f} Hz")
+    print(f"  Order: {id_chain}")
+    print(f"  Start {start_pos:+.1f} rad → end {end_pos:+.1f} rad @ {move_vel:.1f} rad/s")
+    print(f"  Return: when last motor hits end, first returns to 0 (same {LAUNCH_STAGGER_FRAC * 100:.0f}% stagger)")
+    print("  q aborts during motion")
+    print()
+
+    try:
+        cmd_seq = plant_startup_sync(ser, reader, slot_states, cmd_seq, dt, send_hz)
+
+        cmd_seq, aborted = plant_slew_all_to(
+            ser, reader, slot_states, cmd_seq, dt, send_hz, kd,
+            start_pos, min(move_vel * 0.5, 3.0), hold_kp, "Prep (all to start)",
+        )
+        if aborted:
+            return
+
+        valid_order = [
+            s for s in order if s in by_slot and by_slot[s].feedback_synced
+        ]
+        for slot in order:
+            if slot in by_slot and not by_slot[slot].feedback_synced:
+                print(f"  skip slot {slot} (no feedback)")
+
+        zero_pos = 0.0
+        if not valid_order:
+            print("Launch sweep skipped: no synced motors.")
+        else:
+            phase = "forward"
+            started: set[int] = {valid_order[0]}
+            done: set[int] = set()
+            leg_start_mono: dict[int, float] = {valid_order[0]: time.monotonic()}
+            deadline = time.monotonic() + 180.0
+            line_n = 0
+            last_slot = valid_order[-1]
+
+            print(f"--- outbound stagger ({LAUNCH_STAGGER_FRAC * 100:.0f}% overlap) ---")
+            for i, slot in enumerate(valid_order):
+                mid = by_slot[slot].motor_id
+                if i == 0:
+                    print(f"  0x{mid:02X} starts immediately")
+                else:
+                    prev = by_slot[valid_order[i - 1]].motor_id
+                    print(f"  0x{mid:02X} starts when 0x{prev:02X} is {LAUNCH_STAGGER_FRAC * 100:.0f}% outbound")
+            print(f"  return begins when 0x{by_slot[last_slot].motor_id:02X} reaches end ({end_pos:+.1f} rad)")
+            print()
+
+            while time.monotonic() < deadline:
+                if poll_key_nonblocking() == "q":
+                    print("Launch aborted (q).")
+                    return
+
+                if phase == "forward":
+                    for i in range(1, len(valid_order)):
+                        cur = valid_order[i]
+                        if cur in started:
+                            continue
+                        prev = by_slot[valid_order[i - 1]]
+                        if launch_sweep_progress(prev, start_pos, end_pos) >= LAUNCH_STAGGER_FRAC:
+                            started.add(cur)
+                            leg_start_mono[cur] = time.monotonic()
+                            print(
+                                f"  → 0x{by_slot[cur].motor_id:02X} outbound "
+                                f"(0x{prev.motor_id:02X} at {LAUNCH_STAGGER_FRAC * 100:.0f}%)"
+                            )
+
+                    if last_slot in done:
+                        phase = "return"
+                        started = {valid_order[0]}
+                        done = set()
+                        leg_start_mono = {valid_order[0]: time.monotonic()}
+                        print()
+                        print(f"--- return stagger ({LAUNCH_STAGGER_FRAC * 100:.0f}% overlap) ---")
+                        print(f"  0x{by_slot[valid_order[0]].motor_id:02X} returns to 0 "
+                              f"(0x{by_slot[last_slot].motor_id:02X} at end)")
+                        print()
+                else:
+                    for i in range(1, len(valid_order)):
+                        cur = valid_order[i]
+                        if cur in started:
+                            continue
+                        prev = by_slot[valid_order[i - 1]]
+                        if launch_sweep_progress(prev, end_pos, zero_pos) >= LAUNCH_STAGGER_FRAC:
+                            started.add(cur)
+                            leg_start_mono[cur] = time.monotonic()
+                            print(
+                                f"  → 0x{by_slot[cur].motor_id:02X} return "
+                                f"(0x{prev.motor_id:02X} at {LAUNCH_STAGGER_FRAC * 100:.0f}%)"
+                            )
+
+                now = time.monotonic()
+                if phase == "forward":
+                    move_from, move_to = start_pos, end_pos
+                else:
+                    move_from, move_to = end_pos, zero_pos
+
+                for st in slot_states:
+                    st.cmd_velocity = 0.0
+                    slot = st.slot
+                    if slot not in by_slot or slot not in valid_order:
+                        st.kp = 0.0
+                        continue
+                    if slot in done:
+                        st.cmd_position = move_to if phase == "forward" else zero_pos
+                        st.kp = hold_kp
+                    elif slot in started:
+                        elapsed = now - leg_start_mono.get(slot, now)
+                        rate = move_vel * min(1.0, elapsed / max(LAUNCH_RAMP_UP_S, 0.05))
+                        plant_step_toward(st, move_to, rate, dt)
+                        if plant_at_target(st, move_to):
+                            done.add(slot)
+                            tag = "outbound" if phase == "forward" else "return"
+                            print(f"  {tag} done 0x{st.motor_id:02X}  fb={st.fb_position:+.3f} rad")
+                        st.kp = (
+                            hold_kp
+                            if plant_at_target(st, move_to)
+                            else by_slot[slot].max_kp
+                        )
+                    else:
+                        hold = start_pos if phase == "forward" else end_pos
+                        st.cmd_position = hold
+                        st.kp = hold_kp
+
+                cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
+                plant_poll_feedback(reader, slot_states)
+
+                line_n += 1
+                if line_n % max(1, int(send_hz / 4)) == 0:
+                    parts = [phase[:3]]
+                    for slot in valid_order:
+                        st = by_slot[slot]
+                        if slot in done:
+                            phase_s = "done"
+                        elif slot in started:
+                            if phase == "forward":
+                                pct = launch_sweep_progress(st, start_pos, end_pos) * 100.0
+                            else:
+                                pct = launch_sweep_progress(st, end_pos, zero_pos) * 100.0
+                            phase_s = f"{pct:.0f}%"
+                        else:
+                            phase_s = "wait"
+                        parts.append(f"0x{st.motor_id:02X}:{phase_s}")
+                    write_live_line(" ".join(parts))
+
+                if phase == "return" and len(done) == len(valid_order):
+                    break
+                time.sleep(dt)
+
+            print()
+
+            for st in slot_states:
+                st.cmd_position = zero_pos
+                st.cmd_velocity = 0.0
+                st.kp = 0.0
+            for _ in range(max(4, int(send_hz * 0.15))):
+                cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
+                time.sleep(dt)
+
+            print("Launch sequence complete.")
+            for st in slot_states:
+                if st.feedback_synced:
+                    print(f"  0x{st.motor_id:02X}  fb={st.fb_position:+.4f} rad")
+
+    except KeyboardInterrupt:
+        print("\nLaunch sequence interrupted.")
+    finally:
+        for st in slot_states:
+            st.cmd_velocity = 0.0
+            st.kp = 0.0
+        for _ in range(max(8, int(send_hz * 0.3))):
+            cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
+            time.sleep(dt)
+        ser.write(build_plant_command(cmd_seq, {}))
+        ser.flush()
+        stop.set()
+
+
 def plant_poll_feedback(reader: FrameReader, slot_states: List[PlantSlotTeleop]) -> None:
     frame = reader.pop()
     while frame is not None:
@@ -1212,7 +1593,6 @@ def run_plant_teleop(
     ramp_down_s: float,
     ramp_up_s: float,
     slot_kp: Tuple[float, ...] = PLANT_SLOT_KP,
-    move_all: bool = True,
     skip_home: bool = False,
     home_kp: float = PLANT_HOME_KP,
     home_slew: float = PLANT_HOME_SLEW_RAD_S,
@@ -1225,24 +1605,8 @@ def run_plant_teleop(
     stop = threading.Event()
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
 
-    slot_states: List[PlantSlotTeleop] = []
-    for slot in slots:
-        if slot < 0 or slot >= len(PLANT_ACTUATOR_TABLE):
-            print(f"Invalid plant slot {slot} (need 0..{len(PLANT_ACTUATOR_TABLE) - 1})", file=sys.stderr)
-            sys.exit(2)
-        fdcan_bus, motor_id = PLANT_ACTUATOR_TABLE[slot]
-        max_kp = slot_kp[slot] if slot < len(slot_kp) else slot_kp[-1]
-        slot_states.append(
-            PlantSlotTeleop(
-                slot=slot,
-                fdcan_bus=fdcan_bus,
-                motor_id=motor_id,
-                max_kp=max_kp,
-                kp=0.0,
-            )
-        )
-
-    active_idx = 0
+    slot_states = make_plant_slot_states(slots, slot_kp)
+    active_bus = 0
     cmd_seq = 1
     dt = 1.0 / max(send_hz, 0.1)
     vel_stop = 0.08
@@ -1255,11 +1619,12 @@ def run_plant_teleop(
         f"Motion: vel ±{arrow_vel:.1f} rad/s  ramp_up={ramp_up_s:.2f}s  ramp_down={ramp_down_s:.2f}s  kd={kd:.2f}"
     )
     print("Motors must be woken (probe/recovery once per branch). Auto-homes to 0.00 before teleop.")
-    print("  Left / Right     velocity ({})".format("all slots" if move_all else "active slot only"))
-    print("  1-4              select active slot (when not move-all)")
-    print("  a                toggle move-all-slots")
+    print("  Left / Right     velocity on active bus selection")
+    print("  0                all buses (slots 0x70+0x74, 0x73, 0x75)")
+    print("  1 / 2 / 3        CH1 only / CH2 only / CH3 only (live)")
     print("  r                re-sync cmd_pos from feedback + stop velocity")
     print("  q                quit")
+    print(f"  Active: {plant_active_bus_readback(active_bus)}")
     print()
     print("Syncing feedback...")
     reader.drain()
@@ -1291,20 +1656,30 @@ def run_plant_teleop(
             stop.set()
             return
 
+    print(f"  {plant_active_bus_readback(active_bus)}  (press 0–3 to change bus)")
+    print()
+
     try:
         while True:
             quit_requested = False
             motion_dir = poll_arrow_direction()
             while True:
-                key = poll_key_nonblocking()
+                key = poll_key_nonblocking(extra=("0", "1", "2", "3"))
                 if key is None:
                     break
                 if key == "q":
                     quit_requested = True
                     break
-                if key == "a":
-                    move_all = not move_all
-                    write_live_notice(f"move-all: {'ON' if move_all else 'OFF'}")
+                if key == "0":
+                    active_bus = 0
+                    write_live_notice(plant_active_bus_readback(active_bus))
+                elif key in ("1", "2", "3"):
+                    pick_bus = int(key)
+                    if any(st.fdcan_bus == pick_bus for st in slot_states):
+                        active_bus = pick_bus
+                        write_live_notice(plant_active_bus_readback(active_bus))
+                    else:
+                        write_live_notice(f"no slot on bus {pick_bus}")
                 elif key == "r":
                     reader.drain()
                     for st in slot_states:
@@ -1312,11 +1687,6 @@ def run_plant_teleop(
                         st.kp = 0.0
                     plant_sync_feedback(reader, slot_states, dwell_s=0.5)
                     write_live_notice("re-synced all slots; velocity cleared")
-                elif key in ("1", "2", "3", "4"):
-                    pick = int(key) - 1
-                    if any(s.slot == pick for s in slot_states):
-                        active_idx = next(i for i, s in enumerate(slot_states) if s.slot == pick)
-                        write_live_notice(f"active: {slot_states[active_idx].label()}")
                 elif key in ("left", "l"):
                     motion_dir = -1
                 elif key in ("right", "o"):
@@ -1324,8 +1694,15 @@ def run_plant_teleop(
             if quit_requested:
                 break
 
-            targets = slot_states if move_all else [slot_states[active_idx]]
-            for st in targets:
+            motion_targets = plant_teleop_targets(slot_states, active_bus)
+            target_ids = {id(st) for st in motion_targets}
+            for st in slot_states:
+                if id(st) not in target_ids:
+                    st.cmd_velocity *= math.exp(-dt / max(ramp_down_s, 0.05))
+                    if abs(st.cmd_velocity) < vel_stop:
+                        st.cmd_velocity = 0.0
+                    st.kp = 0.0
+                    continue
                 if motion_dir != 0:
                     target_vel = motion_dir * abs(arrow_vel)
                     alpha = 1.0 - math.exp(-dt / max(ramp_up_s, 0.05))
@@ -1352,9 +1729,9 @@ def run_plant_teleop(
 
             fb_line += 1
             if fb_line % max(1, int(send_hz / 4)) == 0:
-                parts = []
-                for i, st in enumerate(slot_states):
-                    mark = "*" if (not move_all and i == active_idx) or move_all else " "
+                parts = [plant_active_bus_readback(active_bus)]
+                for st in slot_states:
+                    mark = "*" if id(st) in target_ids else " "
                     parts.append(
                         f"{mark}{st.slot}:v={st.cmd_velocity:+.1f} kp={st.kp:.0f} "
                         f"cmd={st.cmd_position:+.3f} fb={st.fb_position:+.3f}"
@@ -1807,8 +2184,16 @@ def main() -> None:
                     help=f"Homing setpoint slew rate rad/s (default {PLANT_HOME_SLEW_RAD_S})")
     ap.add_argument("--plant-home-kp", type=float, default=PLANT_HOME_KP,
                     help=f"Homing position kp (default {PLANT_HOME_KP})")
-    ap.add_argument("--single-slot", action="store_true",
-                    help="With --plant-teleop: arrow keys move one slot (default: all slots together)")
+    ap.add_argument("--launch-seq", action="store_true",
+                    help="Demo: prep to -5 rad, sweep 0x70→0x74→0x73→0x75 to +10, then all to 0")
+    ap.add_argument("--launch-ccw", action="store_true",
+                    help="Invert launch sweep (start +5, end -10) if default direction is wrong")
+    ap.add_argument("--launch-vel", type=float, default=LAUNCH_MOVE_VEL,
+                    help=f"Launch sequence slew rate rad/s (default {LAUNCH_MOVE_VEL})")
+    ap.add_argument("--launch-start", type=float, default=None,
+                    help="Launch start position rad (default -5 CW, +5 CCW)")
+    ap.add_argument("--launch-end", type=float, default=None,
+                    help="Launch end position rad (default +10 CW, -10 CCW)")
     ap.add_argument("--cal-timeout", type=float, default=DEFAULT_CAL_TIMEOUT_S,
                     help="Max seconds for comm 0x05 encoder cal on MCU (default 28)")
     ap.add_argument("--step", type=float, default=POS_STEP,
@@ -1844,6 +2229,8 @@ def main() -> None:
         mode = "read-params"
     elif args.plant_teleop:
         mode = "plant-teleop"
+    elif args.launch_seq:
+        mode = "launch-seq"
     elif args.calibrate:
         mode = "calibrate"
     elif args.nudge:
@@ -1856,7 +2243,7 @@ def main() -> None:
         mode = "legacy actuator"
     if use_rs2 and args.calibrate:
         print(f"Opening {port} (USB CDC)  mode={mode}  bus=FDCAN{args.bus}  cal_timeout={args.cal_timeout:.0f}s")
-    elif args.plant_teleop:
+    elif args.plant_teleop or args.launch_seq:
         print(f"Opening {port} (USB CDC) @ {args.hz:.0f} Hz  mode={mode}")
     elif use_rs2 and not args.read_params and not args.nudge:
         print(f"Opening {port} (USB CDC) @ {args.hz:.0f} Hz RS2 ctrl  mode={mode}")
@@ -1879,6 +2266,11 @@ def main() -> None:
         print("--plant-teleop cannot combine with --calibrate / --monitor / --nudge / --read-params",
               file=sys.stderr)
         sys.exit(2)
+    if args.launch_seq and (args.calibrate or args.read_params or args.nudge or args.monitor
+                            or args.plant_teleop):
+        print("--launch-seq cannot combine with --plant-teleop / --calibrate / --monitor / "
+              "--nudge / --read-params", file=sys.stderr)
+        sys.exit(2)
 
     plant_slots = parse_id_list(args.plant_slots)
     if args.plant_teleop and not plant_slots:
@@ -1888,7 +2280,26 @@ def main() -> None:
     with serial.Serial(port=port, baudrate=args.baud, timeout=0.05) as ser:
         time.sleep(0.5)
         wake_steps = RS2_WAKE_STEPS_PROACTIVE if args.proactive_on else RS2_WAKE_STEPS
-        if args.plant_teleop:
+        if args.launch_seq:
+            if args.launch_ccw:
+                start_pos = args.launch_start if args.launch_start is not None else -LAUNCH_START_CW
+                end_pos = args.launch_end if args.launch_end is not None else -LAUNCH_END_CW
+            else:
+                start_pos = args.launch_start if args.launch_start is not None else LAUNCH_START_CW
+                end_pos = args.launch_end if args.launch_end is not None else LAUNCH_END_CW
+            slot_kp = PLANT_SLOT_KP
+            if args.plant_kp is not None:
+                slot_kp = tuple(args.plant_kp for _ in range(4))
+            run_plant_launch_seq(
+                ser,
+                args.hz,
+                args.plant_kd,
+                move_vel=args.launch_vel,
+                start_pos=start_pos,
+                end_pos=end_pos,
+                slot_kp=slot_kp,
+            )
+        elif args.plant_teleop:
             slot_kp = PLANT_SLOT_KP
             if args.plant_kp is not None:
                 slot_kp = tuple(args.plant_kp for _ in range(4))
@@ -1901,7 +2312,6 @@ def main() -> None:
                 args.plant_ramp_down,
                 args.plant_ramp_up,
                 slot_kp=slot_kp,
-                move_all=not args.single_slot,
                 skip_home=args.plant_skip_home,
                 home_kp=args.plant_home_kp,
                 home_slew=args.plant_home_slew,

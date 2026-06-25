@@ -46,7 +46,7 @@ python scripts/host_teleop_laptop_usb.py --port COM9 --plant-teleop
 - All four slots in one 562 B frame; MCU applies at **500 Hz** (no RS2 PDU)
 - Auto-syncs feedback, **slow homing to 0.00 rad**, then arrow-key velocity on all motors
 - Gentle defaults: kp 8–12 (gated — **0 at rest**), 5 rad/s, slow ramps → low bench current
-- Keys: **Left/Right** move all slots, **r** re-sync, **q** quit
+- Keys: **Left/Right** move active bus selection, **0** = all buses, **1/2/3** = CH1/CH2/CH3 only, **r** re-sync, **q** quit
 
 ```powershell
 # Even gentler
@@ -54,6 +54,16 @@ python scripts/host_teleop_laptop_usb.py --port COM9 --plant-teleop --plant-arro
 ```
 
 Motors must be woken once per branch before plant teleop (recovery or calibrate on that bus).
+
+### Launch demo (`--launch-seq`)
+
+Sequential capability demo with **15% stagger** outbound and return: **0x70 → 0x74 → 0x73 → 0x75** sweep to end; when **0x75** finishes, **0x70** begins return to 0 with the same stagger.
+
+```powershell
+python scripts/host_teleop_laptop_usb.py --port COM9 --launch-seq
+python scripts/host_teleop_laptop_usb.py --port COM9 --launch-seq --launch-ccw   # if direction is wrong
+python scripts/host_teleop_laptop_usb.py --port COM9 --launch-seq --launch-vel 10
+```
 
 ### RS2 PDU path — calibrate, discover, single-motor teleop
 
