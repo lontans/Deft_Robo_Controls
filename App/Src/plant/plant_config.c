@@ -45,20 +45,27 @@ void plant_config_init(void)
 	}
 
 	// Servo initialization
+	// Neck travel measured on hardware (~1265 bottom, ~2623 top); not centered at 2048.
 	servo_table[0] = (servo_config_t){
 		.id = 1,
 		.enabled = true,
-		.pos_min = 1536,
-		.pos_max = 2560,
-		.default_profile_vel = 200,
+		.pos_min = 1024,
+		.pos_max = 3072,
+		.position_p_gain = DXL_DEFAULT_POSITION_P_GAIN,
+		.position_d_gain = DXL_DEFAULT_POSITION_D_GAIN,
+		.default_profile_vel = 180,
+		.default_profile_accel = DXL_DEFAULT_PROFILE_ACCEL,
 	};
 
 	servo_table[1] = (servo_config_t){
-			.id = 2,
-			.enabled = true,
-			.pos_min = 1536,
-			.pos_max = 2560,
-			.default_profile_vel = 200,
-		};
+		.id = 2,
+		.enabled = true,
+		.pos_min = 512,
+		.pos_max = 3072,
+		.position_p_gain = DXL_DEFAULT_POSITION_P_GAIN,
+		.position_d_gain = DXL_DEFAULT_POSITION_D_GAIN,
+		.default_profile_vel = 180,
+		.default_profile_accel = DXL_DEFAULT_PROFILE_ACCEL,
+	};
 
 }

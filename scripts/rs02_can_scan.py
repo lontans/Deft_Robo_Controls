@@ -43,6 +43,11 @@ HOST_LAYOUT_VERSION = 1
 IMAGE_BYTES = 562
 ACTUATOR0_OFF = 16
 ACTUATOR_SLOT_BYTES = 20
+HOST_EXCHANGE_ACTUATOR_SLOTS = 25
+HOST_EXCHANGE_SERVO_SLOTS = 2
+SERVO_SLOT_BYTES = 6
+SERVO0_CMD_OFF = ACTUATOR0_OFF + HOST_EXCHANGE_ACTUATOR_SLOTS * ACTUATOR_SLOT_BYTES
+SERVO0_FB_OFF = SERVO0_CMD_OFF
 PDU_OFF = 530
 # RS2 bench PDU: pdu.data[11] = FDCAN bus (1=CH1, 2=CH2, 3=CH3). MCU Phase 4 must read this byte.
 PDU_BUS_OFF = PDU_OFF + 11
@@ -394,6 +399,71 @@ def build_actuator_command(
     struct.pack_into("<I", buf, 8, seq & 0xFFFFFFFF)
     patch_actuator_desire(buf, position, velocity, kp, kd, torque, slot=slot)
     return bytes(buf)
+
+
+def servo_slot_cmd_offset(slot: int) -> int:
+    return SERVO0_CMD_OFF + slot * SERVO_SLOT_BYTES
+
+
+def servo_slot_fb_offset(slot: int) -> int:
+    return SERVO0_FB_OFF + slot * SERVO_SLOT_BYTES
+
+
+def pack_servo_cmd_flags(
+    servo_id: int,
+    torque_enable: int = 1,
+    operating_mode: int = 3,
+) -> int:
+    """host_servo_command_t bitfield (torque, mode, id)."""
+    return (
+        (torque_enable & 1)
+        | ((operating_mode & 7) << 2)
+        | ((servo_id & 0xFF) << 5)
+    )
+
+
+def patch_servo_command(
+    buf: bytearray,
+    slot: int,
+    position: int,
+    servo_id: int,
+    torque_enable: int = 1,
+    speed: int = 0,
+    operating_mode: int = 3,
+) -> None:
+    off = servo_slot_cmd_offset(slot)
+    flags = pack_servo_cmd_flags(servo_id, torque_enable, operating_mode)
+    struct.pack_into("<hhH", buf, off, position, speed, flags)
+
+
+def build_plant_servo_command(
+    seq: int,
+    slot_positions: Optional[Dict[int, Tuple[int, int]]] = None,
+) -> bytes:
+    """Plant teleop frame with servos[] only (pdu zero — MCU 500 Hz servo path)."""
+    buf = bytearray(build_plant_command(seq, {}))
+    if slot_positions:
+        for slot, (position, servo_id) in slot_positions.items():
+            patch_servo_command(buf, slot, position, servo_id)
+    return bytes(buf)
+
+
+def parse_servo_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:
+    if len(frame) != IMAGE_BYTES:
+        return None
+    magic, = struct.unpack_from("<I", frame, 0)
+    if magic != HOST_FEEDBACK_MAGIC:
+        return None
+    off = servo_slot_fb_offset(slot)
+    if off + SERVO_SLOT_BYTES > IMAGE_BYTES:
+        return None
+    present, speed, flags = struct.unpack_from("<hhH", frame, off)
+    return {
+        "present_position": present,
+        "present_speed": speed,
+        "motor_source_id": (flags >> 5) & 0xFF,
+        "moving": flags & 1,
+    }
 
 
 def build_plant_command(

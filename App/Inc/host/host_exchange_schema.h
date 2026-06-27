@@ -11,6 +11,11 @@
 #define HOST_EXCHANGE_LED_SLOTS      1u
 #define HOST_PDU_PAYLOAD_BYTES       32u
 
+// Plant debug bytes (using PDU)
+#define PLANT_DXL_PROBE_SCAN         1u
+#define PLANT_DXL_PROBE_PING         2u
+#define PLANT_DXL_PROBE_FIND_BAUD    3u
+
 typedef struct __attribute__((packed)) {
 	float position;
 	float velocity;

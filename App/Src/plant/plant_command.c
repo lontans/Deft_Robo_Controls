@@ -1,5 +1,6 @@
 #include "plant/plant_command.h"
 #include "plant/actuator.h"
+#include "plant/servo.h"
 #include "plant/plant_diag.h"
 #include <stdbool.h>
 
@@ -48,9 +49,12 @@ void plant_command_image_dispatch(const host_command_image_t *cmd)
 	 * Normal plant teleop leaves pdu zero — pdu_rs2 stays false.
 	 */
 	bool pdu_rs2 = plant_diag_is_rs2_command(cmd);
+	bool pdu_dxl = plant_diag_is_dxl_command(cmd);
 	bool diag_only = (mcu_state == PLANT_MCU_STATE_DIAG_ONLY);
 
-	if (pdu_rs2)
+	if (pdu_dxl)
+		plant_diag_on_dxl_command(cmd);
+	else if (pdu_rs2)
 		plant_diag_on_command(cmd);
 
 	/* DIAG_ONLY: run PDU handler above, never touch actuator_commands[]. */
@@ -61,9 +65,13 @@ void plant_command_image_dispatch(const host_command_image_t *cmd)
 	 * RS2 frame but not a ctrl probe (cali/pararead/reset/session/…):
 	 * plant_diag handled it; do not mount desires onto the 500 Hz loop.
 	 */
+	if (pdu_dxl)
+		return;
+
 	if (pdu_rs2 && !probe_kind_needs_actuator_mount(cmd->pdu.data[4]))
 		return;
 
 	/* Normal path + RS2 ctrl probes: copy actuator_commands[0..ACTUATOR_COUNT-1]. */
 	actuator_command_mount(cmd);
+	servo_command_mount(cmd);
 }

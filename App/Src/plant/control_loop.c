@@ -1,5 +1,6 @@
 #include "plant/control_loop.h"
 #include "plant/actuator.h"
+#include "plant/servo.h"
 #include "plant/plugin_schema/plugin_types.h"
 #include "main.h"
 #include "tim.h"
@@ -38,6 +39,11 @@ void control_loop_service(void)
 	while (n-- > 0u) {
 		actuator_apply_desire();
 		actuator_capture_state();
+		/* One Dynamixel bus transaction per TIM6 tick (avoid burst corruption). */
+		if (n == 0u) {
+			servo_apply_desire();
+			servo_capture_state();
+		}
 	}
 }
 

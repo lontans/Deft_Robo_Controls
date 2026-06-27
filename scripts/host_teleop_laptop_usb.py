@@ -26,6 +26,10 @@ Calibrate on a specific FDCAN branch (host sets pdu.data[11]; MCU Phase 4 must r
 Multi-bus runtime teleop (500 Hz plant slots — auto-homes to 0, then all actuators):
   python scripts/host_teleop_laptop_usb.py --port COM9 --plant-teleop
 
+Dynamixel neck servos (XL330, plant servos[] @ 500 Hz):
+  python scripts/dynamixel_teleop.py --port COM9
+  python scripts/host_teleop_laptop_usb.py --port COM9 --servo-teleop
+
 Launch demo (sequential CW sweep 0x70→0x74→0x73→0x75, then all to zero):
   python scripts/host_teleop_laptop_usb.py --port COM9 --launch-seq
 """
@@ -2166,6 +2170,8 @@ def main() -> None:
                     help="Plant CAN branch for RS2 --calibrate (1=CH1, 2=CH2 PA8/PA15, 3=CH3 PB12/13)")
     ap.add_argument("--plant-teleop", action="store_true",
                     help="All 4 plant slots in one frame (CH1 0x70/0x74, CH2 0x73, CH3 0x75); gentle ramp defaults")
+    ap.add_argument("--servo-teleop", action="store_true",
+                    help="Dynamixel neck servos: L/R bottom, U/D top (see scripts/dynamixel_teleop.py)")
     ap.add_argument("--plant-slots", default="0,1,2,3",
                     help="Slot indices for --plant-teleop (default 0,1,2,3)")
     ap.add_argument("--plant-kp", type=float, default=None,
@@ -2229,6 +2235,8 @@ def main() -> None:
         mode = "read-params"
     elif args.plant_teleop:
         mode = "plant-teleop"
+    elif args.servo_teleop:
+        mode = "servo-teleop"
     elif args.launch_seq:
         mode = "launch-seq"
     elif args.calibrate:
@@ -2243,7 +2251,7 @@ def main() -> None:
         mode = "legacy actuator"
     if use_rs2 and args.calibrate:
         print(f"Opening {port} (USB CDC)  mode={mode}  bus=FDCAN{args.bus}  cal_timeout={args.cal_timeout:.0f}s")
-    elif args.plant_teleop or args.launch_seq:
+    elif args.plant_teleop or args.launch_seq or args.servo_teleop:
         print(f"Opening {port} (USB CDC) @ {args.hz:.0f} Hz  mode={mode}")
     elif use_rs2 and not args.read_params and not args.nudge:
         print(f"Opening {port} (USB CDC) @ {args.hz:.0f} Hz RS2 ctrl  mode={mode}")
@@ -2265,6 +2273,10 @@ def main() -> None:
     if args.plant_teleop and (args.calibrate or args.read_params or args.nudge or args.monitor):
         print("--plant-teleop cannot combine with --calibrate / --monitor / --nudge / --read-params",
               file=sys.stderr)
+        sys.exit(2)
+    if args.servo_teleop and (args.calibrate or args.read_params or args.nudge or args.monitor
+                              or args.plant_teleop or args.launch_seq):
+        print("--servo-teleop cannot combine with other teleop/monitor modes", file=sys.stderr)
         sys.exit(2)
     if args.launch_seq and (args.calibrate or args.read_params or args.nudge or args.monitor
                             or args.plant_teleop):
@@ -2315,6 +2327,16 @@ def main() -> None:
                 skip_home=args.plant_skip_home,
                 home_kp=args.plant_home_kp,
                 home_slew=args.plant_home_slew,
+            )
+        elif args.servo_teleop:
+            from dynamixel_teleop import run_servo_teleop
+
+            run_servo_teleop(
+                ser,
+                send_hz=args.hz,
+                arrow_vel=args.plant_arrow_vel,
+                ramp_up_s=args.plant_ramp_up,
+                ramp_down_s=args.plant_ramp_down,
             )
         elif args.read_params:
             run_read_params(ser, args.motor_id, args.pararead)

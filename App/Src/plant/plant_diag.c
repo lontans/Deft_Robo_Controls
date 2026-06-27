@@ -1,6 +1,7 @@
 #include "plant/plant_diag.h"
 #include "plant/actuator.h"
 #include "plant/plugins/robstride.h"
+#include "plant/plugins/dynamixel.h"
 #include "plant/can/can_router.h"
 #include <string.h>
 
@@ -9,6 +10,50 @@ static volatile bool g_rs2_session_active;
 static volatile bool g_probe_in_progress;
 static uint8_t g_rs2_motor_id;
 static can_bus_id_t g_rs2_can_bus;
+static bool g_dxl_feedback_active;
+static volatile bool g_dxl_probe_pending;
+static uint8_t g_dxl_pending_kind;
+static uint8_t g_dxl_pending_target_id;
+static uint8_t g_dxl_pending_id_start;
+static uint8_t g_dxl_pending_id_end;
+
+bool plant_diag_is_dxl_command(const host_command_image_t *cmd)
+{
+	if (cmd == NULL)
+		return false;
+	return cmd -> pdu.data[0] == (uint8_t)PLANT_DIAG_DXL_TAG0 &&
+		   cmd -> pdu.data[1] == (uint8_t)PLANT_DIAG_DXL_TAG1 &&
+		   cmd -> pdu.data[2] == (uint8_t)PLANT_DIAG_DXL_TAG2;
+}
+
+void plant_diag_on_dxl_command(const host_command_image_t *cmd)
+{
+	if (cmd == NULL)
+		return;
+
+	g_dxl_pending_kind = cmd->pdu.data[4];
+	g_dxl_pending_target_id = cmd->pdu.data[3];
+	g_dxl_pending_id_start = cmd->pdu.data[5];
+	g_dxl_pending_id_end = cmd->pdu.data[6];
+	g_dxl_probe_pending = true;
+	g_dxl_feedback_active = true;
+}
+
+void plant_diag_service(void)
+{
+	if (!g_dxl_probe_pending)
+		return;
+
+	g_dxl_probe_pending = false;
+	g_probe_in_progress = true;
+
+	dynamixel_probe_run(g_dxl_pending_kind,
+	                    g_dxl_pending_target_id,
+	                    g_dxl_pending_id_start,
+	                    g_dxl_pending_id_end);
+
+	g_probe_in_progress = false;
+}
 
 static can_bus_id_t plant_diag_pdu_can_bus(const host_pdu_command_t *pdu)
 {
@@ -130,6 +175,12 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 {
 	if (pdu == NULL)
 		return;
+
+	if (g_dxl_feedback_active) { // exception for the dynamixel scripts
+		dynamixel_probe_feedback_fill(pdu);
+		g_dxl_feedback_active = false;
+		return;
+	}
 
 	memset(pdu->data, 0, sizeof(pdu->data));
 	pdu->data[0] = (uint8_t)PLANT_DIAG_PDU_RESP_TAG;
