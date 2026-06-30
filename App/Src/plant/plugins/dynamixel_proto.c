@@ -224,6 +224,46 @@ bool dxl_write_u32(uint8_t id, uint16_t addr, uint32_t value)
 	return true;
 }
 
+bool dxl_read_u8(uint8_t id, uint16_t addr, uint8_t *value_out)
+{
+	uint16_t rx_len = 0;
+
+	if (value_out == NULL)
+		return false;
+
+	g_dxl_tx[DXL_ID]            = id;
+	g_dxl_tx[DXL_INST]          = DXL_INST_READ;
+	g_dxl_tx[DXL_PARAM0]        = DXL_LOBYTE(addr);
+	g_dxl_tx[DXL_PARAM0 + 1u]   = DXL_HIBYTE(addr);
+	g_dxl_tx[DXL_PARAM0 + 2u]   = 1u;
+	g_dxl_tx[DXL_PARAM0 + 3u]   = 0u;
+
+	if (!dxl_send_packet(g_dxl_tx, 7u))
+		return false;
+	if (!dxl_recv_status_packet(g_dxl_rx, &rx_len, DXL_RX_TIMEOUT_MS))
+		return false;
+	if (g_dxl_rx[DXL_ID] != id)
+		return false;
+	if (g_dxl_rx[DXL_ERR] != 0u)
+		return false;
+
+	*value_out = g_dxl_rx[9];
+	return true;
+}
+
+bool dxl_reboot(uint8_t id)
+{
+	g_dxl_tx[DXL_ID]   = id;
+	g_dxl_tx[DXL_INST] = DXL_INST_REBOOT;
+
+	if (!dxl_send_packet(g_dxl_tx, 3u))
+		return false;
+
+	/* Status may not return; servo resets and re-enumerates on the bus. */
+	dxl_port_delay_ms(500u);
+	return true;
+}
+
 bool dxl_read_u32(uint8_t id, uint16_t addr, uint32_t *value_out)
 {
 	uint16_t rx_len = 0;

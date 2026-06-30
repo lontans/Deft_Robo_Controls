@@ -1,6 +1,7 @@
 #include "plant/plant_command.h"
 #include "plant/actuator.h"
 #include "plant/servo.h"
+#include "plant/led.h"
 #include "plant/plant_diag.h"
 #include <stdbool.h>
 
@@ -74,4 +75,5 @@ void plant_command_image_dispatch(const host_command_image_t *cmd)
 	/* Normal path + RS2 ctrl probes: copy actuator_commands[0..ACTUATOR_COUNT-1]. */
 	actuator_command_mount(cmd);
 	servo_command_mount(cmd);
+	led_command_mount(cmd);
 }

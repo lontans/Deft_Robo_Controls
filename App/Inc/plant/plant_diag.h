@@ -40,6 +40,7 @@
 #define PLANT_DIAG_PDU_CAN_BUS       11u
 
 bool plant_diag_skip_actuator_can(void);
+bool plant_diag_skip_servo_bus(void);
 bool plant_diag_is_rs2_command(const host_command_image_t *cmd);
 bool plant_diag_is_dxl_command(const host_command_image_t *cmd);
 void plant_diag_on_command(const host_command_image_t *cmd);

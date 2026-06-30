@@ -1,9 +1,13 @@
 #include "plant/plant_config.h"
 #include "plant/actuator.h"
 #include "plant/plugins/dynamixel.h"
+#include "plant/plugins/sk9822.h"
 
 // Servo table initialization
 servo_config_t servo_table[SERVO_COUNT];
+
+/* LED strip config (same pattern as servo_table: defined here, extern in sk9822.h). */
+sk9822_config_t led_table[LED_STRIP_COUNT];
 
 void plant_config_init(void)
 {
@@ -67,5 +71,8 @@ void plant_config_init(void)
 		.default_profile_vel = 180,
 		.default_profile_accel = DXL_DEFAULT_PROFILE_ACCEL,
 	};
+
+	// LED Initialisation
+	led_table[0].default_count = LED_STRIP_MAX;
 
 }

@@ -12,12 +12,23 @@ typedef enum {
 	SERVO_ST_TORQUE = 0,
 	SERVO_ST_UNI_WR,
 	SERVO_ST_UNI_RD,
+	SERVO_ST_RECOVER,
 } servo_step_t;
 
 static servo_step_t g_step;
 static uint8_t        g_torque_slot;
 static bool           g_torque_done;
 static uint8_t        g_slot;
+static uint16_t       g_bus_cycles;
+static volatile bool  g_servo_host_session;
+
+static uint8_t  g_hw_error[SERVO_COUNT];
+static uint8_t  g_recover_slot;
+static uint8_t  g_recover_phase;
+static uint32_t g_recover_t0_ms;
+
+#define SERVO_HW_POLL_CYCLES 40u
+#define SERVO_RECOVER_WAIT_MS 500u
 
 static uint8_t g_diag_wr_ok;
 static uint8_t g_diag_rd_ok;
@@ -41,6 +52,65 @@ static uint32_t servo_clamp_goal(uint8_t slot, int16_t native_step)
 		goal = servo_table[slot].pos_max;
 
 	return goal;
+}
+
+static bool servo_read_hw_error(uint8_t slot, uint8_t *err_out)
+{
+	uint8_t id;
+	uint8_t err;
+
+	if (slot >= SERVO_COUNT || !servo_table[slot].enabled || err_out == NULL)
+		return false;
+
+	id = servo_table[slot].id;
+	if (!dxl_read_u8(id, DXL_ADDR_HW_ERROR_STATUS, &err))
+		return false;
+
+	*err_out = err;
+	return true;
+}
+
+static bool servo_recovery_step(void)
+{
+	uint8_t id;
+
+	if (g_recover_slot >= SERVO_COUNT || !servo_table[g_recover_slot].enabled)
+		goto recovery_done;
+
+	id = servo_table[g_recover_slot].id;
+
+	switch (g_recover_phase) {
+	case 0u:
+		(void)dxl_reboot(id);
+		g_recover_t0_ms = dxl_port_millis();
+		g_recover_phase = 1u;
+		return true;
+
+	case 1u:
+		if ((dxl_port_millis() - g_recover_t0_ms) < SERVO_RECOVER_WAIT_MS)
+			return true;
+		g_recover_phase = 2u;
+		/* fall through */
+
+	default:
+		if (dxl_write_u8(id, DXL_ADDR_TORQUE_ENABLE, DXL_TORQUE_ON))
+			g_diag_torque_ok++;
+		g_hw_error[g_recover_slot] = 0u;
+		goto recovery_done;
+	}
+
+recovery_done:
+	g_recover_phase = 0u;
+	g_step          = SERVO_ST_UNI_WR;
+	return true;
+}
+
+static void servo_begin_recovery(uint8_t slot, uint8_t err)
+{
+	g_hw_error[slot]  = err;
+	g_recover_slot    = slot;
+	g_recover_phase   = 0u;
+	g_step            = SERVO_ST_RECOVER;
 }
 
 static bool servo_unicast_write_slot(uint8_t slot)
@@ -114,11 +184,16 @@ static void servo_bus_reset(void)
 	g_torque_slot = 0u;
 	g_torque_done = false;
 	g_slot        = 0u;
+	g_bus_cycles  = 0u;
+	memset(g_hw_error, 0, sizeof(g_hw_error));
+	g_recover_phase = 0u;
 }
 
 static void servo_bus_service(void)
 {
-	if (plant_diag_skip_actuator_can())
+	uint8_t hw_err;
+
+	if (plant_diag_skip_servo_bus())
 		return;
 
 	switch (g_step) {
@@ -128,6 +203,10 @@ static void servo_bus_service(void)
 			break;
 		}
 		(void)servo_torque_on_step();
+		return;
+
+	case SERVO_ST_RECOVER:
+		(void)servo_recovery_step();
 		return;
 
 	case SERVO_ST_UNI_WR:
@@ -140,9 +219,17 @@ static void servo_bus_service(void)
 
 	case SERVO_ST_UNI_RD:
 	default:
-		if (servo_unicast_read_slot(g_slot))
+		if ((g_bus_cycles % SERVO_HW_POLL_CYCLES) == 0u) {
+			if (servo_read_hw_error(g_slot, &hw_err) && hw_err != 0u) {
+				servo_begin_recovery(g_slot, hw_err);
+				g_bus_cycles++;
+				return;
+			}
+		} else if (servo_unicast_read_slot(g_slot)) {
 			g_diag_rd_ok++;
+		}
 
+		g_bus_cycles++;
 		servo_advance_slot(&g_slot);
 		g_step = SERVO_ST_UNI_WR;
 		return;
@@ -156,6 +243,7 @@ void servo_init(void)
 	memset(servo_desire_stage, 0, sizeof(servo_desire_stage));
 	memset(servo_state_stage, 0, sizeof(servo_state_stage));
 	servo_desire_pending = false;
+	g_servo_host_session = false;
 	g_diag_wr_ok = 0u;
 	g_diag_rd_ok = 0u;
 	g_diag_torque_ok = 0u;
@@ -164,16 +252,26 @@ void servo_init(void)
 
 void servo_command_mount(const host_command_image_t *cmd)
 {
+	bool any = false;
+
 	if (cmd == NULL)
 		return;
 
 	__disable_irq();
 	for (uint8_t i = 0; i < SERVO_COUNT; i++) {
-		if (cmd->servos[i].servo_id != 0u)
+		if (cmd->servos[i].servo_id != 0u) {
 			servo_desire_stage[i] = cmd->servos[i];
+			any = true;
+		}
 	}
+	g_servo_host_session = any;
 	servo_desire_pending = true;
 	__enable_irq();
+}
+
+bool servo_host_session_active(void)
+{
+	return g_servo_host_session;
 }
 
 void servo_desire_clear(void)
@@ -183,6 +281,7 @@ void servo_desire_clear(void)
 		memset(&servo_desire_live[i], 0, sizeof(servo_desire_t));
 	memset(servo_desire_stage, 0, sizeof(servo_desire_stage));
 	servo_desire_pending = false;
+	g_servo_host_session = false;
 	servo_bus_reset();
 	__enable_irq();
 }
@@ -247,11 +346,11 @@ void servo_diag_feedback_fill(host_pdu_feedback_t *pdu)
 	pdu->data[4] = g_torque_slot;
 	pdu->data[5] = (uint8_t)g_step;
 	pdu->data[6] = g_slot;
-	pdu->data[7] = 0u;
+	pdu->data[7] = g_hw_error[0];
 	pdu->data[8] = g_diag_wr_ok;
 	pdu->data[9] = g_diag_rd_ok;
 	pdu->data[10] = g_diag_torque_ok;
-	pdu->data[11] = 0u;
+	pdu->data[11] = g_hw_error[1];
 	pdu->data[12] = (uint8_t)(p0 & 0xFF);
 	pdu->data[13] = (uint8_t)((p0 >> 8) & 0xFF);
 	pdu->data[14] = (uint8_t)(p1 & 0xFF);

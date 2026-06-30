@@ -62,6 +62,7 @@ XL330_POS_MAX = 4095
 
 DEFAULT_HZ = 40.0
 DEFAULT_ARROW_VEL = 900.0
+MAX_ARROW_VEL = 1500.0
 DEFAULT_RAMP_UP_S = 0.35
 VEL_STOP_TICKS_S = 2.0
 
@@ -198,7 +199,24 @@ def parse_servo_diag(frame: bytes) -> Optional[dict]:
         "live_id0": pdu[16],
         "live_id1": pdu[17],
         "host_stale": bool(pdu[18]),
+        "hw_err0": pdu[7],
+        "hw_err1": pdu[11],
     }
+
+
+HW_ERR_NAMES = {
+    0x01: "input_volt",
+    0x04: "overheat",
+    0x10: "electrical",
+    0x20: "overload",
+}
+
+
+def format_hw_error(byte_val: int) -> str:
+    if byte_val == 0:
+        return "ok"
+    parts = [name for bit, name in HW_ERR_NAMES.items() if byte_val & bit]
+    return f"0x{byte_val:02x}({','.join(parts) or '?'})"
 
 
 def format_servo_diag(diag: Optional[dict]) -> str:
@@ -208,6 +226,7 @@ def format_servo_diag(diag: Optional[dict]) -> str:
         f"torque_done={int(diag['armed'])} bus={diag['bus_name']} "
         f"wr={diag['wr_ok']} rd={diag['rd_ok']} tq={diag['torque_ok']} "
         f"stale={int(diag['host_stale'])} "
+        f"hw=[{format_hw_error(diag['hw_err0'])},{format_hw_error(diag['hw_err1'])}] "
         f"mcu_p=[{diag['live_p0']},{diag['live_p1']}] "
         f"mcu_goal=[{diag['desire_p0']},{diag['desire_p1']}]"
     )
@@ -477,12 +496,17 @@ def main() -> None:
     ap.add_argument("--baud", type=int, default=USB_BAUD, help="pyserial baud (USB ignores)")
     ap.add_argument("--hz", type=float, default=DEFAULT_HZ, help="Host command rate (default 40)")
     ap.add_argument("--arrow-vel", type=float, default=DEFAULT_ARROW_VEL,
-                    help=f"Max slew ticks/s while arrow held (default {DEFAULT_ARROW_VEL})")
+                    help=f"Max slew ticks/s while arrow held (default {DEFAULT_ARROW_VEL}, max {MAX_ARROW_VEL})")
     ap.add_argument("--ramp-up", type=float, default=DEFAULT_RAMP_UP_S,
                     help=f"Velocity ramp-up tau (s, default {DEFAULT_RAMP_UP_S})")
     ap.add_argument("--debug", action="store_true",
                     help="Print MCU SVD diagnostics (armed, bus state, read counts)")
     args = ap.parse_args()
+    if args.arrow_vel > MAX_ARROW_VEL:
+        print(f"Clamping --arrow-vel {args.arrow_vel:.0f} -> {MAX_ARROW_VEL:.0f} (overload protection)")
+        args.arrow_vel = MAX_ARROW_VEL
+    elif args.arrow_vel < 0:
+        args.arrow_vel = 0.0
 
     print(f"Opening {args.port} @ {args.baud}")
     with serial.Serial(args.port, args.baud, timeout=0.05) as ser:

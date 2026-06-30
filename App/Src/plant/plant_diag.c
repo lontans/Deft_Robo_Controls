@@ -1,5 +1,6 @@
 #include "plant/plant_diag.h"
 #include "plant/actuator.h"
+#include "plant/servo.h"
 #include "plant/plugins/robstride.h"
 #include "plant/plugins/dynamixel.h"
 #include "plant/can/can_router.h"
@@ -68,6 +69,12 @@ static can_bus_id_t plant_diag_pdu_can_bus(const host_pdu_command_t *pdu)
 }
 
 bool plant_diag_skip_actuator_can(void)
+{
+	return g_rs2_session_active || g_probe_in_progress ||
+	       servo_host_session_active();
+}
+
+bool plant_diag_skip_servo_bus(void)
 {
 	return g_rs2_session_active || g_probe_in_progress;
 }

@@ -24,4 +24,6 @@ void servo_feedback_snapshot(host_servo_feedback_t *dst, uint8_t count);
 
 void servo_desire_clear(void);
 
+bool servo_host_session_active(void);
+
 void servo_diag_feedback_fill(host_pdu_feedback_t *pdu);

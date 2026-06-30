@@ -71,15 +71,16 @@ typedef struct __attribute__((packed)) {
 } host_servo_feedback_t;
 
 typedef struct __attribute__((packed)) {
-	uint8_t mode             : 5;
-	uint8_t reserved         : 3;
-	uint8_t master_brightness;
+	uint16_t mode             : 5;
+	uint16_t master_brightness: 5;
+	uint16_t led_count        : 6;
+
 } host_led_command_t;
 
 typedef struct __attribute__((packed)) {
-	uint8_t mode_readback  : 5;
-	uint8_t driver_status  : 3;
-	uint8_t brightness_readback;
+	uint16_t mode_readback       : 5;
+	uint16_t brightness_readback : 5;
+	uint16_t driver_status       : 6;
 } host_led_feedback_t;
 
 typedef struct __attribute__((packed)) {

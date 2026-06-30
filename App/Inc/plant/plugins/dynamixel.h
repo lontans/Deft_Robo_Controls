@@ -136,6 +136,13 @@ typedef struct {
 #define DXL_INST_PING        0x01u
 #define DXL_INST_READ        0x02u
 #define DXL_INST_WRITE       0x03u
+#define DXL_INST_REBOOT      0x08u
+
+/* Hardware Error Status(70) bits (XL330); torque clears until reboot. */
+#define DXL_HWERR_INPUT_VOLT  0x01u
+#define DXL_HWERR_OVERHEAT    0x04u
+#define DXL_HWERR_ELECTRICAL  0x10u
+#define DXL_HWERR_OVERLOAD    0x20u
 #define DXL_STATUS_PKT       0x55u
 
 #define DXL_LOBYTE(w)        ((uint8_t)((w) & 0xFFu))
@@ -178,7 +185,9 @@ uint8_t  dxl_scan_ids(uint8_t id_start, uint8_t id_end,
 bool     dxl_write_u8(uint8_t id, uint16_t addr, uint8_t value);
 bool     dxl_write_u16(uint8_t id, uint16_t addr, uint16_t value);
 bool     dxl_write_u32(uint8_t id, uint16_t addr, uint32_t value);
+bool     dxl_read_u8(uint8_t id, uint16_t addr, uint8_t *value_out);
 bool     dxl_read_u32(uint8_t id, uint16_t addr, uint32_t *value_out);
+bool     dxl_reboot(uint8_t id);
 bool     dxl_toggle_ids_baud(uint8_t id_start, uint8_t id_end, uint32_t *new_baud_out);
 void     dynamixel_bus_init(void);
 
