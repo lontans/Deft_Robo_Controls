@@ -1,12 +1,14 @@
 #include "plant/plant_diag.h"
 #include "plant/actuator.h"
 #include "plant/servo.h"
-#include "plant/plugins/robstride.h"
-#include "plant/plugins/dynamixel.h"
 #include "plant/can/can_router.h"
+#include "plant/can/mcp2518fd.h"
+#include "plant/plugins/dynamixel.h"
+#include "plant/plugins/robstride.h"
 #include <string.h>
 
 static robstride_probe_result_t g_last_probe;
+static mcp2518_smoke_result_t g_last_mcp_smoke;
 static volatile bool g_rs2_session_active;
 static volatile bool g_probe_in_progress;
 static uint8_t g_rs2_motor_id;
@@ -121,9 +123,12 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 		if (motor_id != 0u)
 			g_rs2_motor_id = motor_id;
 		g_rs2_can_bus = bus;
+		if (bus >= CAN_BUS_CH4)
+			(void)mcp2518_recover_bus(bus);
 		actuator_desire_clear();
 		memset(&g_last_probe, 0, sizeof(g_last_probe));
 		g_last_probe.probe_kind = kind;
+		g_last_probe.found = true;
 		return;
 	}
 
@@ -133,6 +138,41 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 		actuator_desire_clear();
 		memset(&g_last_probe, 0, sizeof(g_last_probe));
 		g_last_probe.probe_kind = kind;
+		g_last_probe.found = true;
+		return;
+	}
+
+	if (kind == PLANT_DIAG_PROBE_MCP_SMOKE) {
+		actuator_config_t cfg = {
+			.bus = bus,
+			.protocol = PROTO_ROBSTRIDE,
+			.motor_id = motor_id,
+			.enabled = true,
+		};
+		can_frame_t frame;
+
+		memset(&g_last_mcp_smoke, 0, sizeof(g_last_mcp_smoke));
+		memset(&g_last_probe, 0, sizeof(g_last_probe));
+		g_last_probe.probe_kind = kind;
+		g_last_probe.motor_id = motor_id;
+
+		g_probe_in_progress = true;
+		if (motor_id != 0u)
+			g_rs2_motor_id = motor_id;
+		g_rs2_can_bus = bus;
+
+		if (bus < CAN_BUS_CH4) {
+			g_last_probe.found = false;
+		} else if (robstride_send_enable(&cfg, &frame) != PLUGIN_OK) {
+			g_last_probe.found = false;
+		} else {
+			(void)mcp2518_bus_smoke(bus, &frame, 300u, &g_last_mcp_smoke);
+			if (g_last_mcp_smoke.tx_ok > 0u)
+				can_router_mark_traffic(bus);
+			g_last_probe.found = (g_last_mcp_smoke.tx_ok > 0u);
+			g_last_probe.raw_frames_seen = g_last_mcp_smoke.rx_frames;
+		}
+		g_probe_in_progress = false;
 		return;
 	}
 
@@ -189,6 +229,13 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 		return;
 	}
 
+	/* Idle: leave pdu for servo SVD unless RS2 has a probe result to report. */
+	if (!g_rs2_session_active && g_last_probe.probe_kind == 0u)
+		return;
+
+	if (g_rs2_session_active && g_last_probe.probe_kind == 0u && !g_probe_in_progress)
+		return;
+
 	memset(pdu->data, 0, sizeof(pdu->data));
 	pdu->data[0] = (uint8_t)PLANT_DIAG_PDU_RESP_TAG;
 	pdu->data[1] = g_last_probe.motor_id;
@@ -201,4 +248,35 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 	pdu->data[24] = g_last_probe.discovered_id;
 	pdu->data[25] = g_last_probe.probe_kind;
 	pdu->data[26] = g_last_probe.raw_frames_seen;
+	/* MCP2518 rails 0..2 = schematic CH4..CH6; bit set = init OK. */
+	pdu->data[27] = mcp2518_init_mask();
+	pdu->data[28] = mcp2518_rail_opmod(0u);
+	if (g_last_probe.probe_kind == PLANT_DIAG_PROBE_MCP_SMOKE) {
+		pdu->data[29] = g_last_mcp_smoke.tx_ok;
+		pdu->data[30] = g_last_mcp_smoke.tx_fail;
+		pdu->data[31] = g_last_mcp_smoke.tec;
+		pdu->data[8] = g_last_mcp_smoke.tx_fifo_sta;
+		pdu->data[9] = g_last_mcp_smoke.tx_fifo_con;
+		pdu->data[10] = g_last_mcp_smoke.c1con_b2;
+		pdu->data[11] = g_last_mcp_smoke.osc_b1;
+		pdu->data[12] = g_last_mcp_smoke.osc_b0;
+		pdu->data[13] = g_last_mcp_smoke.nbt_tseg1;
+		pdu->data[14] = g_last_mcp_smoke.bdiag1_b0;
+	} else {
+		uint8_t tx_ok = 0u;
+		uint8_t tx_fail = 0u;
+		uint8_t tec = 0u;
+		uint8_t rec = 0u;
+		mcp2518_get_tx_stats(0u, &tx_ok, &tx_fail);
+		mcp2518_rail_trec(0u, &tec, &rec);
+		pdu->data[29] = tx_ok;
+		pdu->data[30] = tx_fail;
+		pdu->data[31] = tec;
+		(void)rec;
+	}
+
+	/* Session begin/end acks are one-shot (host needs one frame, not idle spam). */
+	if (g_last_probe.probe_kind == PLANT_DIAG_SESSION_BEGIN ||
+	    g_last_probe.probe_kind == PLANT_DIAG_SESSION_END)
+		memset(&g_last_probe, 0, sizeof(g_last_probe));
 }

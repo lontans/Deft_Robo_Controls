@@ -3,6 +3,7 @@
 #include "plant/can/can_router.h"
 #include "plant/plugins/robstride.h"
 #include "plant/plant_diag.h"
+#include "plant/plant_command.h"
 #include "host/host_link.h"
 #include "main.h"
 #include <string.h>
@@ -78,6 +79,9 @@ void actuator_apply_desire(void)
 	__enable_irq();
 
 	if (plant_diag_skip_actuator_can())
+		return;
+
+	if (plant_command_mcu_state_readback() == PLANT_MCU_STATE_DIAG_ONLY)
 		return;
 
 	if (!host_link_command_is_fresh(ACTUATOR_HOST_STALE_MS))

@@ -30,8 +30,12 @@ Dynamixel neck servos (XL330, plant servos[] @ 500 Hz):
   python scripts/dynamixel_teleop.py --port COM9
   python scripts/host_teleop_laptop_usb.py --port COM9 --servo-teleop
 
-Launch demo (sequential CW sweep 0x70→0x74→0x73→0x75, then all to zero):
+Launch demo (sequential CW sweep slots 0→3, then all to zero):
   python scripts/host_teleop_laptop_usb.py --port COM9 --launch-seq
+
+CH4 SPI-CAN only (slot 3, motor 0x70):
+  python scripts/host_teleop_laptop_usb.py --port COM9 --plant-teleop --plant-slots 3
+  (then press 4 to filter motion to CH4)
 """
 
 from __future__ import annotations
@@ -63,6 +67,7 @@ from rs02_can_scan import (  # noqa: E402
     PROBE_RESET,
     PROBE_ZERO,
     PLANT_ACTUATOR_TABLE,
+    MAX_CAN_BUS,
     RS2_COMM_NAMES,
     SESSION_BEGIN,
     SESSION_END,
@@ -135,7 +140,8 @@ PLANT_HOME_POS_TOL = 0.05
 PLANT_HOME_VEL_TOL = 0.15
 PLANT_HOME_DWELL_S = 0.6
 PLANT_HOME_TIMEOUT_S = 120.0
-# Launch sequence: slot order = 0x70, 0x74, 0x73, 0x75 (slots 0–3)
+PLANT_TELEOP_BUS_KEYS: Tuple[str, ...] = tuple(str(i) for i in range(MAX_CAN_BUS + 1))
+# Launch sequence: slots 0–3 = CH1 0x76/0x74, CH2 0x73, CH4 0x70
 LAUNCH_ORDER_SLOTS: Tuple[int, ...] = (0, 1, 2, 3)
 LAUNCH_START_CW = -5.0
 LAUNCH_END_CW = 10.0
@@ -1068,7 +1074,7 @@ class PlantSlotTeleop:
 
 
 def plant_teleop_targets(slot_states: List[PlantSlotTeleop], active_bus: int) -> List[PlantSlotTeleop]:
-    """active_bus 0 = all slots; 1–3 = schematic CH1–CH3 only."""
+    """active_bus 0 = all slots; 1–6 = schematic CH1–CH6 only."""
     if active_bus == 0:
         return list(slot_states)
     return [st for st in slot_states if st.fdcan_bus == active_bus]
@@ -1624,8 +1630,8 @@ def run_plant_teleop(
     )
     print("Motors must be woken (probe/recovery once per branch). Auto-homes to 0.00 before teleop.")
     print("  Left / Right     velocity on active bus selection")
-    print("  0                all buses (slots 0x70+0x74, 0x73, 0x75)")
-    print("  1 / 2 / 3        CH1 only / CH2 only / CH3 only (live)")
+    print("  0                all buses (all configured slots)")
+    print("  1–6              CH1..CH6 only (FDCAN 1–3, MCP SPI-CAN 4–6)")
     print("  r                re-sync cmd_pos from feedback + stop velocity")
     print("  q                quit")
     print(f"  Active: {plant_active_bus_readback(active_bus)}")
@@ -1660,7 +1666,7 @@ def run_plant_teleop(
             stop.set()
             return
 
-    print(f"  {plant_active_bus_readback(active_bus)}  (press 0–3 to change bus)")
+    print(f"  {plant_active_bus_readback(active_bus)}  (press 0–{MAX_CAN_BUS} to change bus)")
     print()
 
     try:
@@ -1668,7 +1674,7 @@ def run_plant_teleop(
             quit_requested = False
             motion_dir = poll_arrow_direction()
             while True:
-                key = poll_key_nonblocking(extra=("0", "1", "2", "3"))
+                key = poll_key_nonblocking(extra=PLANT_TELEOP_BUS_KEYS)
                 if key is None:
                     break
                 if key == "q":
@@ -1677,13 +1683,13 @@ def run_plant_teleop(
                 if key == "0":
                     active_bus = 0
                     write_live_notice(plant_active_bus_readback(active_bus))
-                elif key in ("1", "2", "3"):
+                elif key in PLANT_TELEOP_BUS_KEYS[1:]:
                     pick_bus = int(key)
                     if any(st.fdcan_bus == pick_bus for st in slot_states):
                         active_bus = pick_bus
                         write_live_notice(plant_active_bus_readback(active_bus))
                     else:
-                        write_live_notice(f"no slot on bus {pick_bus}")
+                        write_live_notice(f"no slot on bus {pick_bus} ({can_bus_label(pick_bus)})")
                 elif key == "r":
                     reader.drain()
                     for st in slot_states:
@@ -2166,10 +2172,10 @@ def main() -> None:
                     help="Small position steps to test feedback without hand-rotating the shaft")
     ap.add_argument("--calibrate", action="store_true",
                     help="Encoder cal (comm 0x05), zero (0x06), save (0x16) over Deft RS2 path")
-    ap.add_argument("--bus", type=int, default=1, choices=[1, 2, 3],
-                    help="Plant CAN branch for RS2 --calibrate (1=CH1, 2=CH2 PA8/PA15, 3=CH3 PB12/13)")
+    ap.add_argument("--bus", type=int, default=1, choices=list(range(1, MAX_CAN_BUS + 1)),
+                    help=f"Schematic CAN bus for RS2 --calibrate (1..{MAX_CAN_BUS}; 4–6 = MCP2518)")
     ap.add_argument("--plant-teleop", action="store_true",
-                    help="All 4 plant slots in one frame (CH1 0x70/0x74, CH2 0x73, CH3 0x75); gentle ramp defaults")
+                    help="Plant actuator slots in one 562 B frame (default CH1 0x76/0x74, CH2 0x73, CH4 0x70)")
     ap.add_argument("--servo-teleop", action="store_true",
                     help="Dynamixel neck servos: L/R bottom, U/D top (see scripts/dynamixel_teleop.py)")
     ap.add_argument("--plant-slots", default="0,1,2,3",
@@ -2191,7 +2197,7 @@ def main() -> None:
     ap.add_argument("--plant-home-kp", type=float, default=PLANT_HOME_KP,
                     help=f"Homing position kp (default {PLANT_HOME_KP})")
     ap.add_argument("--launch-seq", action="store_true",
-                    help="Demo: prep to -5 rad, sweep 0x70→0x74→0x73→0x75 to +10, then all to 0")
+                    help="Demo: prep to -5 rad, sweep configured slots to +10, then all to 0")
     ap.add_argument("--launch-ccw", action="store_true",
                     help="Invert launch sweep (start +5, end -10) if default direction is wrong")
     ap.add_argument("--launch-vel", type=float, default=LAUNCH_MOVE_VEL,

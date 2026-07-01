@@ -11,11 +11,16 @@ Modes:
 Requires firmware with plant_diag (PDU tag RS2).
 
 Examples:
-  python scripts/rs02_can_scan.py --port COM9 --discover
+  python scripts/rs02_can_scan.py --list-ports
+  python scripts/rs02_can_scan.py --port COM9 --link-test
+  python scripts/rs02_can_scan.py --port COM9 --discover --bus 4 --debug-link
   python scripts/rs02_can_scan.py --port COM9 --discover --discover-all
   python scripts/rs02_can_scan.py --port COM9 --discover --discover-quick
   python scripts/rs02_can_scan.py --port COM9 --discover --start 0x40 --end 0x80
   python scripts/rs02_can_scan.py --port COM9 --probe-id 0x7F
+  python scripts/rs02_can_scan.py --port COM9 --mcp-smoke --bus 4
+  python scripts/rs02_can_scan.py --port COM9 --ch4-discover
+  python scripts/rs02_can_scan.py --port COM9 --discover --bus 4 --discover-deep --reset-first
   python scripts/rs02_can_scan.py --port COM9 --bench-cmds --bus 3 --target 0x74
 """
 
@@ -45,22 +50,28 @@ ACTUATOR0_OFF = 16
 ACTUATOR_SLOT_BYTES = 20
 HOST_EXCHANGE_ACTUATOR_SLOTS = 25
 HOST_EXCHANGE_SERVO_SLOTS = 2
+HOST_EXCHANGE_LED_SLOTS = 1
+# plant_command.h — system.mcu_state @ command image byte offset 12
+PLANT_MCU_STATE_NORMAL = 0
+PLANT_MCU_STATE_RECOVERY = 1
+PLANT_MCU_STATE_DIAG_ONLY = 2
+PLANT_MCU_STATE_ESTOP = 3
+SYSTEM_CMD_OFF = 12
 SERVO_SLOT_BYTES = 6
 SERVO0_CMD_OFF = ACTUATOR0_OFF + HOST_EXCHANGE_ACTUATOR_SLOTS * ACTUATOR_SLOT_BYTES
 SERVO0_FB_OFF = SERVO0_CMD_OFF
 PDU_OFF = 530
-# RS2 bench PDU: pdu.data[11] = FDCAN bus (1=CH1, 2=CH2, 3=CH3). MCU Phase 4 must read this byte.
+# RS2 bench PDU: pdu.data[11] = schematic bus 1..6 (CH1 FDCAN .. CH6 MCP2518).
 PDU_BUS_OFF = PDU_OFF + 11
 MIN_CAN_BUS = 1
-MAX_CAN_BUS = 3
+MAX_CAN_BUS = 6
 
-# Mirror App/Src/plant/plant_config.c — (fdcan_bus, motor_id) per actuator slot.
-# Mirror plant_config + schematic CH2/CH3 (not Cube FDCAN2/3 peripheral numbers).
+# Mirror App/Src/plant/plant_config.c — (schematic_bus, motor_id) per actuator slot.
 PLANT_ACTUATOR_TABLE: Tuple[Tuple[int, int], ...] = (
-    (1, 0x70),  # slot 0 CH1 RS02
-    (1, 0x74),  # slot 1 CH1 RS01
-    (2, 0x73),  # slot 2 CH2 RS01
-    (3, 0x75),  # slot 3 CH3 RS01
+    (1, 0x76),  # slot 0 CH1 FDCAN
+    (1, 0x74),  # slot 1 CH1 FDCAN
+    (2, 0x73),  # slot 2 CH2 FDCAN
+    (4, 0x70),  # slot 3 CH4 MCP2518 SPI-CAN
 )
 PLANT_ACTUATOR_MOTOR_IDS: Tuple[int, ...] = tuple(mid for _, mid in PLANT_ACTUATOR_TABLE)
 
@@ -77,6 +88,7 @@ PROBE_CALI = 16
 PROBE_ZERO = 17
 PROBE_DATA_SAVE = 18
 PROBE_PARAWRITE = 19
+PROBE_MCP_SMOKE = 20
 SESSION_BEGIN = 254
 SESSION_END = 255
 
@@ -116,7 +128,14 @@ def normalize_can_bus(bus: int) -> int:
 
 def can_bus_label(bus: int) -> str:
     b = normalize_can_bus(bus)
-    pins = {1: "PB8/9", 2: "PA8/PA15", 3: "PB12/13"}
+    pins = {
+        1: "PB8/9 FDCAN1",
+        2: "PA8/PA15 FDCAN3",
+        3: "PB12/13 FDCAN2",
+        4: "PB11 MCP SPI-CAN",
+        5: "PB1 MCP SPI-CAN",
+        6: "PA4 MCP SPI-CAN",
+    }
     return f"CH{b} ({pins[b]})"
 
 
@@ -124,8 +143,30 @@ def probe_target_label(motor_id: int, bus: int) -> str:
     return f"0x{motor_id & 0xFF:02X} on {can_bus_label(bus)}"
 
 
+def can_activity_led(bus: int) -> str:
+    pins = {
+        1: "PC7",
+        2: "PC6",
+        3: "PB15",
+        4: "PB14",
+        5: "PB2",
+        6: "PC5",
+    }
+    b = normalize_can_bus(bus)
+    return f"{pins[b]} (CH{b} ACT)"
+
+
 def print_can_bus_note(bus: int) -> None:
-    pass
+    b = normalize_can_bus(bus)
+    led = can_activity_led(b)
+    if b in MCP_CAN_BUSES:
+        print(
+            f"Probe target: MCP2518 {can_bus_label(b)}; CAN activity → {led}."
+        )
+        print("MCP: longer per-probe listen; bus-off clears at RS2 session begin.")
+    else:
+        print(f"Probe target: {can_bus_label(b)}; CAN activity → {led}.")
+    print(describe_actuator_can_sources())
 
 
 def patch_pdu_bus(buf: bytearray, bus: int) -> None:
@@ -141,16 +182,14 @@ COMMON_IDS = (
     0x10, 0x11, 0x20, 0x7F, 0xFD,
 )
 
-# Deep-wake first on these, then light (enable+promisc) on the rest of 1–127.
-DISCOVER_PRIORITY_IDS: Tuple[int, ...] = (
-    0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x7A, 0x79, 0x78, 0x77, 0x76, 0x75, 0x74, 0x73, 0x72, 0x71,
-    0x70, 0x6F,
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
-    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E,
-    0x1F,
-    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E,
-    0x2F,
-)
+# Deep-wake first on these (0x7F→0x70, then 0x01→0x7F). Previously 0x30–0x6E were light-only.
+_DISCOVER_PRIORITY_ORDER: List[int] = list(range(0x7F, 0x6F, -1)) + list(range(0x01, 0x80))
+DISCOVER_PRIORITY_IDS: Tuple[int, ...] = tuple(dict.fromkeys(_DISCOVER_PRIORITY_ORDER))
+
+# Pre-reset broadcast targets on MCP SPI-CAN rails (CH4–6).
+MCP_RESET_IDS: Tuple[int, ...] = (0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x70, 0x01)
+
+MCP_CAN_BUSES = frozenset({4, 5, 6})
 
 # Per probed ID: (label, probe_kind, timeout_s, repeat)
 DISCOVER_PROBES_LIGHT: Tuple[Tuple[str, int, float, int], ...] = (
@@ -466,9 +505,17 @@ def parse_servo_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:
     }
 
 
+def patch_system_mcu_state(buf: bytearray, mcu_state: int) -> None:
+    """host_system_command_t.mcu_state lives in bits 1..3 of the u32 at offset 12."""
+    word, = struct.unpack_from("<I", buf, SYSTEM_CMD_OFF)
+    word = (word & ~0x0E) | ((int(mcu_state) & 7) << 1)
+    struct.pack_into("<I", buf, SYSTEM_CMD_OFF, word)
+
+
 def build_plant_command(
     seq: int,
     slot_commands: Optional[Dict[int, Tuple[float, float, float, float, float]]] = None,
+    mcu_state: int = PLANT_MCU_STATE_NORMAL,
 ) -> bytes:
     """562 B plant teleop: actuator_commands[] only (no RS2 PDU). 500 Hz path on MCU."""
     buf = bytearray(IMAGE_BYTES)
@@ -476,10 +523,23 @@ def build_plant_command(
     struct.pack_into("<H", buf, 4, HOST_LAYOUT_VERSION)
     struct.pack_into("<H", buf, 6, IMAGE_BYTES)
     struct.pack_into("<I", buf, 8, seq & 0xFFFFFFFF)
+    patch_system_mcu_state(buf, mcu_state)
     if slot_commands:
         for slot, (pos, vel, kp, kd, tau) in slot_commands.items():
             patch_actuator_desire(buf, pos, vel, kp, kd, tau, slot=slot)
     return bytes(buf)
+
+
+def describe_actuator_can_sources() -> str:
+    lines = [
+        "Configured actuator slots (500 Hz loop when NOT in RS2 session):",
+    ]
+    for slot, (bus, mid) in enumerate(PLANT_ACTUATOR_TABLE):
+        lines.append(f"  slot {slot}: 0x{mid:02X} on {can_bus_label(bus)}")
+    lines.append(
+        "RS2 --bus only selects plant_diag probe target; it does NOT disable other slots."
+    )
+    return "\n".join(lines)
 
 
 def build_rs2_teleop_command(
@@ -506,6 +566,353 @@ def build_rs2_teleop_command(
     return bytes(buf)
 
 
+PDU_TAG_NAMES = {
+    "r": "RS2 bench reply",
+    "S": "servo diag (SVD)",
+    "d": "Dynamixel probe",
+    "R": "RS2 cmd (should not appear in FB)",
+}
+
+
+def parse_feedback_header(frame: bytes) -> Optional[dict]:
+    if len(frame) != IMAGE_BYTES:
+        return None
+    magic, layout_version, byte_size, fb_seq = struct.unpack_from("<IHHI", frame, 0)
+    sys_word, = struct.unpack_from("<I", frame, 12)
+    pdu = frame[PDU_OFF : PDU_OFF + 32]
+    tag = chr(pdu[0]) if 32 <= pdu[0] < 127 else f"0x{pdu[0]:02X}"
+    probe = parse_probe_pdu(frame)
+    return {
+        "magic_ok": magic == HOST_FEEDBACK_MAGIC,
+        "magic_hex": f"0x{magic:08X}",
+        "layout_version": layout_version,
+        "byte_size": byte_size,
+        "fb_seq": fb_seq,
+        "tick": sys_word & 0xFFF,
+        "last_cmd_seq": (sys_word >> 17) & 0xFF,
+        "pdu_tag": tag,
+        "pdu_tag_name": PDU_TAG_NAMES.get(tag, "unknown"),
+        "pdu_head_hex": pdu[:12].hex(),
+        "probe": probe,
+    }
+
+
+def format_feedback_line(index: int, hdr: dict, pdu_hex: Optional[str] = None) -> str:
+    probe = hdr.get("probe")
+    probe_s = ""
+    if probe is not None:
+        probe_s = (
+            f"  probe_id=0x{probe['probe_id']:02X} kind={probe['probe_kind']} "
+            f"found={int(probe['found'])} comm={probe['comm_mode']}"
+        )
+    elif hdr["pdu_tag"] == "S":
+        probe_s = "  (servo SVD — MCU idle, no RS2 session)"
+    magic_s = "OK" if hdr["magic_ok"] else f"BAD {hdr['magic_hex']}"
+    line = (
+        f"  [{index:3d}] magic={magic_s}  lv={hdr['layout_version']}  "
+        f"size={hdr['byte_size']}  tick={hdr['tick']:4d}  "
+        f"ack_seq={hdr['last_cmd_seq']:3d}  pdu={hdr['pdu_tag']} ({hdr['pdu_tag_name']})"
+        f"{probe_s}"
+    )
+    if pdu_hex is not None:
+        line += f"\n         pdu[0:32]={pdu_hex}"
+    return line
+
+
+def frame_pdu_hex(frame: bytes) -> str:
+    return frame[PDU_OFF : PDU_OFF + 32].hex()
+
+
+def collect_frames(reader: FrameReader, duration_s: float) -> List[bytes]:
+    deadline = time.monotonic() + max(duration_s, 0.0)
+    out: List[bytes] = []
+    while time.monotonic() < deadline:
+        frame = reader.pop()
+        while frame is not None:
+            out.append(frame)
+            frame = reader.pop()
+        time.sleep(0.005)
+    return out
+
+
+def summarize_frame_batch(frames: List[bytes], dump_pdu: bool = False, max_lines: int = 32) -> None:
+    if not frames:
+        print("  (no 562 B feedback frames in window)")
+        return
+    print(f"  {len(frames)} feedback frame(s):")
+    tags: Dict[str, int] = {}
+    for fr in frames:
+        hdr = parse_feedback_header(fr)
+        if hdr is None:
+            continue
+        tags[hdr["pdu_tag"]] = tags.get(hdr["pdu_tag"], 0) + 1
+    tag_summary = ", ".join(f"{k}×{v}" for k, v in sorted(tags.items()))
+    print(f"  PDU tags: {tag_summary}")
+    for i, fr in enumerate(frames[:max_lines]):
+        hdr = parse_feedback_header(fr)
+        if hdr is None:
+            print(f"  [{i:3d}] (unparseable {len(fr)} B)")
+            continue
+        line = format_feedback_line(
+            i,
+            hdr,
+            pdu_hex=frame_pdu_hex(fr) if dump_pdu else None,
+        )
+        print(line)
+    if len(frames) > max_lines:
+        print(f"  ... {len(frames) - max_lines} more (use --dump-frames to raise limit)")
+
+
+def list_serial_ports() -> None:
+    ports = list(list_ports.comports())
+    if not ports:
+        print("No serial ports found.")
+        return
+    print("Available ports:")
+    for p in sorted(ports, key=lambda x: x.device):
+        hint = ""
+        if p.vid == STM32_VID:
+            hint = "  <- likely STM32 USB CDC (use this, not ST-Link VCP if both appear)"
+        vid_s = f"0x{p.vid:04X}" if p.vid is not None else "n/a"
+        print(f"  {p.device:16s}  vid={vid_s:>6}  {p.description}{hint}")
+
+
+def describe_open_port(port: str) -> None:
+    for p in list_ports.comports():
+        if p.device == port:
+            print(
+                f"Port {port}: {p.description}  "
+                f"vid=0x{(p.vid or 0):04X} pid=0x{(p.pid or 0):04X}"
+            )
+            if p.vid != STM32_VID:
+                print(
+                    "  Warning: VID is not STM32 0x0483 — may be ST-Link VCP, not USB CDC."
+                )
+            return
+    print(f"Port {port}: (not in current port list — may still work)")
+
+
+def wait_probe_response_collect(
+    reader: FrameReader,
+    probe_id: int,
+    timeout_s: float,
+    probe_kind: Optional[int] = None,
+) -> Tuple[Optional[dict], List[bytes]]:
+    deadline = time.monotonic() + timeout_s
+    seen: List[bytes] = []
+    matched: Optional[dict] = None
+    while time.monotonic() < deadline:
+        frame = reader.pop()
+        while frame is not None:
+            seen.append(frame)
+            parsed = parse_probe_pdu(frame)
+            if parsed is not None:
+                if probe_kind in (SESSION_BEGIN, SESSION_END):
+                    if parsed["probe_kind"] == probe_kind:
+                        matched = parsed
+                        return matched, seen
+                elif parsed["probe_id"] == (probe_id & 0xFF):
+                    if probe_kind is not None and parsed["probe_kind"] != probe_kind:
+                        frame = reader.pop()
+                        continue
+                    matched = parsed
+                    return matched, seen
+            frame = reader.pop()
+        time.sleep(0.005)
+    return matched, seen
+
+
+def run_seq_ack_test(
+    ser: serial.Serial,
+    reader: FrameReader,
+    count: int,
+    start_seq: int,
+    diag_only: bool = True,
+) -> Tuple[int, List[int], List[bytes]]:
+    """Send plain plant commands; return (next_seq, acks_seen, frames)."""
+    seq = start_seq
+    frames: List[bytes] = []
+    acks: List[int] = []
+    mcu_state = PLANT_MCU_STATE_DIAG_ONLY if diag_only else PLANT_MCU_STATE_NORMAL
+    for _ in range(count):
+        reader.drain()
+        ser.write(build_plant_command(seq, {}, mcu_state=mcu_state))
+        ser.flush()
+        deadline = time.monotonic() + 0.35
+        got_fb = False
+        while time.monotonic() < deadline:
+            frame = reader.pop()
+            while frame is not None:
+                frames.append(frame)
+                hdr = parse_feedback_header(frame)
+                if hdr is not None and hdr["magic_ok"]:
+                    acks.append(hdr["last_cmd_seq"])
+                    got_fb = True
+                frame = reader.pop()
+            if got_fb:
+                break
+            time.sleep(0.005)
+        seq += 1
+        time.sleep(0.02)
+    return seq, acks, frames
+
+
+def run_link_test(ser: serial.Serial, args: argparse.Namespace) -> int:
+    reader = FrameReader()
+    stop = threading.Event()
+    threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
+
+    listen_s = args.listen_first if args.listen_first > 0.0 else 1.0
+    session_timeout = args.session_timeout if args.session_timeout is not None else max(args.timeout, 1.0)
+    bus = normalize_can_bus(args.bus)
+    dump_limit = max(1, int(args.dump_frames))
+
+    print(f"USB link test on {ser.port} @ {args.baud}  (562 B host image, no CAN probes)")
+    describe_open_port(ser.port)
+    print(f"Expected feedback magic=0x{HOST_FEEDBACK_MAGIC:08X}  image={IMAGE_BYTES} B")
+    print()
+    print(describe_actuator_can_sources())
+    print()
+
+    try:
+        print(f"--- 1) Listen {listen_s:.1f}s (unsolicited MCU feedback) ---")
+        idle_frames = collect_frames(reader, listen_s)
+        summarize_frame_batch(idle_frames, dump_pdu=args.dump_pdu, max_lines=dump_limit)
+        print()
+
+        print("--- 2) Seq ack test (8 plain plant commands, mcu_state=DIAG_ONLY, no CAN) ---")
+        print("  (Uses DIAG_ONLY so slots 0–3 do not hit CH1/CH2/CH4 — USB seq path only.)")
+        seq, acks, seq_frames = run_seq_ack_test(ser, reader, 8, 1, diag_only=True)
+        if not seq_frames:
+            print("  FAIL: no feedback frames after plant commands.")
+            print("  → Wrong COM port (try --list-ports), MCU not running, or USB not enumerated.")
+        else:
+            uniq_acks = sorted(set(acks))
+            print(f"  Frames: {len(seq_frames)}  last_cmd_seq values: {uniq_acks}")
+            if max(acks or [0]) >= 1:
+                print("  OK: MCU is receiving host commands (seq ack advancing).")
+            else:
+                print("  WARN: feedback seen but last_cmd_seq never advanced (seq path broken?).")
+        print()
+
+        print(f"--- 3) RS2 session begin (kind={SESSION_BEGIN}, bus={bus}) ---")
+        reader.drain()
+        cmd = build_scan_command(0, SESSION_BEGIN, seq, bus=bus)
+        print(
+            f"  TX pdu tag=RS2  motor_id=0x00  kind={SESSION_BEGIN}  "
+            f"pdu[11]=bus {bus}  seq={seq}"
+        )
+        ser.write(cmd)
+        ser.flush()
+        resp, session_frames = wait_probe_response_collect(
+            reader, 0, session_timeout, probe_kind=SESSION_BEGIN
+        )
+        summarize_frame_batch(session_frames, dump_pdu=args.dump_pdu, max_lines=dump_limit)
+        if resp is not None:
+            print(
+                f"  OK: session begin ack  found={resp['found']}  "
+                f"probe_kind={resp['probe_kind']}  probe_id=0x{resp['probe_id']:02X}"
+            )
+            print(format_mcp_status(resp, bus=bus))
+            seq += 1
+            print()
+            print("--- 4) Session end ---")
+            reader.drain()
+            ser.write(build_scan_command(0, SESSION_END, seq, bus=bus))
+            ser.flush()
+            end_resp, end_frames = wait_probe_response_collect(
+                reader, 0, session_timeout, probe_kind=SESSION_END
+            )
+            summarize_frame_batch(end_frames, dump_pdu=args.dump_pdu, max_lines=min(8, dump_limit))
+            if end_resp is not None:
+                print(f"  OK: session end ack  probe_kind={end_resp['probe_kind']}")
+            else:
+                print("  WARN: session end not acked (often harmless)")
+        else:
+            print("  FAIL: no RS2 session begin ack within {:.2f}s.".format(session_timeout))
+            if session_frames:
+                hdrs = [parse_feedback_header(f) for f in session_frames]
+                hdrs = [h for h in hdrs if h is not None]
+                if hdrs and all(h["pdu_tag"] == "S" for h in hdrs):
+                    print(
+                        "  → All PDUs are servo SVD — MCU did not process RS2 command "
+                        "(wrong image layout / old firmware / command not reaching plant_diag?)."
+                    )
+                elif not session_frames:
+                    pass
+                else:
+                    kinds = [
+                        h["probe"]["probe_kind"]
+                        for h in hdrs
+                        if h.get("probe") is not None
+                    ]
+                    if kinds:
+                        print(f"  → Saw RS2 replies but probe_kind in {kinds} (want {SESSION_BEGIN}).")
+            else:
+                print("  → No feedback at all — check COM port and USB cable.")
+            print()
+            print("Paste this full output when debugging.")
+            return 1
+
+        print()
+        print("Link test passed. Retry discover with --debug-link for per-probe detail.")
+        return 0
+    finally:
+        stop.set()
+
+
+def format_mcp_status(resp: Optional[dict], bus: int = 4) -> str:
+    if resp is None:
+        return "  mcp_init_mask=?  ch4_opmod=?"
+    mask = int(resp.get("mcp_init_mask", 0)) & 0xFF
+    opmod = int(resp.get("mcp_ch4_opmod", 0xFF)) & 0xFF
+    tx_ok = int(resp.get("mcp_tx_ok", 0)) & 0xFF
+    tx_fail = int(resp.get("mcp_tx_fail", 0)) & 0xFF
+    tec = int(resp.get("mcp_tec", 0)) & 0xFF
+    rx = int(resp.get("raw_frames", 0)) & 0xFF
+    led = can_activity_led(bus)
+    line = (
+        f"  mcp_init_mask=0x{mask:02X} (bit0=CH4 rail0/PB11 CS)  "
+        f"ch4_opmod={opmod} (6=CAN2.0 normal)  "
+        f"tx_ok={tx_ok} tx_fail={tx_fail} tec={tec} rx={rx}"
+    )
+    if (mask & 0x01) == 0:
+        return line + "\n  → MCP2518 CH4 rail not initialized (SPI/init failure)"
+    if opmod != 6:
+        return line + f"\n  → MCP up but opmod {opmod} != 6"
+    if tx_ok == 0:
+        sta = int(resp.get("mcp_txq_sta", 0)) & 0xFF
+        con = int(resp.get("mcp_txq_con", 0)) & 0xFF
+        c1b2 = int(resp.get("mcp_c1con_b2", 0)) & 0xFF
+        oscb1 = int(resp.get("mcp_osc_b1", 0)) & 0xFF
+        txqen = "yes" if (c1b2 & 0x10) else "NO"
+        oscrdy = "yes" if (oscb1 & 0x04) else "no"
+        stuck = ""
+        if (sta & 0x50) == 0x50 or ((sta & 0x10) and not (sta & 0x04)):
+            stuck = "  TXQ stuck (TXATIF) — reflash MCU if this persists after fix."
+        return line + (
+            f"\n  → MCP could not load TXQ (txq_sta=0x{sta:02X} txq_con=0x{con:02X} "
+            f"TXQEN={txqen} OscReady={oscrdy}).{stuck}"
+        )
+    if rx > 0:
+        return line + f"\n  → MCP TX OK and ext-CAN RX seen — {led} should have blinked"
+    if tec > 0:
+        osc_b0 = int(resp.get("mcp_osc_b0", 0)) & 0xFF
+        nbt_tseg1 = int(resp.get("mcp_nbt_tseg1", 0)) & 0xFF
+        bdiag = int(resp.get("mcp_bdiag1_b0", 0)) & 0xFF
+        pll = "BAD(PLLEN=1)" if (osc_b0 & 0x01) else "ok"
+        nbt = "ok" if nbt_tseg1 == 17 else f"TSEG1={nbt_tseg1}(expect 17)"
+        return line + (
+            f"\n  → MCP TX reached CAN MAC (TEC={tec}, no ACK). "
+            f"osc_pll={pll} nbt={nbt} bdiag=0x{bdiag:02X}. "
+            f"Scope: one ext frame ≈130–150 µs @ 1 Mbps; ~30 µs ≈ ID-only or ~4× fast bitrate."
+        )
+    return line + (
+        f"\n  → MCP reports {tx_ok} TX OK but TEC=0 (no bus errors counted yet). "
+        f"If {led} stayed solid, verify CS/SPI vs LED path."
+    )
+
+
 def parse_probe_pdu(frame: bytes) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
@@ -525,6 +932,18 @@ def parse_probe_pdu(frame: bytes) -> Optional[dict]:
         "discovered_id": pdu[24],
         "probe_kind": pdu[25],
         "raw_frames": pdu[26],
+        "mcp_init_mask": pdu[27],
+        "mcp_ch4_opmod": pdu[28],
+        "mcp_tx_ok": pdu[29],
+        "mcp_tx_fail": pdu[30],
+        "mcp_tec": pdu[31],
+        "mcp_txq_sta": pdu[8],
+        "mcp_txq_con": pdu[9],
+        "mcp_c1con_b2": pdu[10],
+        "mcp_osc_b1": pdu[11],
+        "mcp_osc_b0": pdu[12],
+        "mcp_nbt_tseg1": pdu[13],
+        "mcp_bdiag1_b0": pdu[14],
     }
 
 
@@ -831,7 +1250,7 @@ def run_param_scan(ser: serial.Serial, target: int, args: argparse.Namespace) ->
     print()
 
     try:
-        seq = begin_session(ser, reader, seq, args.timeout)
+        seq = begin_session(ser, reader, seq, args.timeout, bus=bus, args=args)
         if args.reset_first:
             send_diag(ser, reader, target, PROBE_RESET, seq, max(args.timeout, 0.45), bus=bus)
             seq += 1
@@ -854,7 +1273,7 @@ def run_param_scan(ser: serial.Serial, target: int, args: argparse.Namespace) ->
                 sniffs.append((index, sniff))
             time.sleep(max(args.gap, 0.05))
     finally:
-        end_session(ser, reader, seq, args.timeout)
+        end_session(ser, reader, seq, args.timeout, bus=bus, args=args)
         stop.set()
 
     print()
@@ -894,7 +1313,7 @@ def run_recovery(ser: serial.Serial, target: int, args: argparse.Namespace) -> i
     print()
 
     try:
-        seq = begin_session(ser, reader, seq, args.timeout)
+        seq = begin_session(ser, reader, seq, args.timeout, bus=bus, args=args)
         for label, kind, wait_s in (
             ("reset comm 0x04", PROBE_RESET, 0.55),
             ("enable comm 0x03", PROBE_ENABLE_ONLY, 0.55),
@@ -909,7 +1328,7 @@ def run_recovery(ser: serial.Serial, target: int, args: argparse.Namespace) -> i
                 print(f"         mms={mms}  faults=[{','.join(ext.faults) or 'none'}]")
             print()
     finally:
-        end_session(ser, reader, seq, args.timeout)
+        end_session(ser, reader, seq, args.timeout, bus=bus, args=args)
         stop.set()
     return 0
 
@@ -939,7 +1358,7 @@ def run_bench_cmds(ser: serial.Serial, target: int, args: argparse.Namespace) ->
     print()
 
     try:
-        seq = begin_session(ser, reader, seq, args.timeout)
+        seq = begin_session(ser, reader, seq, args.timeout, bus=bus, args=args)
         print("--- prep reset (fault clear) ---")
         resp = send_diag(ser, reader, target, PROBE_RESET, seq, 0.55, bus=bus)
         seq += 1
@@ -998,7 +1417,7 @@ def run_bench_cmds(ser: serial.Serial, target: int, args: argparse.Namespace) ->
             print()
             time.sleep(0.2)
     finally:
-        end_session(ser, reader, seq, args.timeout)
+        end_session(ser, reader, seq, args.timeout, bus=bus, args=args)
         stop.set()
     return 0
 
@@ -1023,7 +1442,7 @@ def run_proactive_off(ser: serial.Serial, target: int, args: argparse.Namespace)
     print("After this, power-cycle the motor to confirm proactive broadcasts stop.")
     print()
     try:
-        seq = begin_session(ser, reader, seq, args.timeout)
+        seq = begin_session(ser, reader, seq, args.timeout, bus=bus, args=args)
         resp = send_diag(ser, reader, target, PROBE_RESET, seq, 0.55, bus=bus)
         seq += 1
         print(format_probe_line("reset", target, resp))
@@ -1040,7 +1459,7 @@ def run_proactive_off(ser: serial.Serial, target: int, args: argparse.Namespace)
             print()
             time.sleep(0.2)
     finally:
-        end_session(ser, reader, seq, args.timeout)
+        end_session(ser, reader, seq, args.timeout, bus=bus, args=args)
         stop.set()
     return 0
 
@@ -1074,20 +1493,77 @@ def format_probe_line(label: str, motor_id: int, resp: Optional[dict]) -> str:
     )
 
 
-def begin_session(ser: serial.Serial, reader: FrameReader, seq: int, timeout: float) -> int:
-    if send_diag(ser, reader, 0, SESSION_BEGIN, seq, timeout) is None:
-        print("Warning: scan session begin not acknowledged (flash firmware with plant_diag?)")
+def begin_session(
+    ser: serial.Serial,
+    reader: FrameReader,
+    seq: int,
+    timeout: float,
+    bus: int = 1,
+    args: Optional[argparse.Namespace] = None,
+) -> int:
+    session_timeout = timeout
+    if args is not None and args.session_timeout is not None:
+        session_timeout = args.session_timeout
+    debug = args is not None and getattr(args, "debug_link", False)
+    dump_limit = max(1, int(getattr(args, "dump_frames", 8))) if args is not None else 8
+    dump_pdu = bool(getattr(args, "dump_pdu", False)) if args is not None else False
+
+    if debug and args is not None and args.listen_first > 0.0:
+        print(f"--- debug-link: listen {args.listen_first:.1f}s before session ---")
+        pre = collect_frames(reader, args.listen_first)
+        summarize_frame_batch(pre, dump_pdu=dump_pdu, max_lines=dump_limit)
+        print()
+
+    if debug:
+        reader.drain()
+        print(
+            f"--- debug-link: session begin  kind={SESSION_BEGIN}  bus={bus}  "
+            f"timeout={session_timeout:.2f}s  seq={seq} ---"
+        )
+        ser.write(build_scan_command(0, SESSION_BEGIN, seq, bus=bus))
+        ser.flush()
+        resp, frames = wait_probe_response_collect(
+            reader, 0, session_timeout, probe_kind=SESSION_BEGIN
+        )
+        summarize_frame_batch(frames, dump_pdu=dump_pdu, max_lines=dump_limit)
     else:
-        # Clear stale slot-0 desires (e.g. teleop kp=50) before bench probes.
+        resp = send_diag(ser, reader, 0, SESSION_BEGIN, seq, session_timeout, bus=bus)
+
+    if resp is None:
+        print("Warning: scan session begin not acknowledged (flash firmware with plant_diag?)")
+        if debug:
+            print("  Hint: run --link-test on this port, or --list-ports for STM32 USB CDC.")
+    else:
         ser.write(build_actuator_command(0.0, 0.0, 0.0, 0.0, 0.0, seq + 1))
         ser.flush()
         seq += 1
+        if debug:
+            mcp = resp.get("mcp_init_mask", 0)
+            opmod = resp.get("mcp_ch4_opmod", 0xFF)
+            print(
+                f"  session begin OK  probe_kind={resp['probe_kind']}  found={resp['found']}"
+            )
+            print(format_mcp_status(resp, bus=bus))
+            if (mcp & 0x01) == 0:
+                print(
+                    "  Next: check MCP2518 power/SPI (PA5-7, PB11 CS) — not a host/USB issue."
+                )
     time.sleep(0.05)
     return seq + 1
 
 
-def end_session(ser: serial.Serial, reader: FrameReader, seq: int, timeout: float) -> None:
-    send_diag(ser, reader, 0, SESSION_END, seq, timeout)
+def end_session(
+    ser: serial.Serial,
+    reader: FrameReader,
+    seq: int,
+    timeout: float,
+    bus: int = 1,
+    args: Optional[argparse.Namespace] = None,
+) -> None:
+    session_timeout = timeout
+    if args is not None and args.session_timeout is not None:
+        session_timeout = args.session_timeout
+    send_diag(ser, reader, 0, SESSION_END, seq, session_timeout, bus=bus)
 
 
 def run_exercise(ser: serial.Serial, target: int, args: argparse.Namespace) -> int:
@@ -1112,11 +1588,11 @@ def run_exercise(ser: serial.Serial, target: int, args: argparse.Namespace) -> i
     if args.wake:
         print("Mode: --wake (reset → enable-only → full → sustained ctrl)")
     print("RS2 bench channel in host image byte 530 (not a power-distribution board).")
-    print("CAN activity LEDs: PC7=CH1  PC6=CH2 (PA8/PA15)  PB15=CH3 (PB12/13) — blink on TX/RX.")
+    print("CAN activity LEDs: PC7=CH1  PC6=CH2  PB15=CH3  PB14=CH4  PB2=CH5  PC5=CH6")
     print()
 
     try:
-        seq = begin_session(ser, reader, seq, args.timeout)
+        seq = begin_session(ser, reader, seq, args.timeout, bus=bus, args=args)
 
         if args.reset_first:
             print("Pre-resetting target motor...")
@@ -1140,7 +1616,7 @@ def run_exercise(ser: serial.Serial, target: int, args: argparse.Namespace) -> i
                     any_parsed = True
                 time.sleep(pause)
     finally:
-        end_resp = send_diag(ser, reader, 0, SESSION_END, seq, args.timeout)
+        end_resp = send_diag(ser, reader, 0, SESSION_END, seq, args.timeout, bus=bus)
         session_ended = end_resp is not None
         seq += 1
         print()
@@ -1250,13 +1726,17 @@ def build_discover_id_list(args: argparse.Namespace) -> List[int]:
     full_range = list(range(start, end + 1))
     custom_range = (start, end) != (1, 127)
 
-    # Full 1–127 (or --start/--end): priority IDs ordered first, then the rest.
+    if custom_range:
+        # Honor --start/--end only (priority order within that window).
+        priority_in_range = [i for i in DISCOVER_PRIORITY_IDS if start <= i <= end]
+        seen = set(priority_in_range)
+        tail = [i for i in full_range if i not in seen]
+        return priority_in_range + tail
+
+    # Full 1–127: priority IDs ordered first, then the rest.
     if args.discover_all or not args.discover_quick:
         return dedupe_id_list(list(DISCOVER_PRIORITY_IDS) + full_range)
 
-    # --discover-quick: still sweep full 1–127 (light probes); custom --start/--end narrows/widens.
-    if custom_range:
-        return dedupe_id_list(list(DISCOVER_PRIORITY_IDS) + full_range)
     return dedupe_id_list(list(DISCOVER_PRIORITY_IDS) + list(range(1, 128)))
 
 
@@ -1269,6 +1749,19 @@ def describe_discover_scan(args: argparse.Namespace, id_list: List[int]) -> str:
             return f"full 1–127 / 0x01–0x7F ({len(id_list)} addresses, light probes)"
         return f"full 1–127 / 0x01–0x7F ({len(id_list)} addresses, deep wake on priority IDs first)"
     return f"0x{start:02X}–0x{end:02X} ({len(id_list)} addresses)"
+
+
+def discover_probe_timeout(base: float, bus: int) -> float:
+    """MCP2518 SPI-CAN needs longer per-probe listen than on-chip FDCAN."""
+    if normalize_can_bus(bus) in MCP_CAN_BUSES:
+        return max(base * 2.5, base + 0.35)
+    return base
+
+
+def discover_reset_ids(bus: int) -> Tuple[int, ...]:
+    if normalize_can_bus(bus) in MCP_CAN_BUSES:
+        return MCP_RESET_IDS
+    return (0x7F, 0x70, 0x7E)
 
 
 def discover_probe_steps(probed_id: int, args: argparse.Namespace) -> Tuple[Tuple[str, int, float, int], ...]:
@@ -1294,7 +1787,7 @@ def probe_one_id(
             step_label = probe_label if repeat == 1 else f"{probe_label}[{n + 1}/{repeat}]"
             resp = send_diag(
                 ser, reader, probed_id, probe_kind, seq,
-                max(args.timeout, probe_timeout),
+                discover_probe_timeout(max(args.timeout, probe_timeout), args.bus),
                 bus=normalize_can_bus(args.bus),
             )
             seq += 1
@@ -1314,6 +1807,65 @@ def probe_one_id(
     return best, seq
 
 
+def run_mcp_smoke(ser: serial.Serial, args: argparse.Namespace) -> int:
+    """Minimum MCP2518 path test: 3 TX enable frames, listen 300 ms, report counters."""
+    reader = FrameReader()
+    stop = threading.Event()
+    threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
+
+    bus = normalize_can_bus(args.bus)
+    motor_id = int(args.target) & 0xFF
+    seq = 1
+    led = can_activity_led(bus)
+
+    print(f"MCP smoke test on {can_bus_label(bus)}  motor_id=0x{motor_id:02X}  probe_kind={PROBE_MCP_SMOKE}")
+    print(f"Watch {led} during the test (blinks on successful MCP TX).")
+    print("Interpretation:")
+    print("  tx_ok=0     → MCP FIFO/SPI send path still broken")
+    print("  tx_ok>0, tec>0 → frame reached CAN (no ACK); transceiver likely OK, check motor/bus")
+    print("  tx_ok>0, rx>0  → full TX+RX path working")
+    print()
+
+    try:
+        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
+        reader.drain()
+        resp = send_diag(
+            ser, reader, motor_id, PROBE_MCP_SMOKE, seq,
+            max(args.timeout, 1.0), bus=bus,
+        )
+        seq += 1
+        if resp is None:
+            print("FAIL: no USB feedback from MCP smoke probe.")
+            return 1
+        print(format_mcp_status(resp, bus=bus))
+        if resp.get("probe_kind") != PROBE_MCP_SMOKE:
+            print(f"WARN: expected probe_kind {PROBE_MCP_SMOKE}, got {resp.get('probe_kind')}")
+        if int(resp.get("mcp_tx_ok", 0)) == 0 and int(resp.get("mcp_tec", 0)) == 0:
+            print("\nResult: MCP TX did not succeed — fix driver/hardware before discover.")
+            return 1
+        if int(resp.get("raw_frames", 0)) > 0:
+            print(f"\nResult: ext-CAN RX on CH{bus} ({resp.get('raw_frames')} frame(s)).")
+            return 0
+        tec = int(resp.get("mcp_tec", 0))
+        if tec > 0:
+            print(f"\nResult: MCP reached CAN bus (TEC={tec}) but no motor reply at 0x{motor_id:02X}.")
+            if tec >= 128:
+                print("  TEC=128 → bus-off; reflash (fw clears on session begin) then run --ch4-discover.")
+            else:
+                print("  Run wide ID sweep:")
+            print(f"    python scripts/rs02_can_scan.py --port {ser.port} --ch4-discover")
+            return 1
+        if int(resp.get("mcp_tx_ok", 0)) > 0:
+            print(f"\nResult: MCP accepted TX ({resp.get('mcp_tx_ok')}/3) but TEC=0 — scope CANH/CANL if unsure.")
+            print(f"    python scripts/rs02_can_scan.py --port {ser.port} --ch4-discover")
+            return 1
+        print("\nResult: MCP TX did not succeed — fix driver/hardware before discover.")
+        return 1
+    finally:
+        end_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
+        stop.set()
+
+
 def run_probe_id(ser: serial.Serial, args: argparse.Namespace) -> int:
     reader = FrameReader()
     stop = threading.Event()
@@ -1323,15 +1875,15 @@ def run_probe_id(ser: serial.Serial, args: argparse.Namespace) -> int:
     bus = normalize_can_bus(args.bus)
     seq = 1
     print(f"Deep probe {probe_target_label(motor_id, bus)} on {ser.port}  (same wake as --bench-cmds)")
-    print_can_bus_note(bus)
+    print(f"Activity LED for this bus: {can_activity_led(bus)}")
     print("Only ONE motor should be on CAN. Power on, shaft free.")
     print()
 
     try:
-        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5))
+        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
         best, seq = probe_one_id(ser, reader, motor_id, seq, args, verbose_steps=True)
     finally:
-        end_session(ser, reader, seq, max(args.timeout, 0.5))
+        end_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
         stop.set()
 
     print()
@@ -1339,7 +1891,8 @@ def run_probe_id(ser: serial.Serial, args: argparse.Namespace) -> int:
         print(f"Result: no CAN reply at probed ID 0x{motor_id:02X}.")
         print("  - Confirm THIS motor is wired (not the other RS02)")
         print("  - Try factory default: --probe-id 0x7F")
-        print("  - PC7 should blink on TX even with no reply")
+        print(f"  - Run --mcp-smoke --bus {bus} first (verifies MCP TX without needing a reply)")
+        print(f"  - {can_activity_led(bus)} should blink on TX even with no reply")
         return 1
 
     _, resp = best
@@ -1375,21 +1928,25 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
     print()
 
     try:
-        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5))
+        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
 
         if args.reset_first:
-            for rid in (0x7F, 0x70, 0x7E):
-                send_diag(ser, reader, rid, PROBE_RESET, seq, 0.45, bus=bus)
+            for rid in discover_reset_ids(bus):
+                send_diag(ser, reader, rid, PROBE_RESET, seq, discover_probe_timeout(0.45, bus), bus=bus)
                 seq += 1
                 time.sleep(0.08)
-            print("Pre-reset sent to 0x7F, 0x70, 0x7E")
+            ids_s = ", ".join(f"0x{r:02X}" for r in discover_reset_ids(bus))
+            print(f"Pre-reset sent to {ids_s}")
             print()
 
         total = len(id_list)
         for idx, probed_id in enumerate(id_list):
             if total > 40 and idx > 0 and idx % 20 == 0:
                 print(f"  ... progress {idx}/{total} (probing 0x{probed_id:02X})")
-            best, seq = probe_one_id(ser, reader, probed_id, seq, args, verbose_steps=False)
+            best, seq = probe_one_id(
+                ser, reader, probed_id, seq, args,
+                verbose_steps=args.verbose or args.debug_link or args.debug_probes,
+            )
 
             if best is not None:
                 probe_label, resp = best
@@ -1401,7 +1958,7 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
 
             time.sleep(max(args.gap, 0.05))
     finally:
-        end_session(ser, reader, seq, max(args.timeout, 0.5))
+        end_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
         stop.set()
 
     print()
@@ -1455,7 +2012,7 @@ def run_scan(ser: serial.Serial, id_list: List[int], args: argparse.Namespace) -
     print("Probe: RobStride private ext-CAN. Background actuator TX paused during session.")
     print()
 
-    seq = begin_session(ser, reader, seq, args.timeout)
+    seq = begin_session(ser, reader, seq, args.timeout, bus=bus, args=args)
 
     if args.reset_first:
         reset_ids = [args.target & 0xFF, 0x7F, 0x6F]
@@ -1495,7 +2052,7 @@ def run_scan(ser: serial.Serial, id_list: List[int], args: argparse.Namespace) -
 
         time.sleep(args.gap)
 
-    end_session(ser, reader, seq, args.timeout)
+    end_session(ser, reader, seq, args.timeout, bus=bus, args=args)
     stop.set()
     print()
     if not hits:
@@ -1562,7 +2119,27 @@ def build_id_sequence(args: argparse.Namespace) -> List[int]:
 def main() -> None:
     ap = argparse.ArgumentParser(description="RS-02 CAN scan / exercise via USB")
     ap.add_argument("--port", default=None, help="Serial port (COM5, /dev/ttyACM0)")
+    ap.add_argument("--list-ports", action="store_true",
+                    help="List COM/tty ports (STM32 USB CDC hint) and exit")
+    ap.add_argument("--link-test", action="store_true",
+                    help="USB-only diagnostics: listen, seq ack, session begin/end (no CAN scan)")
+    ap.add_argument("--debug-link", action="store_true",
+                    help="Verbose USB/session diagnostics (use with --discover or --exercise)")
+    ap.add_argument("--debug-probes", action="store_true",
+                    help="With --discover: print every probe step (slow)")
+    ap.add_argument("--listen-first", type=float, default=0.0,
+                    help="Seconds to listen for MCU feedback before session begin")
+    ap.add_argument("--session-timeout", type=float, default=None,
+                    help="Override timeout for session begin/end (default: --timeout or 0.5)")
+    ap.add_argument("--dump-frames", type=int, default=8,
+                    help="Max feedback frames to print per batch in --link-test / --debug-link")
+    ap.add_argument("--dump-pdu", action="store_true",
+                    help="Hex-dump pdu[0:32] in link diagnostics")
     ap.add_argument("--baud", type=int, default=DEFAULT_BAUD)
+    ap.add_argument("--mcp-smoke", action="store_true",
+                    help="Min MCP2518 TX test on --bus: 3 enable frames + TEC/RX counters (flash new fw)")
+    ap.add_argument("--ch4-discover", action="store_true",
+                    help="CH4 wide discover: bus 4, full 1-127, deep wake every ID, MCP pre-reset")
     ap.add_argument("--discover", action="store_true",
                     help="Find motor CAN ID (default: full 1–127; priority IDs deep-wake first)")
     ap.add_argument("--discover-all", action="store_true",
@@ -1583,8 +2160,8 @@ def main() -> None:
         "--bus",
         type=int,
         default=1,
-        choices=[1, 2, 3],
-        help="Plant CAN branch: 1=PB8/9 CH1, 2=PA8/PA15 CH2 (0x73), 3=PB12/13 CH3 (0x75). Sets pdu.data[11].",
+        choices=[1, 2, 3, 4, 5, 6],
+        help="Schematic CAN bus 1..6 (CH1-3 FDCAN, CH4-6 MCP2518). Sets pdu.data[11].",
     )
     ap.add_argument("--bench-cmds", action="store_true",
                     help="Sequential iq_test/cal/zero/save probes (one MCU block at a time)")
@@ -1635,13 +2212,33 @@ def main() -> None:
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
+    if args.ch4_discover:
+        args.bus = 4
+        args.discover = True
+        args.discover_all = True
+        args.discover_deep = True
+        args.reset_first = True
+        args.start = 1
+        args.end = 127
+        args.timeout = max(float(args.timeout), 0.55)
+        if not args.debug_link and not args.debug_probes:
+            args.debug_link = True
+
+    if args.list_ports:
+        list_serial_ports()
+        return
+
     port = args.port or auto_pick_port()
     print(f"Opening {port} @ {args.baud}")
     with serial.Serial(port=port, baudrate=args.baud, timeout=0.05) as ser:
         time.sleep(0.5)
         while ser.in_waiting:
             ser.read(ser.in_waiting)
-        if args.probe_id is not None:
+        if args.link_test:
+            rc = run_link_test(ser, args)
+        elif args.mcp_smoke:
+            rc = run_mcp_smoke(ser, args)
+        elif args.probe_id is not None:
             rc = run_probe_id(ser, args)
         elif args.discover:
             rc = run_discover(ser, args)

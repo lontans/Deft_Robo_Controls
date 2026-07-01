@@ -31,12 +31,13 @@
 #define PLANT_DIAG_PROBE_ZERO        17u
 #define PLANT_DIAG_PROBE_DATA_SAVE   18u
 #define PLANT_DIAG_PROBE_PARAWRITE   19u
+#define PLANT_DIAG_PROBE_MCP_SMOKE   20u
 #define PLANT_DXL_PROBE_TOGGLE_BAUD  4u   /* 1M <-> 57600 on id_start..id_end */
 #define PLANT_DXL_PROBE_SET_BAUD_1M  PLANT_DXL_PROBE_TOGGLE_BAUD
 #define PLANT_DIAG_SESSION_BEGIN     254u
 #define PLANT_DIAG_SESSION_END       255u
 
-/* Host RS2 PDU: pdu.data[11] = FDCAN instance (1=CH1, 2=CH2, 3=CH3). */
+/* Host RS2 PDU: pdu.data[11] = schematic bus 1..6 (CH1–3 FDCAN, CH4–6 MCP2518). */
 #define PLANT_DIAG_PDU_CAN_BUS       11u
 
 bool plant_diag_skip_actuator_can(void);

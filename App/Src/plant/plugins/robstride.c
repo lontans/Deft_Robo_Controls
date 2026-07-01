@@ -2,6 +2,7 @@
 #include "plant/plugins/robstride.h"
 #include "plant/plugin_schema/plugin_table.h"
 #include "plant/can/can_router.h"
+#include "plant/can/mcp2518fd.h"
 #include "plant/actuator.h"
 #include "main.h"
 #include <stddef.h>
@@ -604,6 +605,10 @@ bool robstride_probe_id(can_bus_id_t bus,
 
 	if (bus >= CAN_BACKEND_COUNT)
 		bus = CAN_BUS_CH1;
+
+	if (bus >= CAN_BUS_CH4)
+		(void)mcp2518_recover_bus(bus);
+
 	actuator_config_t cfg = {
 		.bus = bus,
 		.protocol = PROTO_ROBSTRIDE,
@@ -644,6 +649,8 @@ bool robstride_probe_id(can_bus_id_t bus,
 	                         (cali ? 0u :
 	                          (zero_cmd ? 500u :
 	                           (data_save ? 800u : 80u)))))));
+	if (bus >= CAN_BUS_CH4)
+		listen_ms = (uint16_t)(listen_ms + listen_ms / 2u + 120u);
 
 	if (!ctrl_fast) {
 		memset(out, 0, sizeof(*out));
