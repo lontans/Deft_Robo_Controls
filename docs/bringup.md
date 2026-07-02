@@ -30,6 +30,7 @@ Rebuild and flash from STM32CubeIDE (Debug).
 - FDCAN1/2/3 @ 1 Mbit/s, extended IDs, per-bus TX queue + RX ring (depth 128)
 - `can_router.c` maps schematic CH2 → `hfdcan3` (PA8/PA15), CH3 → `hfdcan2` (PB12/PB13)
 - Activity LEDs: PC7 (CH1), PC6 (CH2), PB15 (CH3)
+- **CH4–CH6:** MCP2518FD SPI-CAN (CH4 bench: CS PB11, ACT PB14) — see [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md)
 
 On boot, `control_loop_init()` starts TIM6 @ 500 Hz. Motors are woken by host bench probes (`--recovery`, calibrate preamble, or plant teleop with prior probe).
 

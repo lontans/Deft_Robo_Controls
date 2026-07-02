@@ -1,0 +1,205 @@
+================================================================================
+CH4 MCP2518 SPI-CAN BRINGUP — PERSONAL NOTES (DeftRoboticsControlsPCB)
+================================================================================
+Motor: RobStride RS02, CAN ID 0x70, classic CAN 2.0 extended @ 1 Mbps
+CH4:   MCP2518FD + MCP2562 — CS PB11, INT PB10, ACT LED PB14
+CH1:   STM32 FDCAN1 PB8/PB9 (reference path that worked first)
+Host:  USB CDC COM5 @ 115200, scripts/rs02_can_scan.py
+
+Git commits (oldest → newest for this work):
+  b1b5294  first SPI-CAN impl — TX sort of working, RX/ACK not
+  4bdba03f rewrite — scope sees frames, no reliable motor ACK
+  6458890  TX to motor; bit trim 1.15us→1.0us; TXQ fixes
+  725fd8f  MCP wake/disable reliable
+  5ce6a93  RX path (FnBP fix); probe HIT; teleop feedback
+
+Ground truth signals:
+  ~0.02 A supply = motor rest / de-energized
+  ~0.07 A supply = motor enabled idle (running)
+  PB14 (CH4 ACT) blinks on successful MCP TX
+  CiTREC TEC +8     = frame transmitted, NO ACK on bus
+  CiTREC unchanged  = frame transmitted, ACK received
+  tx_ok=0           = MCP never completed TX (driver/TXQ/SPI)
+
+================================================================================
+MY BRINGUP TIMELINE (WHAT I REMEMBER)
+================================================================================
+
+1) Nothing worked — no probe HIT, no ACK, couldn't tell SPI vs MCP vs wiring.
+
+2) Rewrote driver + message packaging (RobStride ext ID pack/unpack, plant_diag
+   MCP bench). Still no reliable TX/RX.
+
+3) TX diagnostics improved — thought TX worked but still no ACK.
+
+4) CANable on CH4: saw TX packet, no RX; ACK slot RECESSIVE + error tail.
+   CH1 FDCAN same motor worked. Thought "CH4 frames not acceptable."
+
+5) CANable got flaky on both buses — pivoted to scope + compare CH1 bit time.
+   CH4 dominant bit ~1.15 us; CH1 ~1.0 us. Trimmed MCP CiNBTCFG to match
+   1.0 us → THAT was when enable/disable became DEFINITIVE (0.02↔0.07 A).
+   (4bdba03 had TSEG1=17 / 20 TQ on paper = 1 Mbps, but scope said 1.15 us.)
+
+6) TXQ still wedged on multi-frame (wake=4 TX, disable=13 TX). Smoke passed
+   (one TX after reinit) but wake failed tx_ok=1 tx_fail=2. Fixed UINC drain,
+   no FRESET in Normal mode, ATIF clear, hard reset in Config only.
+
+7) Scope showed TWO frames (TX + motor reply) but firmware rx=0, probe never
+   HIT. Root cause: filter FnBP=1 (FIFO1) but CiFIFOCON configured/polled at
+   wrong SFR index (FIFO2 @ 0x068). Fix: REG_C1FIFOCON(0) @ 0x05C + FnBP=1
+   (FLTCON byte 0x81, not 0x80 — 0x80 means FnBP=0 = TXQ which cannot RX).
+
+8) Teleop/cal quirks (not MCP hardware): comm 0x02 p_raw still decodes ~-12 rad
+   after cal zero → teleop sync caused jolt. Ctrl+C wedges plant_diag → USB
+   replug. Added teleop sync clamp |pos|>3 rad → cmd=0.
+
+================================================================================
+RECESSIVE ACK + ERROR TAIL — BITRATE OR TXQ?
+================================================================================
+
+Hard to prove retroactively, but:
+
+  RECESSIVE ACK after a FULL clean-looking frame at ~1.15 us
+    → almost certainly BITRATE: motor couldn't decode → no dominant ACK →
+      error frames (TEC+8). This matches what I saw yesterday.
+
+  Truncated / aborted frame + error tail
+    → TXQ / driver: MAC didn't finish (v1 had false tx_ok when queue empty).
+
+  Full frame + DOMINANT ACK
+    → timing OK; at least one node on bus (TEC unchanged).
+
+  Dominant ACK, motor toggles, but rx=0 in firmware
+    → RX FIFO/filter bug (step 7), NOT bitrate.
+
+v1 compounded confusion: tx_ok=1 when TXQ was still empty, so firmware lied
+while scope sometimes showed real (but wrongly timed) activity.
+
+================================================================================
+DETAILED BUG LIST — PREVIOUS CODE vs FIX
+================================================================================
+
+--- BUG 1: CiNBTCFG totally wrong (commit b1b5294 only) ---
+
+  WRONG:  BRP=2, TSEG1=17, TSEG2=2  →  ~333 kHz bit rate
+  FIX:    BRP=0, 20 TQ (4bdba03)
+  EFFECT: Couldn't even be valid 1 Mbps CAN.
+
+--- BUG 2: Bit time ~1.15 us vs CH1 ~1.0 us (4bdba03 until 6458890) ---
+
+  WRONG:  TSEG1=17 programmed; scope measured ~1.15 us dominant bit
+  FIX:    TSEG1=15 (18 TQ) → ~1.0 us on scope, match FDCAN CH1
+  EFFECT: Motor started ACKing dominantly. Enable/disable proof moment.
+  NOTE:   This felt like THE fix for ACK. Scope: recessive ACK → dominant ACK.
+
+--- BUG 3: TXQ false "TX complete" (b1b5294; partly 4bdba03) ---
+
+  WRONG:  if (TXQEIF) return success;  /* queue starts EMPTY */
+  FIX:    wait TXATIF or bus error; saw_busy; poll TEC after TX
+  EFFECT: tx_ok and TEC became trustworthy.
+
+--- BUG 4: TXQ wedging on 2nd/3rd frame (4bdba03 → 6458890/725fd8f) ---
+
+  WRONG:  FRESET TXQ while OPMOD=Normal (6) wedges 1-deep queue
+          wrong TXREQ/UINC order; no ATIF clear between frames
+  FIX:    UINC-drain in Normal; FRESET only in Config; CiTXATIF W1C;
+          mcp_txq_hard_reset(); soft_recover (no full reinit in normal)
+  EFFECT: wake 4/4 TX, disable 13/13 TX reliable.
+
+--- BUG 5: CiTREC read wrong (b1b5294) ---
+
+  WRONG:  32-bit read, TEC at wrong byte
+  FIX:    byte0=REC, byte1=TEC @ register 0x034
+  EFFECT: smoke TEC+8 vs TEC=0 meaningful on host.
+
+--- BUG 6: drain_rx never popped FIFO (b1b5294) ---
+
+  WRONG:  read status flags only, no UINC, no RAM read
+  FIX:    loop mcp_hw_pop_rx() (4bdba03)
+  EFFECT: software could drain — but v2 still polled wrong FIFO (bug 7).
+
+--- BUG 7: RX FIFO SFR vs filter FnBP mismatch (4bdba03 → 5ce6a93) ---
+
+  MCP2518 naming trap:
+    FIFO channel 0 = TX Queue (FnBP=0) — CANNOT receive
+    FIFO channel 1 = first RX FIFO @ CiFIFOCON SFR 0x05C
+
+  v1 (accidental OK):
+    MCP_FIFO_CON(1) = 0x050+12 = 0x05C  configure FIFO1
+    FLTCON = 0x81                       FnBP=1 → deliver to FIFO1
+
+  v2 (BROKEN):
+    REG_C1FIFOCON(1) = 0x05C+12 = 0x068  configure FIFO2
+    FLTCON = 0x81                        deliver to FIFO1
+    → hardware put frames in FIFO1, firmware polled empty FIFO2
+
+  FIX:
+    MCP_RX_FIFO_REG = 0   /* CiFIFOCON(0) = 0x05C */
+    MCP_RX_FILTER_BP = 1  /* FLTCON = 0x81 */
+
+  EFFECT: rx=1 on smoke, ext_lb=1, probe-id HIT comm 0x02.
+
+--- BUG 8: Restrictive filter (4bdba03, secondary) ---
+
+  WRONG:  EXIDE+MIDE only; std loopback failed → ext_lb=0 misleading
+  FIX:    FLTOBJ=0, MASK=0 accept-all
+
+--- BUG 9: Host/session (operational) ---
+
+  Ctrl+C mid-probe → plant_diag wedged → no USB until replug + ~30s
+  Teleop sync to -12 rad from bad p_raw → jolt; clamp added
+  mms=rest in CAN feedback vs 0.07A — trust ammeter
+
+================================================================================
+RANKED BY IMPACT ON MY BRINGUP
+================================================================================
+
+  1. Bitrate 1.15 us → 1.0 us (motor ACK, enable/disable)
+  2. TXQ honest completion + multi-frame release
+  3. RX FnBP / FIFO SFR alignment (probe HIT, feedback)
+  4. v1 wrong BRP ~333 kHz
+  5. drain_rx stub (v1)
+  6. wrong TREC read (v1)
+  7. FIFO index regression in v2 rewrite
+
+================================================================================
+DEFINITION OF DONE — CH4 MCP PATH
+================================================================================
+
+  [ ] DEVID SPI readback OK
+  [ ] opmod=6 (CAN 2.0 normal), ext_lb=1 at init
+  [ ] Scope dominant bit ~1000 ns (match CH1)
+  [ ] mcp-smoke: tx_ok=1, tec=0, rx>=1
+  [ ] mcp-wake / mcp-disable toggle 0.02 ↔ 0.07 A
+  [ ] probe-id 0x70 --bus 4 → HIT comm 0x02
+
+Bench commands:
+  python scripts\rs02_can_scan.py --port COM5 --mcp-smoke --bus 4 --target 0x70
+  python scripts\rs02_can_scan.py --port COM5 --mcp-wake --bus 4 --target 0x70
+  python scripts\rs02_can_scan.py --port COM5 --mcp-disable --bus 4 --target 0x70
+  python scripts\rs02_can_scan.py --port COM5 --probe-id 0x70 --bus 4
+
+Key firmware files:
+  App/Src/plant/can/mcp2518fd.c
+  App/Inc/plant/can/mcp2518fd.h
+  App/Src/plant/plant_diag.c
+  App/Src/plant/can/spi_can_router.c
+
+================================================================================
+ONE-PARAGRAPH SUMMARY (for pasting elsewhere)
+================================================================================
+
+Early CH4 SPI-CAN firmware failed for stacked reasons: v1 used ~333 kHz bit
+timing and reported TX complete when the TXQ was still empty; v2 fixed nominal
+1 Mbps and improved the driver but scope measured ~1.15 us per bit, producing
+frames the RS02 would not ACK (recessive ACK slot + error tail). Trimming to
+~1.0 us to match FDCAN CH1 was the breakthrough for dominant ACK and reliable
+enable/disable (0.02 vs 0.07 A). Further fixes addressed TXQ wedging on multi-
+frame wake/disable sequences and a register-map bug where RX filters delivered
+to FIFO1 while software configured and polled FIFO2 (FnBP vs CiFIFOCON index).
+Until bitrate, TXQ, and RX FnBP were all correct, symptoms were easy to assign
+to the wrong layer.
+
+================================================================================
+END
+================================================================================

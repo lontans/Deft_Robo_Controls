@@ -12,6 +12,7 @@ STM32G474 firmware for the Deft controls board: fixed-rate plant loop (500 Hz), 
 | [docs/host-exchange-v1.md](docs/host-exchange-v1.md) | Wire layout v1 (562 B), magics, PDU RS2 backdoor |
 | [docs/bringup.md](docs/bringup.md) | Flash, motor map, laptop USB teleop, calibrate |
 | [docs/known-issues.md](docs/known-issues.md) | Open gaps, calibration NOISE on daisy bus |
+| [docs/ch4-mcp2518-bringup-postmortem.md](docs/ch4-mcp2518-bringup-postmortem.md) | CH4 MCP2518 SPI-CAN bringup bugs and fixes |
 
 ## Hardware
 
