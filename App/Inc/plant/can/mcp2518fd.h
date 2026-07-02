@@ -14,21 +14,35 @@
  *   SPI1 prescaler /8 → SCK ≈ 10.625 MHz (MCP2518 max 20 MHz)
  *
  * MCP2518 CAN bit clock (20 MHz crystal on OSC1/OSC2, PLLEN=0):
- *   f_bit = 20 MHz / ((BRP+1) × (1 + TSEG1 + TSEG2))
- *   1 Mbps = 20 MHz / (1 × 20 TQ) → BRP=0, TSEG1=17, TSEG2=2, SJW=2
- *   Sample point ≈ (1+17)/20 = 90%
+ *   f_bit = Fsys / ((BRP+1) × (1 + TSEG1 + TSEG2))
  *
- * Operation: Classic CAN 2.0 only (BRSDIS=1, FDF=0, BRS=0), 29-bit extended IDs.
+ * Bit-time trim (CH4 scope dominant bit, CH1 FDCAN = 1000 ns):
+ *   20 TQ (TSEG1=17) → 1150 ns
+ *   17 TQ (TSEG1=14) →  960 ns
+ *   18 TQ (TSEG1=15) → ~1000 ns target (17 × 1000/960 = 17.7 → round up)
+ *
+ * After flash: re-scope. If still off, set MCP2518_SCOPE_BIT_US to measured ns
+ * and MCP2518_NBT_TQ_NOMINAL to programmed TQ (1+TSEG1+TSEG2), keep TARGET 1000.
  */
+#define MCP2518_SYSCLK_HZ        20000000u
+#define MCP2518_CAN_BAUD         1000000u
 
-#define MCP2518_RAIL_COUNT 3u
-#define MCP2518_SYSCLK_HZ  20000000u
-#define MCP2518_CAN_BAUD   1000000u
+/* Scope calibration inputs for next trim (optional; values below are authoritative). */
+#define MCP2518_SCOPE_BIT_US     960u
+#define MCP2518_TARGET_BIT_US    1000u
+#define MCP2518_NBT_TQ_NOMINAL   17u
 
+/* 1 µs target CiNBTCFG — BRP=0, 18 TQ, ~88% sample point (matches CH1 TS1/TS2 ratio). */
 #define MCP2518_NBT_BRP_EXPECT   0u
-#define MCP2518_NBT_TSEG1_EXPECT 17u
+#define MCP2518_NBT_TSEG1_EXPECT  15u
 #define MCP2518_NBT_TSEG2_EXPECT 2u
 #define MCP2518_NBT_SJW_EXPECT   2u
+#define MCP2518_NBT_TOTAL_TQ \
+	(1u + MCP2518_NBT_TSEG1_EXPECT + MCP2518_NBT_TSEG2_EXPECT)
+
+/* Operation: Classic CAN 2.0 only (BRSDIS=1, FDF=0, BRS=0), 29-bit extended IDs. */
+
+#define MCP2518_RAIL_COUNT 3u
 
 /* Init failure bits (mcp2518_init_diag_t.fail_bits). */
 #define MCP_INIT_FAIL_SPI_RESET   (1u << 0)

@@ -219,7 +219,16 @@ static void plant_diag_mcp_smoke_sync(uint8_t motor_id, can_bus_id_t bus)
 		return;
 	}
 
-	(void)mcp2518_reinit_rail(bus);
+	/* Avoid full reinit when motor is on-bus — it glitches TXQ; soft-recover instead. */
+	if (mcp2518_rail_opmod((uint8_t)(bus - CAN_BUS_CH4)) != 6u) {
+		(void)mcp2518_reinit_rail(bus);
+	} else {
+		(void)mcp2518_recover_if_busoff(bus);
+		mcp2518_drain_rx(bus);
+		mcp2518_reset_tx_stats(bus);
+		mcp2518_prepare_tx(bus);
+	}
+
 	ok = mcp2518_bus_smoke(bus, &frame, MCP_BENCH_LISTEN_MS_SMOKE,
 	                       &g_last_mcp_smoke);
 	can_router_poll_bus(bus);

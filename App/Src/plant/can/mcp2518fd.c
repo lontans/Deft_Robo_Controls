@@ -364,6 +364,8 @@ static bool mcp_nbtcfg_readback_ok(mcp2518_dev_t *d, uint8_t *brp, uint8_t *tseg
 
 	uint8_t rb_brp = (uint8_t)((nbt >> 24) & 0xFFu);
 	uint8_t rb_t1 = (uint8_t)((nbt >> 16) & 0xFFu);
+	uint8_t rb_t2 = (uint8_t)((nbt >> 8) & 0xFFu);
+	uint8_t rb_sjw = (uint8_t)(nbt & 0xFFu);
 
 	if (brp != NULL)
 		*brp = rb_brp;
@@ -371,7 +373,9 @@ static bool mcp_nbtcfg_readback_ok(mcp2518_dev_t *d, uint8_t *brp, uint8_t *tseg
 		*tseg1 = rb_t1;
 
 	return (rb_brp == MCP2518_NBT_BRP_EXPECT &&
-	        rb_t1 == MCP2518_NBT_TSEG1_EXPECT);
+	        rb_t1 == MCP2518_NBT_TSEG1_EXPECT &&
+	        rb_t2 == MCP2518_NBT_TSEG2_EXPECT &&
+	        rb_sjw == MCP2518_NBT_SJW_EXPECT);
 }
 
 static void mcp_config_c1con_classic(mcp2518_dev_t *d)
@@ -459,20 +463,9 @@ static void mcp_txq_release_after_tx(mcp2518_dev_t *d)
 
 static void mcp_txq_commit_and_request(mcp2518_dev_t *d)
 {
-	/* Byte writes match RM / mcp_txq_uinc — 32-bit RMW can miss on SPI SFRs. */
-	(void)mcp_write_byte(d, (uint16_t)(REG_C1TXQCON + 1u), TXQ_CON_UINC);
-
-	for (int i = 0; i < 20; i++) {
-		uint8_t sta = 0u;
-
-		if (mcp_read_buf(d, REG_C1TXQSTA, &sta, 1u) &&
-		    ((sta & TXQ_STA_TXQEIF) == 0u))
-			break;
-
-		HAL_Delay(1);
-	}
-
-	(void)mcp_write_byte(d, (uint16_t)(REG_C1TXQCON + 1u), TXQ_CON_TXREQ);
+	/* RM §4.6: after RAM load, UINC commits head + TXREQ starts MAC TX (same write). */
+	(void)mcp_write_byte(d, (uint16_t)(REG_C1TXQCON + 1u),
+	                    (uint8_t)(TXQ_CON_UINC | TXQ_CON_TXREQ));
 }
 
 static bool mcp_txq_wait_done(mcp2518_dev_t *d, uint16_t timeout_ms,
@@ -1104,7 +1097,7 @@ bool mcp2518_send(can_bus_id_t bus, const can_frame_t *frame)
 
 	mcp_txq_done_t done = { 0 };
 	if (!mcp_txq_wait_done(d, 50u, tec_before, &done)) {
-		mcp_txq_force_ready(d);
+		mcp_txq_release_after_tx(d);
 		if (d->tx_fail < 0xFFu)
 			d->tx_fail++;
 		return false;
@@ -1198,6 +1191,7 @@ void mcp2518_prepare_tx(can_bus_id_t bus)
 	if (tec >= 128u)
 		(void)mcp_recover_bus_off(d);
 
+	mcp_txq_clear_atif(d);
 	mcp_txq_force_ready(d);
 }
 

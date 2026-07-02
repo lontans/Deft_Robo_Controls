@@ -194,6 +194,12 @@ DISCOVER_PRIORITY_IDS: Tuple[int, ...] = tuple(dict.fromkeys(_DISCOVER_PRIORITY_
 MCP_RESET_IDS: Tuple[int, ...] = (0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x70, 0x01)
 
 MCP_CAN_BUSES = frozenset({4, 5, 6})
+# CiNBTCFG TSEG1: 17=stock 20TQ, 14=17TQ trim, 15=18TQ trim (see mcp2518fd.h).
+MCP_NBT_TSEG1_OK = frozenset({14, 15, 17})
+
+
+def mcp_nbt_timing_ok(nbt_brp: int, nbt_tseg1: int) -> bool:
+    return nbt_brp == 0 and nbt_tseg1 in MCP_NBT_TSEG1_OK
 
 # Per probed ID: (label, probe_kind, timeout_s, repeat)
 DISCOVER_PROBES_LIGHT: Tuple[Tuple[str, int, float, int], ...] = (
@@ -954,10 +960,10 @@ def format_mcp_status(resp: Optional[dict], bus: int = 4) -> str:
                 f"No node acknowledged on {can_bus_label(bus)}.{rec_hint}{ext_hint}"
             )
         return line
-    if nbt_brp != 0 or nbt_tseg1 != 17:
+    if not mcp_nbt_timing_ok(nbt_brp, nbt_tseg1):
         return line + (
             f"\n  → CiNBTCFG readback wrong (BRP={nbt_brp} expect 0, "
-            f"TSEG1={nbt_tseg1} expect 17) — bitrate not 1 Mbps"
+            f"TSEG1={nbt_tseg1} expect {sorted(MCP_NBT_TSEG1_OK)}) — bitrate trim mismatch"
         )
     if tx_ok == 0:
         sta = int(resp.get("mcp_txq_sta", 0)) & 0xFF
@@ -1914,7 +1920,7 @@ def mcp_smoke_init_ok(resp: dict, bus: int) -> bool:
         return False
     nbt_brp = int(resp.get("mcp_nbt_brp", 0xFF)) & 0xFF
     nbt_tseg1 = int(resp.get("mcp_nbt_tseg1", 0)) & 0xFF
-    return nbt_brp == 0 and nbt_tseg1 == 17
+    return mcp_nbt_timing_ok(nbt_brp, nbt_tseg1)
 
 
 def mcp_smoke_bus_proven(resp: dict) -> bool:

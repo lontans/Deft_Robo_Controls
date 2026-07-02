@@ -41,8 +41,8 @@
 /* USER CODE BEGIN PD */
 #define CPU_ACTIVITY_PORT            GPIOC
 #define CPU_ACTIVITY_PIN             GPIO_PIN_2
-#define CPU_BOOT_PULSE_DELAY_LOOPS   500000u    /* ~375 ms at 4 MHz MSI (before PLL) */
-#define CPU_ACTIVITY_DELAY_LOOPS     4000000u   /* ~71 ms at 170 MHz PLL             */
+#define CPU_BOOT_PULSE_DELAY_LOOPS   4000000u   /* ~visible flash @ 170 MHz PLL */
+#define CPU_ACTIVITY_DELAY_LOOPS     4000000u   /* Error_Handler blink period */
 #define CPU_ACTIVITY_BOOT_PULSES     3u
 /* USER CODE END PD */
 
@@ -59,8 +59,6 @@
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-/* USER CODE BEGIN PFP */
-
 /* USER CODE BEGIN PFP */
 static void cpu_activity_delay(uint32_t loops);
 static void cpu_activity_boot_pulses(void);
@@ -122,6 +120,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  cpu_activity_boot_pulses();
+
   MX_FDCAN1_Init();
   MX_FDCAN2_Init();
   MX_FDCAN3_Init();
@@ -130,6 +130,8 @@ int main(void)
   MX_UART5_Init();
   MX_SPI3_Init();
   MX_TIM6_Init();
+  control_loop_start();
+
   MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
 
@@ -145,7 +147,8 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     app_run();
-  /* USER CODE END 3 */
+    /* USER CODE END 3 */
+  }
 }
 
 /**
