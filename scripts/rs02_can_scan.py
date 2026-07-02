@@ -76,6 +76,8 @@ PLANT_ACTUATOR_TABLE: Tuple[Tuple[int, int], ...] = (
     (1, 0x74),  # slot 1 CH1 FDCAN
     (2, 0x73),  # slot 2 CH2 FDCAN
     (4, 0x70),  # slot 3 CH4 MCP2518 SPI-CAN
+    (5, 0x70),  # slot 4 CH5 MCP2518 SPI-CAN
+    (6, 0x70),  # slot 5 CH6 MCP2518 SPI-CAN
 )
 PLANT_ACTUATOR_MOTOR_IDS: Tuple[int, ...] = tuple(mid for _, mid in PLANT_ACTUATOR_TABLE)
 
@@ -96,6 +98,7 @@ PROBE_MCP_SMOKE = 20
 PROBE_MCP_WAKE = 21
 PROBE_MCP_DISABLE = 22
 MCP_DISABLE_CTRL_BURST = 12
+MCP_DISABLE_SYNC_FRAMES = 4
 SESSION_BEGIN = 254
 SESSION_END = 255
 
@@ -2114,10 +2117,11 @@ def run_mcp_disable(ser: serial.Serial, args: argparse.Namespace) -> int:
     motor_id = int(args.target) & 0xFF
     seq = 1
     led = can_activity_led(bus)
-    expect_tx = MCP_DISABLE_CTRL_BURST + 1
+    expect_tx = MCP_DISABLE_SYNC_FRAMES + MCP_DISABLE_CTRL_BURST + 1
 
     print(f"MCP disable on {can_bus_label(bus)}  motor_id=0x{motor_id:02X}  probe_kind={PROBE_MCP_DISABLE}")
-    print(f"Sequence: {MCP_DISABLE_CTRL_BURST}× comm 0x01 MOTOR_CTRL (kp=0 kd=0) → comm 0x04 disable (all-zero)")
+    print(f"Sequence: host sync (reset→enable→run_mode→enable) → "
+          f"{MCP_DISABLE_CTRL_BURST}× comm 0x01 MOTOR_CTRL (kp=0 kd=0) → comm 0x04 disable (all-zero)")
     print(f"Watch {led} — expect {expect_tx} TX blinks if MCP path is healthy.")
     print("Target: supply drops from ~0.07 A (enabled) to ~0.02 A (rest after reset).")
     print()

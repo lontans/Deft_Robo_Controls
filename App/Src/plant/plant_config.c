@@ -40,6 +40,20 @@ void plant_config_init(void)
 		.enabled = true,
 	};
 
+	actuator_table[4] = (actuator_config_t){
+		.bus = CAN_BUS_CH5,
+		.protocol = PROTO_ROBSTRIDE,
+		.motor_id = 0x70,
+		.enabled = true,
+	};
+
+	actuator_table[5] = (actuator_config_t){
+		.bus = CAN_BUS_CH6,
+		.protocol = PROTO_ROBSTRIDE,
+		.motor_id = 0x70,
+		.enabled = true,
+	};
+
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		actuator_desire_live[i].position = 0.0f;
 		actuator_desire_live[i].velocity = 0.0f;

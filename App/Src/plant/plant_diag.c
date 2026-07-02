@@ -14,6 +14,7 @@
 #define MCP_BENCH_LISTEN_MS_SMOKE 300u
 #define MCP_BENCH_LISTEN_MS_WAKE  450u
 #define MCP_BENCH_ZERO_GAIN_BURST 12u
+#define MCP_BENCH_HOST_SYNC_FRAMES 4u
 
 static robstride_probe_result_t g_last_probe;
 static mcp2518_smoke_result_t g_last_mcp_smoke;
@@ -209,6 +210,33 @@ static void plant_diag_mcp_listen(can_bus_id_t bus, uint16_t listen_ms)
 	}
 }
 
+static void plant_diag_mcp_host_sync(can_bus_id_t bus, const actuator_config_t *cfg)
+{
+	can_frame_t frame;
+
+	/* Same reset → enable → run_mode → enable as mcp-wake. Motors at ~0.07 A from
+	 * power-on or a prior session may ignore zero-gain/disable until this runs. */
+	if (robstride_send_reset(cfg, &frame) == PLUGIN_OK) {
+		(void)plant_diag_mcp_tx_frame(bus, &frame);
+		HAL_Delay(200);
+	}
+
+	if (robstride_send_enable(cfg, &frame) == PLUGIN_OK) {
+		(void)plant_diag_mcp_tx_frame(bus, &frame);
+		HAL_Delay(50);
+	}
+
+	if (robstride_set_run_mode(cfg, RS02_RUN_MODE_MOVE, &frame) == PLUGIN_OK) {
+		(void)plant_diag_mcp_tx_frame(bus, &frame);
+		HAL_Delay(30);
+	}
+
+	if (robstride_send_enable(cfg, &frame) == PLUGIN_OK) {
+		(void)plant_diag_mcp_tx_frame(bus, &frame);
+		HAL_Delay(30);
+	}
+}
+
 static void plant_diag_mcp_smoke_sync(uint8_t motor_id, can_bus_id_t bus)
 {
 	actuator_config_t cfg = {
@@ -265,7 +293,6 @@ static void plant_diag_mcp_wake_sync(uint8_t motor_id, can_bus_id_t bus)
 		.motor_id = motor_id,
 		.enabled = true,
 	};
-	can_frame_t frame;
 
 	memset(&g_last_mcp_smoke, 0, sizeof(g_last_mcp_smoke));
 	g_last_probe.probe_kind = PLANT_DIAG_PROBE_MCP_WAKE;
@@ -281,33 +308,7 @@ static void plant_diag_mcp_wake_sync(uint8_t motor_id, can_bus_id_t bus)
 	mcp2518_refresh_smoke_diag(bus, &g_last_mcp_smoke);
 	g_last_mcp_smoke.tec_before = g_last_mcp_smoke.tec;
 
-	if (robstride_send_reset(&cfg, &frame) != PLUGIN_OK) {
-		g_last_probe.found = false;
-		return;
-	}
-	(void)plant_diag_mcp_tx_frame(bus, &frame);
-	HAL_Delay(200);
-
-	if (robstride_send_enable(&cfg, &frame) != PLUGIN_OK) {
-		g_last_probe.found = false;
-		return;
-	}
-	(void)plant_diag_mcp_tx_frame(bus, &frame);
-	HAL_Delay(50);
-
-	if (robstride_set_run_mode(&cfg, RS02_RUN_MODE_MOVE, &frame) != PLUGIN_OK) {
-		g_last_probe.found = false;
-		return;
-	}
-	(void)plant_diag_mcp_tx_frame(bus, &frame);
-	HAL_Delay(30);
-
-	if (robstride_send_enable(&cfg, &frame) != PLUGIN_OK) {
-		g_last_probe.found = false;
-		return;
-	}
-	(void)plant_diag_mcp_tx_frame(bus, &frame);
-	HAL_Delay(30);
+	plant_diag_mcp_host_sync(bus, &cfg);
 
 	plant_diag_mcp_listen(bus, MCP_BENCH_LISTEN_MS_WAKE);
 	plant_diag_mcp_finalize_bench(motor_id, bus, PLANT_DIAG_PROBE_MCP_WAKE);
@@ -343,6 +344,8 @@ static void plant_diag_mcp_disable_sync(uint8_t motor_id, can_bus_id_t bus)
 	plant_diag_mcp_soft_recover(bus);
 	mcp2518_refresh_smoke_diag(bus, &g_last_mcp_smoke);
 	g_last_mcp_smoke.tec_before = g_last_mcp_smoke.tec;
+
+	plant_diag_mcp_host_sync(bus, &cfg);
 
 	for (uint8_t i = 0; i < MCP_BENCH_ZERO_GAIN_BURST; i++) {
 		if (plugin_pack_tx(&cfg, &desire, &frame) != PLUGIN_OK)
