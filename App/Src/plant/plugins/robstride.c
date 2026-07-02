@@ -186,6 +186,27 @@ plugin_status_t robstride_send_reset(const actuator_config_t *cfg, can_frame_t *
 	return PLUGIN_OK;
 }
 
+plugin_status_t robstride_send_disable(const actuator_config_t *cfg, can_frame_t *frame_out)
+{
+	if (cfg == NULL || frame_out == NULL)
+		return PLUGIN_ERR_PARAM;
+	if (!cfg->enabled)
+		return PLUGIN_ERR_UNSUPPORTED;
+
+	uint8_t motor_id = (uint8_t)(cfg->motor_id & 0xFF);
+	uint32_t ext_id = robstride_build_ext_id(RS02_COMM_MOTOR_RESET, RS02_HOST_ID, motor_id);
+
+	frame_out->id_type = CAN_ID_EXT;
+	frame_out->id = ext_id & CAN_EXT_MASK;
+	frame_out->dlc = 8;
+
+	/* Official RobStride driver: comm 0x04 all-zero payload = de-energize (失能). */
+	for (uint8_t i = 0; i < 8; i++)
+		frame_out->data[i] = 0;
+
+	return PLUGIN_OK;
+}
+
 plugin_status_t robstride_send_cali(const actuator_config_t *cfg, can_frame_t *frame_out)
 {
 	if (cfg == NULL || frame_out == NULL)

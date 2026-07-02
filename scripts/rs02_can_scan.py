@@ -22,6 +22,7 @@ Examples:
   python scripts/rs02_can_scan.py --port COM9 --mcp-smoke --bus 5
   python scripts/rs02_can_scan.py --port COM9 --mcp-smoke-all
   python scripts/rs02_can_scan.py --port COM9 --mcp-wake --bus 4
+  python scripts/rs02_can_scan.py --port COM9 --mcp-disable --bus 4
   python scripts/rs02_can_scan.py --port COM9 --ch4-discover
   python scripts/rs02_can_scan.py --port COM9 --discover --bus 4 --discover-deep --reset-first
   python scripts/rs02_can_scan.py --port COM9 --bench-cmds --bus 3 --target 0x74
@@ -93,6 +94,8 @@ PROBE_DATA_SAVE = 18
 PROBE_PARAWRITE = 19
 PROBE_MCP_SMOKE = 20
 PROBE_MCP_WAKE = 21
+PROBE_MCP_DISABLE = 22
+MCP_DISABLE_CTRL_BURST = 12
 SESSION_BEGIN = 254
 SESSION_END = 255
 
@@ -973,10 +976,12 @@ def format_mcp_status(resp: Optional[dict], bus: int = 4) -> str:
         txqen = "yes" if (c1b2 & 0x10) else "NO"
         oscrdy = "yes" if (oscb1 & 0x04) else "no"
         stuck = ""
-        if (sta & 0x50) == 0x50 or ((sta & 0x10) and not (sta & 0x04)):
+        if sta == 0x05:
+            stuck = "  TXQ reads empty (0x05) but TX timed out — reflash TXQ fix (no FRESET in Normal)."
+        elif (sta & 0x50) == 0x50 or ((sta & 0x10) and not (sta & 0x04)):
             stuck = "  TXQ stuck (TXATIF) — reflash MCU if this persists after fix."
         return line + (
-            f"\n  → MCP could not load TXQ (txq_sta=0x{sta:02X} txq_con=0x{con:02X} "
+            f"\n  → MCP TX did not complete (txq_sta=0x{sta:02X} txq_con=0x{con:02X} "
             f"TXQEN={txqen} OscReady={oscrdy}).{stuck}"
         )
     if rx > 0:
@@ -1945,6 +1950,11 @@ def run_mcp_smoke_one(ser: serial.Serial, args: argparse.Namespace, bus: int) ->
 
     print(f"MCP smoke test on {can_bus_label(bus)}  motor_id=0x{motor_id:02X}  probe_kind={PROBE_MCP_SMOKE}")
     print(f"Watch {led} during the test (blinks on successful MCP TX).")
+    print("Frame: comm 0x11 pararead (bus voltage) — read-only TX test, does not enable/disable motor.")
+    print("Motor supply current (approx):")
+    print("  ~0.07 A  enabled idle (mms=running) — use --mcp-disable to de-energize")
+    print("  ~0.02 A  disabled/fault (mms=rest)  — use --mcp-wake to bring up")
+    print("  (old smoke used enable and could fault 0.07→0.02; use wake/disable for state changes)")
     print("Interpretation (CAN 2.0 error counters):")
     print("  TEC +8 per frame  → transmitted, NO ACK (nobody acknowledged)")
     print("  TEC unchanged     → transmitted, ACK received (at least one node)")
@@ -2027,7 +2037,7 @@ def run_mcp_smoke(ser: serial.Serial, args: argparse.Namespace) -> int:
 
 
 def run_mcp_wake(ser: serial.Serial, args: argparse.Namespace) -> int:
-    """Step up from smoke: reset → run_mode → enable (3 TX) + 450 ms listen. No session."""
+    """Step up from smoke: reset → enable → run_mode → enable (4 TX) + listen. No session."""
     reader = FrameReader()
     stop = threading.Event()
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
@@ -2036,11 +2046,12 @@ def run_mcp_wake(ser: serial.Serial, args: argparse.Namespace) -> int:
     motor_id = int(args.target) & 0xFF
     seq = 1
     led = can_activity_led(bus)
+    expect_tx = 4
 
     print(f"MCP wake test on {can_bus_label(bus)}  motor_id=0x{motor_id:02X}  probe_kind={PROBE_MCP_WAKE}")
-    print("Sequence: comm 0x04 reset → parawrite run_mode → comm 0x03 enable → listen 450 ms")
-    print(f"Watch {led} (blinks on each successful MCP TX; expect up to 3 blinks).")
-    print("No RS2 session — synchronous 3 TX + 450 ms listen (same driver path as smoke).")
+    print("Sequence: comm 0x04 reset(clear) → enable → run_mode → enable → listen 450 ms")
+    print(f"Watch {led} (blinks on each successful MCP TX; expect {expect_tx} blinks).")
+    print("No RS2 session — synchronous 4 TX + 450 ms listen (same driver path as smoke).")
     print()
 
     if bus not in MCP_CAN_BUSES:
@@ -2062,11 +2073,10 @@ def run_mcp_wake(ser: serial.Serial, args: argparse.Namespace) -> int:
         tx_ok = int(resp.get("mcp_tx_ok", 0))
         tx_fail = int(resp.get("mcp_tx_fail", 0))
         if tx_fail > 0:
-            print(f"\nFAIL: MCP wake TX queue broke mid-sequence ({tx_ok}/3 ok, {tx_fail} fail).")
-            print("  Reflash with latest firmware — this is a driver TXQ recovery bug.")
+            print(f"\nFAIL: MCP wake TX errors ({tx_ok}/{expect_tx} ok, {tx_fail} fail).")
             return 1
-        if tx_ok < 3:
-            print(f"\nFAIL: only {tx_ok}/3 wake frames transmitted.")
+        if tx_ok < expect_tx:
+            print(f"\nFAIL: only {tx_ok}/{expect_tx} wake frames transmitted.")
             return 1
         if resp.get("found"):
             print(
@@ -2081,8 +2091,61 @@ def run_mcp_wake(ser: serial.Serial, args: argparse.Namespace) -> int:
         tec = int(resp.get("mcp_tec", 0))
         tec_before = int(resp.get("mcp_tec_before", 0))
         tec_delta = tec - tec_before if tec >= tec_before else 0
-        print(f"\nPASS: 3/3 MCP wake TX completed (TEC +{tec_delta} = no ACK on those frames).")
-        print("  Driver path OK. Motor did not reply — check ID/bus wiring if unexpected.")
+        ack_note = "ACK'd on bus" if tec_delta == 0 else f"TEC +{tec_delta} (no ACK)"
+        print(f"\nPASS: {expect_tx}/{expect_tx} MCP wake TX completed ({ack_note}).")
+        print("  Expect supply ~0.07 A if motor accepted enable (watch ammeter).")
+        if tec_delta == 0:
+            print("  rx=0 is normal until CH4 RX path is fixed — use current, not feedback, for now.")
+        return 0
+    finally:
+        stop.set()
+
+
+def run_mcp_disable(ser: serial.Serial, args: argparse.Namespace) -> int:
+    """De-energize: 8× kp=0 MOTOR_CTRL + reset in one firmware block (~0.07 A → ~0.02 A)."""
+    reader = FrameReader()
+    stop = threading.Event()
+    threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
+
+    bus = normalize_can_bus(args.bus)
+    motor_id = int(args.target) & 0xFF
+    seq = 1
+    led = can_activity_led(bus)
+    expect_tx = MCP_DISABLE_CTRL_BURST + 1
+
+    print(f"MCP disable on {can_bus_label(bus)}  motor_id=0x{motor_id:02X}  probe_kind={PROBE_MCP_DISABLE}")
+    print(f"Sequence: {MCP_DISABLE_CTRL_BURST}× comm 0x01 MOTOR_CTRL (kp=0 kd=0) → comm 0x04 disable (all-zero)")
+    print(f"Watch {led} — expect {expect_tx} TX blinks if MCP path is healthy.")
+    print("Target: supply drops from ~0.07 A (enabled) to ~0.02 A (rest after reset).")
+    print()
+
+    if bus not in MCP_CAN_BUSES:
+        print(f"FAIL: MCP disable requires --bus 4, 5, or 6 (got CH{bus}).")
+        return 1
+
+    try:
+        reader.drain()
+        resp = send_diag(
+            ser, reader, motor_id, PROBE_MCP_DISABLE, seq,
+            max(args.timeout, 5.0), bus=bus,
+        )
+        if resp is None:
+            print("FAIL: no USB feedback from MCP disable probe.")
+            return 1
+        print(format_mcp_status(resp, bus=bus))
+        if resp.get("probe_kind") != PROBE_MCP_DISABLE:
+            print(f"WARN: expected probe_kind {PROBE_MCP_DISABLE}, got {resp.get('probe_kind')}")
+        tx_ok = int(resp.get("mcp_tx_ok", 0))
+        tx_fail = int(resp.get("mcp_tx_fail", 0))
+        if tx_fail > 0:
+            print(f"\nFAIL: MCP disable TX errors ({tx_ok}/{expect_tx} ok, {tx_fail} fail).")
+            print("  Reflash latest firmware — wake/disable must not call full MCP reinit.")
+            return 1
+        if tx_ok < expect_tx:
+            print(f"\nFAIL: only {tx_ok}/{expect_tx} disable frames transmitted.")
+            return 1
+        print(f"\nPASS: {tx_ok}/{expect_tx} disable TX completed on CH{bus}.")
+        print("  Check supply current — expect ~0.02 A within ~1 s.")
         return 0
     finally:
         stop.set()
@@ -2368,6 +2431,8 @@ def main() -> None:
                     help="MCP smoke on CH4, CH5, and CH6 sequentially (find active rail)")
     ap.add_argument("--mcp-wake", action="store_true",
                     help="MCP step-2: reset+run_mode+enable (3 TX) + listen; no session")
+    ap.add_argument("--mcp-disable", action="store_true",
+                    help="MCP de-energize: 8× kp=0 ctrl + reset in one probe (~0.07 A → ~0.02 A)")
     ap.add_argument("--ch4-discover", action="store_true",
                     help="CH4 wide discover: bus 4, full 1-127, deep wake every ID, MCP pre-reset")
     ap.add_argument("--discover", action="store_true",
@@ -2470,6 +2535,8 @@ def main() -> None:
             rc = run_mcp_smoke(ser, args)
         elif args.mcp_wake:
             rc = run_mcp_wake(ser, args)
+        elif args.mcp_disable:
+            rc = run_mcp_disable(ser, args)
         elif args.probe_id is not None:
             rc = run_probe_id(ser, args)
         elif args.discover:

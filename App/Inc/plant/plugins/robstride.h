@@ -70,6 +70,7 @@ plugin_status_t robstride_set_run_mode(const actuator_config_t *cfg,
                                        can_frame_t *frame_out);
 plugin_status_t robstride_send_enable(const actuator_config_t *cfg, can_frame_t *frame_out);
 plugin_status_t robstride_send_reset(const actuator_config_t *cfg, can_frame_t *frame_out);
+plugin_status_t robstride_send_disable(const actuator_config_t *cfg, can_frame_t *frame_out);
 plugin_status_t robstride_send_cali(const actuator_config_t *cfg, can_frame_t *frame_out);
 plugin_status_t robstride_send_zero(const actuator_config_t *cfg, can_frame_t *frame_out);
 plugin_status_t robstride_send_data_save(const actuator_config_t *cfg, can_frame_t *frame_out);

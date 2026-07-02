@@ -430,34 +430,45 @@ static void mcp_txq_clear_atif(mcp2518_dev_t *d)
 	(void)mcp_write_byte(d, REG_C1TXATIF, 0x01u);
 }
 
+static void mcp_txq_hard_reset(mcp2518_dev_t *d)
+{
+	if (mcp_enter_config(d)) {
+		mcp_config_txq(d);
+		(void)mcp_enter_normal_can20(d);
+	}
+	mcp_txq_clear_atif(d);
+}
+
 static void mcp_txq_release_after_tx(mcp2518_dev_t *d)
 {
-	/* Drain DONE/ATIF first, then hard-reset the 1-deep TXQ for the next load. */
-	for (int i = 0; i < 16; i++) {
+	/* UINC-drain only in Normal mode — FRESET while OPMOD=6 wedges the TXQ. */
+	for (int i = 0; i < 32; i++) {
 		uint8_t sta = 0u;
 
 		if (!mcp_read_buf(d, REG_C1TXQSTA, &sta, 1u))
 			break;
 
-		if ((sta & TXQ_STA_DONE) != 0u)
+		if ((sta & TXQ_STA_TXATIF) != 0u || (sta & TXQ_STA_BUSERR) != 0u) {
 			mcp_txq_uinc(d);
-		else if ((sta & TXQ_STA_TXQEIF) != 0u)
+			mcp_txq_clear_atif(d);
+			HAL_Delay(1);
+			continue;
+		}
+
+		if ((sta & TXQ_STA_TXQEIF) != 0u)
 			break;
 
 		HAL_Delay(1);
 	}
 
-	mcp_config_txq(d);
 	mcp_txq_clear_atif(d);
 
-	for (int i = 0; i < 20; i++) {
+	{
 		uint8_t sta = 0u;
 
 		if (mcp_read_buf(d, REG_C1TXQSTA, &sta, 1u) &&
-		    ((sta & TXQ_STA_TXQEIF) != 0u))
-			return;
-
-		HAL_Delay(1);
+		    (sta & TXQ_STA_TXQEIF) == 0u)
+			mcp_txq_hard_reset(d);
 	}
 }
 
@@ -471,9 +482,7 @@ static void mcp_txq_commit_and_request(mcp2518_dev_t *d)
 static bool mcp_txq_wait_done(mcp2518_dev_t *d, uint16_t timeout_ms,
                               uint8_t tec_before, mcp_txq_done_t *out)
 {
-	bool tx_started = false;
-
-	(void)tec_before;
+	bool saw_busy = false;
 
 	if (out != NULL) {
 		out->completed = false;
@@ -486,25 +495,18 @@ static bool mcp_txq_wait_done(mcp2518_dev_t *d, uint16_t timeout_ms,
 		uint8_t sta = 0u;
 		uint8_t txatif = 0u;
 
-		if (!mcp_read_buf(d, (uint16_t)(REG_C1TXQCON + 1u), &con_b1, 1u))
-			return false;
 		if (!mcp_read_buf(d, REG_C1TXQSTA, &sta, 1u))
 			return false;
+		(void)mcp_read_buf(d, (uint16_t)(REG_C1TXQCON + 1u), &con_b1, 1u);
 		(void)mcp_read_buf(d, REG_C1TXATIF, &txatif, 1u);
 
-		/* After TXREQ, queue is non-empty until the MAC finishes. */
-		if ((con_b1 & TXQ_CON_TXREQ) != 0u ||
-		    (sta & TXQ_STA_TXQEIF) == 0u)
-			tx_started = true;
-
-		if (!tx_started)
-			goto spin;
+		if ((sta & TXQ_STA_TXQEIF) == 0u || (con_b1 & TXQ_CON_TXREQ) != 0u)
+			saw_busy = true;
 
 		bool atif = ((sta & TXQ_STA_TXATIF) != 0u) ||
 		              ((txatif & 0x01u) != 0u);
 		bool buserr = (sta & TXQ_STA_BUSERR) != 0u;
 
-		/* RM: wait for transmission attempt complete (TXATIF), not TXREQ clear. */
 		if (atif || buserr) {
 			if (out != NULL) {
 				out->completed = true;
@@ -515,9 +517,44 @@ static bool mcp_txq_wait_done(mcp2518_dev_t *d, uint16_t timeout_ms,
 			return true;
 		}
 
-spin:
+		/* 1-deep TXQ: empty again after busy means MAC finished (ATIF may W1C). */
+		if (saw_busy && (sta & TXQ_STA_TXQEIF) != 0u &&
+		    (con_b1 & TXQ_CON_TXREQ) == 0u) {
+			if (out != NULL) {
+				out->completed = true;
+				out->bus_err = false;
+				out->sta = sta;
+			}
+			mcp_txq_release_after_tx(d);
+			return true;
+		}
+
 		if ((i % 200u) == 199u)
 			HAL_Delay(1);
+	}
+
+	{
+		uint8_t tec_now = tec_before;
+		uint8_t sta_end = 0u;
+		uint32_t bdiag1 = 0u;
+
+		(void)mcp_read_trec(d, &tec_now, NULL);
+		(void)mcp_read_buf(d, REG_C1TXQSTA, &sta_end, 1u);
+		bdiag1 = mcp_read32(d, REG_C1BDIAG1);
+		if (saw_busy || tec_now != tec_before ||
+		    ((bdiag1 & BDIAG1_NACKERR) != 0u)) {
+			if (out != NULL) {
+				out->completed = (saw_busy ||
+				                  tec_now != tec_before ||
+				                  ((bdiag1 & BDIAG1_NACKERR) != 0u));
+				out->bus_err = ((bdiag1 & BDIAG1_NACKERR) != 0u);
+				out->sta = sta_end;
+			}
+			if (out == NULL || out->completed) {
+				mcp_txq_release_after_tx(d);
+				return true;
+			}
+		}
 	}
 
 	return false;
@@ -1068,47 +1105,67 @@ bool mcp2518_send(can_bus_id_t bus, const can_frame_t *frame)
 	if (!d->initialized)
 		return false;
 
-	uint8_t tec_before = 0u;
-	mcp_read_trec(d, &tec_before, NULL);
-	if (tec_before >= 128u)
-		(void)mcp_recover_bus_off(d);
+	for (uint8_t round = 0; round < 2u; round++) {
+		uint8_t tec_before = 0u;
 
-	mcp_txq_force_ready(d);
+		mcp_read_trec(d, &tec_before, NULL);
+		if (tec_before >= 128u)
+			(void)mcp_recover_bus_off(d);
 
-	for (int attempt = 0; attempt < 32; attempt++) {
-		if (mcp_txq_has_space(d))
-			break;
-
+		mcp_txq_clear_atif(d);
 		mcp_txq_force_ready(d);
 
-		if (attempt == 31) {
+		for (int attempt = 0; attempt < 32; attempt++) {
+			if (mcp_txq_has_space(d))
+				break;
+
+			mcp_txq_force_ready(d);
+
+			if (attempt == 31) {
+				if (round == 0u) {
+					mcp_txq_hard_reset(d);
+					break;
+				}
+				if (d->tx_fail < 0xFFu)
+					d->tx_fail++;
+				return false;
+			}
+			HAL_Delay(1);
+		}
+
+		if (!mcp_hw_txq_load(d, frame)) {
+			if (round == 0u) {
+				mcp_txq_hard_reset(d);
+				continue;
+			}
 			if (d->tx_fail < 0xFFu)
 				d->tx_fail++;
 			return false;
 		}
-		HAL_Delay(1);
+
+		mcp_txq_done_t done = { 0 };
+		if (!mcp_txq_wait_done(d, 50u, tec_before, &done)) {
+			if (round == 0u) {
+				mcp_txq_hard_reset(d);
+				continue;
+			}
+			mcp_txq_release_after_tx(d);
+			if (d->tx_fail < 0xFFu)
+				d->tx_fail++;
+			return false;
+		}
+
+		if (d->tx_ok < 0xFFu)
+			d->tx_ok++;
+
+		mcp_note_tx_result(d, tec_before);
+		can_router_mark_traffic(bus);
+		return true;
 	}
 
-	if (!mcp_hw_txq_load(d, frame)) {
-		if (d->tx_fail < 0xFFu)
-			d->tx_fail++;
-		return false;
-	}
-
-	mcp_txq_done_t done = { 0 };
-	if (!mcp_txq_wait_done(d, 50u, tec_before, &done)) {
-		mcp_txq_release_after_tx(d);
-		if (d->tx_fail < 0xFFu)
-			d->tx_fail++;
-		return false;
-	}
-
-	if (d->tx_ok < 0xFFu)
-		d->tx_ok++;
-
-	mcp_note_tx_result(d, tec_before);
-	can_router_mark_traffic(bus);
-	return true;
+	if (d->tx_fail < 0xFFu)
+		d->tx_fail++;
+	return false;
 }
 
 bool mcp2518_recv(can_bus_id_t bus, can_frame_t *frame)
