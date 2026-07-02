@@ -86,6 +86,9 @@ plugin_status_t robstride_send_proactive(const actuator_config_t *cfg,
 void robstride_apply_cycle(const actuator_config_t *cfg,
                            const actuator_desire_t *desire,
                            actuator_state_t *state_out);
+void robstride_bench_note_rx(const can_frame_t *frame,
+                             uint8_t motor_id,
+                             robstride_probe_result_t *out);
 bool robstride_probe_id(can_bus_id_t bus,
                         uint8_t motor_id,
                         uint8_t probe_kind,

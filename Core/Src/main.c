@@ -22,6 +22,7 @@
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
+#include "usb_device.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -112,9 +113,6 @@ int main(void)
 
   /* USER CODE END Init */
 
-  MX_GPIO_Init();
-  cpu_activity_boot_pulses();
-
   /* Configure the system clock */
   SystemClock_Config();
 
@@ -122,10 +120,8 @@ int main(void)
 
   /* USER CODE END SysInit */
 
-  MX_TIM6_Init();
-  control_loop_start();
-
-  /* Initialize remaining peripherals */
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
   MX_FDCAN1_Init();
   MX_FDCAN2_Init();
   MX_FDCAN3_Init();
@@ -133,6 +129,7 @@ int main(void)
   MX_UART4_Init();
   MX_UART5_Init();
   MX_SPI3_Init();
+  MX_TIM6_Init();
   MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
 
@@ -148,8 +145,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     app_run();
-    /* USER CODE END 3 */
-  }
+  /* USER CODE END 3 */
 }
 
 /**
@@ -168,7 +164,7 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_HSI48;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;

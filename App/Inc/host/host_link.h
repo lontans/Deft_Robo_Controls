@@ -4,7 +4,9 @@
 #include <stdint.h>
 
 void host_link_init(void);
+void host_link_begin_loop(void);
 void host_link_poll_tx(void);
+bool host_link_poll_tx_once(void);
 void host_link_poll_rx(void);
 
 bool host_command_image_valid(const host_command_image_t *cmd);

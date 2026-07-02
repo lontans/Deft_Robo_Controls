@@ -69,12 +69,13 @@ static bool usb_write(const uint8_t *src, size_t len)
 
 static bool usb_tx_ready(void)
 {
-	if (tx_busy)
-		return false;
 	USBD_CDC_HandleTypeDef *hcdc =
 			(USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
 
-	return (hcdc != NULL && hcdc->TxState == 0);
+	if (hcdc != NULL && hcdc->TxState == 0u)
+		tx_busy = false;
+
+	return !tx_busy && (hcdc != NULL && hcdc->TxState == 0u);
 }
 
 void host_transport_usb_tx_complete(void)

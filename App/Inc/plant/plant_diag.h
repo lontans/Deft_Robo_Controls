@@ -32,6 +32,7 @@
 #define PLANT_DIAG_PROBE_DATA_SAVE   18u
 #define PLANT_DIAG_PROBE_PARAWRITE   19u
 #define PLANT_DIAG_PROBE_MCP_SMOKE   20u
+#define PLANT_DIAG_PROBE_MCP_WAKE    21u
 #define PLANT_DXL_PROBE_TOGGLE_BAUD  4u   /* 1M <-> 57600 on id_start..id_end */
 #define PLANT_DXL_PROBE_SET_BAUD_1M  PLANT_DXL_PROBE_TOGGLE_BAUD
 #define PLANT_DIAG_SESSION_BEGIN     254u
@@ -40,6 +41,8 @@
 /* Host RS2 PDU: pdu.data[11] = schematic bus 1..6 (CH1–3 FDCAN, CH4–6 MCP2518). */
 #define PLANT_DIAG_PDU_CAN_BUS       11u
 
+#define PLANT_DIAG_RS2_QUIET_MS      3000u
+
 bool plant_diag_skip_actuator_can(void);
 bool plant_diag_skip_servo_bus(void);
 bool plant_diag_is_rs2_command(const host_command_image_t *cmd);
@@ -47,5 +50,9 @@ bool plant_diag_is_dxl_command(const host_command_image_t *cmd);
 void plant_diag_on_command(const host_command_image_t *cmd);
 void plant_diag_on_dxl_command(const host_command_image_t *cmd);
 void plant_diag_service(void);
+void plant_diag_can_router_poll(void);
+void plant_diag_yield_usb(void);
+bool plant_diag_blocks_usb_feedback(void);
+void plant_diag_feedback_sent(uint8_t probe_kind);
 void plant_diag_feedback_fill(host_pdu_feedback_t *pdu);
 

@@ -19,6 +19,9 @@ Examples:
   python scripts/rs02_can_scan.py --port COM9 --discover --start 0x40 --end 0x80
   python scripts/rs02_can_scan.py --port COM9 --probe-id 0x7F
   python scripts/rs02_can_scan.py --port COM9 --mcp-smoke --bus 4
+  python scripts/rs02_can_scan.py --port COM9 --mcp-smoke --bus 5
+  python scripts/rs02_can_scan.py --port COM9 --mcp-smoke-all
+  python scripts/rs02_can_scan.py --port COM9 --mcp-wake --bus 4
   python scripts/rs02_can_scan.py --port COM9 --ch4-discover
   python scripts/rs02_can_scan.py --port COM9 --discover --bus 4 --discover-deep --reset-first
   python scripts/rs02_can_scan.py --port COM9 --bench-cmds --bus 3 --target 0x74
@@ -89,6 +92,7 @@ PROBE_ZERO = 17
 PROBE_DATA_SAVE = 18
 PROBE_PARAWRITE = 19
 PROBE_MCP_SMOKE = 20
+PROBE_MCP_WAKE = 21
 SESSION_BEGIN = 254
 SESSION_END = 255
 
@@ -861,25 +865,100 @@ def run_link_test(ser: serial.Serial, args: argparse.Namespace) -> int:
         stop.set()
 
 
+def mcp_rail_bit(bus: int) -> int:
+    b = normalize_can_bus(bus)
+    if b not in MCP_CAN_BUSES:
+        return 0
+    return 1 << (b - 4)
+
+
+def mcp_rail_opmod(resp: dict) -> int:
+    return int(resp.get("mcp_rail_opmod", resp.get("mcp_ch4_opmod", 0xFF))) & 0xFF
+
+
 def format_mcp_status(resp: Optional[dict], bus: int = 4) -> str:
     if resp is None:
-        return "  mcp_init_mask=?  ch4_opmod=?"
+        return "  mcp_init_mask=?  mcp_opmod=?"
+    bus = normalize_can_bus(bus)
+    if bus not in MCP_CAN_BUSES:
+        tx_ok = int(resp.get("mcp_tx_ok", 0)) & 0xFF
+        rx = int(resp.get("raw_frames", 0)) & 0xFF
+        return (
+            f"  FDCAN {can_bus_label(bus)} — MCP2518 fields not applicable "
+            f"(use --bus 4|5|6).  tx_ok={tx_ok} rx={rx}"
+        )
     mask = int(resp.get("mcp_init_mask", 0)) & 0xFF
-    opmod = int(resp.get("mcp_ch4_opmod", 0xFF)) & 0xFF
+    opmod = mcp_rail_opmod(resp)
+    rail_bit = mcp_rail_bit(bus)
     tx_ok = int(resp.get("mcp_tx_ok", 0)) & 0xFF
     tx_fail = int(resp.get("mcp_tx_fail", 0)) & 0xFF
+    tx_nack = int(resp.get("mcp_tx_nack", 0)) & 0xFF
     tec = int(resp.get("mcp_tec", 0)) & 0xFF
+    tec_before = int(resp.get("mcp_tec_before", 0)) & 0xFF
+    tec_delta = tec - tec_before if tec >= tec_before else tec
     rx = int(resp.get("raw_frames", 0)) & 0xFF
     led = can_activity_led(bus)
+    tec_note = f" Δ+{tec_delta}" if tec_delta > 0 else ""
+    rec = int(resp.get("mcp_rec", 0)) & 0xFF
+    ext_lb = int(resp.get("mcp_ext_loopback_ok", 0)) & 0xFF
+    if mask == 0x07:
+        mask_hint = "rails CH4–CH6 (0x07)"
+    elif mask == 0x00:
+        mask_hint = "no rail initialized"
+    else:
+        rails = [str(4 + i) for i in range(3) if (mask >> i) & 1]
+        mask_hint = f"rails {','.join(rails) or '?'} (0x{mask:02X})"
+    opmod_label = f"{opmod}" if opmod != 0xFF else "n/a"
     line = (
-        f"  mcp_init_mask=0x{mask:02X} (bit0=CH4 rail0/PB11 CS)  "
-        f"ch4_opmod={opmod} (6=CAN2.0 normal)  "
-        f"tx_ok={tx_ok} tx_fail={tx_fail} tec={tec} rx={rx}"
+        f"  mcp_init_mask=0x{mask:02X} ({mask_hint})  "
+        f"CH{bus}_opmod={opmod_label} (6=CAN2.0 normal)  "
+        f"tx_ok={tx_ok} tx_fail={tx_fail} tx_nack={tx_nack} tec={tec}{tec_note} rx={rx}  "
+        f"rec={rec} ext_lb={ext_lb}"
     )
-    if (mask & 0x01) == 0:
-        return line + "\n  → MCP2518 CH4 rail not initialized (SPI/init failure)"
+    if (mask & rail_bit) == 0:
+        return line + (
+            f"\n  → MCP2518 CH{bus} rail not initialized (mask bit clear). "
+            f"Check SPI CS/INT for {can_bus_label(bus)}."
+        )
     if opmod != 6:
         return line + f"\n  → MCP up but opmod {opmod} != 6"
+    probe_kind = int(resp.get("probe_kind", 0)) & 0xFF
+    nbt_brp = int(resp.get("mcp_nbt_brp", 0xFF)) & 0xFF
+    nbt_tseg1 = int(resp.get("mcp_nbt_tseg1", 0)) & 0xFF
+    nbt_unset = nbt_tseg1 == 0 and nbt_brp in (0, 0xFF)
+    if probe_kind in (SESSION_BEGIN, SESSION_END) or nbt_unset:
+        if tx_ok == 0 and tec > 0:
+            return line + (
+                f"\n  → MCP rail ready (session TX stats reset). "
+                f"TEC={tec} is cumulative from earlier probes/smoke, not this session."
+            )
+        if rx > 0:
+            return line + f"\n  → MCP TX+RX path working — {led} should have blinked"
+        if tx_nack > 0 or tec_delta > 0 or tec > 0:
+            rec_hint = ""
+            if rec == 0:
+                rec_hint = (
+                    "  REC=0 → MCP2518 RXCAN path may be dead (check MCP2562 RXD→MCP RXCAN). "
+                    "Scope can look fine while the controller never receives."
+                )
+            elif rec > 0 and rx == 0:
+                rec_hint = (
+                    "  REC>0 but rx=0 → bus traffic reached MCP2518 but SW FIFO/filter path "
+                    "may be stuck (reflash with latest RX fixes)."
+                )
+            ext_hint = ""
+            if ext_lb == 0:
+                ext_hint = "  ext_lb=0 at init → internal TXCAN↔RXCAN loopback failed."
+            return line + (
+                f"\n  → Frame reached the bus but got NO ACK (TEC{tec_note}, tx_nack={tx_nack}). "
+                f"No node acknowledged on {can_bus_label(bus)}.{rec_hint}{ext_hint}"
+            )
+        return line
+    if nbt_brp != 0 or nbt_tseg1 != 17:
+        return line + (
+            f"\n  → CiNBTCFG readback wrong (BRP={nbt_brp} expect 0, "
+            f"TSEG1={nbt_tseg1} expect 17) — bitrate not 1 Mbps"
+        )
     if tx_ok == 0:
         sta = int(resp.get("mcp_txq_sta", 0)) & 0xFF
         con = int(resp.get("mcp_txq_con", 0)) & 0xFF
@@ -895,21 +974,21 @@ def format_mcp_status(resp: Optional[dict], bus: int = 4) -> str:
             f"TXQEN={txqen} OscReady={oscrdy}).{stuck}"
         )
     if rx > 0:
-        return line + f"\n  → MCP TX OK and ext-CAN RX seen — {led} should have blinked"
-    if tec > 0:
+        return line + f"\n  → MCP TX+RX path working — {led} should have blinked"
+    if tx_nack > 0 or tec_delta > 0 or tec > 0:
         osc_b0 = int(resp.get("mcp_osc_b0", 0)) & 0xFF
-        nbt_tseg1 = int(resp.get("mcp_nbt_tseg1", 0)) & 0xFF
-        bdiag = int(resp.get("mcp_bdiag1_b0", 0)) & 0xFF
+        bdiag_b0 = int(resp.get("mcp_bdiag1_b0", 0)) & 0xFF
+        bdiag_b1 = int(resp.get("mcp_bdiag1_b1", 0)) & 0xFF
+        nack_bit = "yes" if (bdiag_b1 & 0x04) else "no"
         pll = "BAD(PLLEN=1)" if (osc_b0 & 0x01) else "ok"
-        nbt = "ok" if nbt_tseg1 == 17 else f"TSEG1={nbt_tseg1}(expect 17)"
         return line + (
-            f"\n  → MCP TX reached CAN MAC (TEC={tec}, no ACK). "
-            f"osc_pll={pll} nbt={nbt} bdiag=0x{bdiag:02X}. "
-            f"Scope: one ext frame ≈130–150 µs @ 1 Mbps; ~30 µs ≈ ID-only or ~4× fast bitrate."
+            f"\n  → Frame reached the bus but got NO ACK (TEC{tec_note}, tx_nack={tx_nack}). "
+            f"That means MCP2518 transmitted; no node acknowledged. "
+            f"osc_pll={pll} nbt=1Mbps bdiag=0x{bdiag_b0:02X}{bdiag_b1:02X} NACKERR={nack_bit}."
         )
     return line + (
-        f"\n  → MCP reports {tx_ok} TX OK but TEC=0 (no bus errors counted yet). "
-        f"If {led} stayed solid, verify CS/SPI vs LED path."
+        f"\n  → TX completed with TEC unchanged — frame was ACK'd on the bus "
+        f"(or driver finished before TEC updated; retry if unsure)."
     )
 
 
@@ -933,17 +1012,24 @@ def parse_probe_pdu(frame: bytes) -> Optional[dict]:
         "probe_kind": pdu[25],
         "raw_frames": pdu[26],
         "mcp_init_mask": pdu[27],
+        "mcp_rail_opmod": pdu[28],
         "mcp_ch4_opmod": pdu[28],
         "mcp_tx_ok": pdu[29],
         "mcp_tx_fail": pdu[30],
         "mcp_tec": pdu[31],
+        "mcp_tec_before": pdu[6],
         "mcp_txq_sta": pdu[8],
         "mcp_txq_con": pdu[9],
         "mcp_c1con_b2": pdu[10],
         "mcp_osc_b1": pdu[11],
         "mcp_osc_b0": pdu[12],
         "mcp_nbt_tseg1": pdu[13],
+        "mcp_nbt_brp": pdu[15],
         "mcp_bdiag1_b0": pdu[14],
+        "mcp_bdiag1_b1": pdu[7],
+        "mcp_tx_nack": pdu[24],
+        "mcp_rec": pdu[17],
+        "mcp_ext_loopback_ok": pdu[18],
     }
 
 
@@ -1500,6 +1586,7 @@ def begin_session(
     timeout: float,
     bus: int = 1,
     args: Optional[argparse.Namespace] = None,
+    heartbeat: bool = True,
 ) -> int:
     session_timeout = timeout
     if args is not None and args.session_timeout is not None:
@@ -1534,17 +1621,17 @@ def begin_session(
         if debug:
             print("  Hint: run --link-test on this port, or --list-ports for STM32 USB CDC.")
     else:
-        ser.write(build_actuator_command(0.0, 0.0, 0.0, 0.0, 0.0, seq + 1))
-        ser.flush()
-        seq += 1
+        if heartbeat:
+            ser.write(build_actuator_command(0.0, 0.0, 0.0, 0.0, 0.0, seq + 1))
+            ser.flush()
+            seq += 1
         if debug:
             mcp = resp.get("mcp_init_mask", 0)
-            opmod = resp.get("mcp_ch4_opmod", 0xFF)
             print(
                 f"  session begin OK  probe_kind={resp['probe_kind']}  found={resp['found']}"
             )
             print(format_mcp_status(resp, bus=bus))
-            if (mcp & 0x01) == 0:
+            if (mcp & mcp_rail_bit(bus)) == 0:
                 print(
                     "  Next: check MCP2518 power/SPI (PA5-7, PB11 CS) — not a host/USB issue."
                 )
@@ -1751,11 +1838,16 @@ def describe_discover_scan(args: argparse.Namespace, id_list: List[int]) -> str:
     return f"0x{start:02X}–0x{end:02X} ({len(id_list)} addresses)"
 
 
-def discover_probe_timeout(base: float, bus: int) -> float:
+def discover_probe_timeout(base: float, bus: int, probe_kind: int = -1) -> float:
     """MCP2518 SPI-CAN needs longer per-probe listen than on-chip FDCAN."""
-    if normalize_can_bus(bus) in MCP_CAN_BUSES:
-        return max(base * 2.5, base + 0.35)
-    return base
+    if normalize_can_bus(bus) not in MCP_CAN_BUSES:
+        return base
+    t = max(base * 3.0, base + 0.6, 2.0)
+    if probe_kind in (PROBE_FULL, PROBE_ENABLE_CTRL, PROBE_CTRL_ONLY, PROBE_CTRL_FAST):
+        t = max(t, 3.5)
+    elif probe_kind == PROBE_RESET:
+        t = max(t, 2.5)
+    return t
 
 
 def discover_reset_ids(bus: int) -> Tuple[int, ...]:
@@ -1787,7 +1879,9 @@ def probe_one_id(
             step_label = probe_label if repeat == 1 else f"{probe_label}[{n + 1}/{repeat}]"
             resp = send_diag(
                 ser, reader, probed_id, probe_kind, seq,
-                discover_probe_timeout(max(args.timeout, probe_timeout), args.bus),
+                discover_probe_timeout(
+                    max(args.timeout, probe_timeout), args.bus, probe_kind=probe_kind
+                ),
                 bus=normalize_can_bus(args.bus),
             )
             seq += 1
@@ -1807,8 +1901,127 @@ def probe_one_id(
     return best, seq
 
 
+def mcp_smoke_init_ok(resp: dict, bus: int) -> bool:
+    bus = normalize_can_bus(bus)
+    if bus not in MCP_CAN_BUSES:
+        return False
+    mask = int(resp.get("mcp_init_mask", 0)) & 0xFF
+    if (mask & mcp_rail_bit(bus)) == 0:
+        return False
+    if mcp_rail_opmod(resp) != 6:
+        return False
+    if int(resp.get("mcp_tx_ok", 0)) == 0:
+        return False
+    nbt_brp = int(resp.get("mcp_nbt_brp", 0xFF)) & 0xFF
+    nbt_tseg1 = int(resp.get("mcp_nbt_tseg1", 0)) & 0xFF
+    return nbt_brp == 0 and nbt_tseg1 == 17
+
+
+def mcp_smoke_bus_proven(resp: dict) -> bool:
+    rx = int(resp.get("raw_frames", 0))
+    tec = int(resp.get("mcp_tec", 0))
+    tec_before = int(resp.get("mcp_tec_before", 0))
+    tx_nack = int(resp.get("mcp_tx_nack", 0))
+    tec_delta = tec - tec_before if tec >= tec_before else 0
+    return rx > 0 or tx_nack > 0 or tec_delta > 0
+
+
+def run_mcp_smoke_one(ser: serial.Serial, args: argparse.Namespace, bus: int) -> int:
+    """Standalone MCP2518 smoke on one CH4/5/6 rail."""
+    reader = FrameReader()
+    stop = threading.Event()
+    threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
+
+    bus = normalize_can_bus(bus)
+    motor_id = int(args.target) & 0xFF
+    seq = 1
+    led = can_activity_led(bus)
+
+    print(f"MCP smoke test on {can_bus_label(bus)}  motor_id=0x{motor_id:02X}  probe_kind={PROBE_MCP_SMOKE}")
+    print(f"Watch {led} during the test (blinks on successful MCP TX).")
+    print("Interpretation (CAN 2.0 error counters):")
+    print("  TEC +8 per frame  → transmitted, NO ACK (nobody acknowledged)")
+    print("  TEC unchanged     → transmitted, ACK received (at least one node)")
+    print("  tx_ok=0           → MCP never saw TXATIF — driver/SPI/TXQ problem")
+    print("  rx>0              → motor or bus traffic replied")
+    print()
+
+    if bus not in MCP_CAN_BUSES:
+        print(f"FAIL: MCP smoke requires --bus 4, 5, or 6 (got CH{bus}).")
+        return 1
+
+    try:
+        reader.drain()
+        resp = send_diag(
+            ser, reader, motor_id, PROBE_MCP_SMOKE, seq,
+            max(args.timeout, 3.0), bus=bus,
+        )
+        seq += 1
+        if resp is None:
+            print("FAIL: no USB feedback from MCP smoke probe.")
+            return 1
+        print(format_mcp_status(resp, bus=bus))
+        if resp.get("probe_kind") != PROBE_MCP_SMOKE:
+            print(f"WARN: expected probe_kind {PROBE_MCP_SMOKE}, got {resp.get('probe_kind')}")
+        if not mcp_smoke_init_ok(resp, bus):
+            if int(resp.get("mcp_tx_ok", 0)) == 0:
+                print("\nFAIL: MCP TX did not succeed — fix driver/hardware before motor tests.")
+            elif int(resp.get("mcp_nbt_brp", 0xFF)) != 0:
+                print("\nFAIL: CiNBTCFG BRP wrong after flash — expected 0.")
+            else:
+                print("\nFAIL: MCP init/opmode/bitrate check failed.")
+            return 1
+        rx = int(resp.get("raw_frames", 0))
+        tec = int(resp.get("mcp_tec", 0))
+        tec_before = int(resp.get("mcp_tec_before", 0))
+        tec_delta = tec - tec_before if tec >= tec_before else 0
+        if rx > 0:
+            print(f"\nPASS: MCP TX+RX on CH{bus} ({rx} frame(s)). Motor or bus traffic replied.")
+            return 0
+        if int(resp.get("mcp_tx_ok", 0)) > 0 and tec_delta == 0:
+            print(f"\nPASS: CH{bus} MCP TX completed, TEC unchanged — frame was ACK'd on the bus.")
+            return 0
+        if mcp_smoke_bus_proven(resp):
+            if tec >= 128:
+                print(f"\nFAIL: CH{bus} MCP TX but bus-off (TEC={tec}).")
+                return 1
+            print(f"\nPASS: CH{bus} MCP TX reached the bus (TEC +{tec_delta}, no ACK).")
+            print(f"  Watch {led} — blinking confirms activity on this rail.")
+            return 0
+        print(f"\nFAIL: CH{bus} did not complete a verified transmission (tx_ok=0 or no TXATIF).")
+        return 1
+    finally:
+        stop.set()
+
+
+def run_mcp_smoke_all(ser: serial.Serial, args: argparse.Namespace) -> int:
+    """Smoke CH4, CH5, and CH6 in one run — find which MCP rail has bus activity."""
+    print("MCP smoke all rails (CH4, CH5, CH6) — use ACT LEDs PB14 / PB2 / PC5")
+    print()
+    rc = 0
+    for bus in sorted(MCP_CAN_BUSES):
+        if bus != 4:
+            print()
+            time.sleep(0.35)
+        one = run_mcp_smoke_one(ser, args, bus)
+        if one != 0:
+            rc = 1
+    print()
+    if rc == 0:
+        print("All three MCP rails passed smoke (TX verified on each).")
+    else:
+        print("One or more MCP rails failed — compare mask bits and ACT LED blinks per CH.")
+    return rc
+
+
 def run_mcp_smoke(ser: serial.Serial, args: argparse.Namespace) -> int:
-    """Minimum MCP2518 path test: 3 TX enable frames, listen 300 ms, report counters."""
+    if getattr(args, "mcp_smoke_all", False):
+        return run_mcp_smoke_all(ser, args)
+    return run_mcp_smoke_one(ser, args, normalize_can_bus(args.bus))
+
+
+def run_mcp_wake(ser: serial.Serial, args: argparse.Namespace) -> int:
+    """Step up from smoke: reset → run_mode → enable (3 TX) + 450 ms listen. No session."""
     reader = FrameReader()
     stop = threading.Event()
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
@@ -1818,51 +2031,54 @@ def run_mcp_smoke(ser: serial.Serial, args: argparse.Namespace) -> int:
     seq = 1
     led = can_activity_led(bus)
 
-    print(f"MCP smoke test on {can_bus_label(bus)}  motor_id=0x{motor_id:02X}  probe_kind={PROBE_MCP_SMOKE}")
-    print(f"Watch {led} during the test (blinks on successful MCP TX).")
-    print("Interpretation:")
-    print("  tx_ok=0     → MCP FIFO/SPI send path still broken")
-    print("  tx_ok>0, tec>0 → frame reached CAN (no ACK); transceiver likely OK, check motor/bus")
-    print("  tx_ok>0, rx>0  → full TX+RX path working")
+    print(f"MCP wake test on {can_bus_label(bus)}  motor_id=0x{motor_id:02X}  probe_kind={PROBE_MCP_WAKE}")
+    print("Sequence: comm 0x04 reset → parawrite run_mode → comm 0x03 enable → listen 450 ms")
+    print(f"Watch {led} (blinks on each successful MCP TX; expect up to 3 blinks).")
+    print("No RS2 session — synchronous 3 TX + 450 ms listen (same driver path as smoke).")
     print()
 
+    if bus not in MCP_CAN_BUSES:
+        print(f"FAIL: MCP wake requires --bus 4, 5, or 6 (got CH{bus}).")
+        return 1
+
     try:
-        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
         reader.drain()
         resp = send_diag(
-            ser, reader, motor_id, PROBE_MCP_SMOKE, seq,
-            max(args.timeout, 1.0), bus=bus,
+            ser, reader, motor_id, PROBE_MCP_WAKE, seq,
+            max(args.timeout, 4.0), bus=bus,
         )
-        seq += 1
         if resp is None:
-            print("FAIL: no USB feedback from MCP smoke probe.")
+            print("FAIL: no USB feedback from MCP wake probe.")
             return 1
         print(format_mcp_status(resp, bus=bus))
-        if resp.get("probe_kind") != PROBE_MCP_SMOKE:
-            print(f"WARN: expected probe_kind {PROBE_MCP_SMOKE}, got {resp.get('probe_kind')}")
-        if int(resp.get("mcp_tx_ok", 0)) == 0 and int(resp.get("mcp_tec", 0)) == 0:
-            print("\nResult: MCP TX did not succeed — fix driver/hardware before discover.")
+        if resp.get("probe_kind") != PROBE_MCP_WAKE:
+            print(f"WARN: expected probe_kind {PROBE_MCP_WAKE}, got {resp.get('probe_kind')}")
+        tx_ok = int(resp.get("mcp_tx_ok", 0))
+        tx_fail = int(resp.get("mcp_tx_fail", 0))
+        if tx_fail > 0:
+            print(f"\nFAIL: MCP wake TX queue broke mid-sequence ({tx_ok}/3 ok, {tx_fail} fail).")
+            print("  Reflash with latest firmware — this is a driver TXQ recovery bug.")
             return 1
-        if int(resp.get("raw_frames", 0)) > 0:
-            print(f"\nResult: ext-CAN RX on CH{bus} ({resp.get('raw_frames')} frame(s)).")
+        if tx_ok < 3:
+            print(f"\nFAIL: only {tx_ok}/3 wake frames transmitted.")
+            return 1
+        if resp.get("found"):
+            print(
+                f"\nPASS: motor replied (comm={rs2_comm_label(resp['comm_mode'])}) "
+                f"raw_frames={resp.get('raw_frames', 0)}"
+            )
+            return 0
+        raw = int(resp.get("raw_frames", 0))
+        if raw > 0:
+            print(f"\nPASS: {raw} ext-CAN frame(s) (comm={rs2_comm_label(resp.get('comm_mode', 0))}).")
             return 0
         tec = int(resp.get("mcp_tec", 0))
-        if tec > 0:
-            print(f"\nResult: MCP reached CAN bus (TEC={tec}) but no motor reply at 0x{motor_id:02X}.")
-            if tec >= 128:
-                print("  TEC=128 → bus-off; reflash (fw clears on session begin) then run --ch4-discover.")
-            else:
-                print("  Run wide ID sweep:")
-            print(f"    python scripts/rs02_can_scan.py --port {ser.port} --ch4-discover")
-            return 1
-        if int(resp.get("mcp_tx_ok", 0)) > 0:
-            print(f"\nResult: MCP accepted TX ({resp.get('mcp_tx_ok')}/3) but TEC=0 — scope CANH/CANL if unsure.")
-            print(f"    python scripts/rs02_can_scan.py --port {ser.port} --ch4-discover")
-            return 1
-        print("\nResult: MCP TX did not succeed — fix driver/hardware before discover.")
-        return 1
+        tec_before = int(resp.get("mcp_tec_before", 0))
+        tec_delta = tec - tec_before if tec >= tec_before else 0
+        print(f"\nPASS: 3/3 MCP wake TX completed (TEC +{tec_delta} = no ACK on those frames).")
+        print("  Driver path OK. Motor did not reply — check ID/bus wiring if unexpected.")
+        return 0
     finally:
-        end_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
         stop.set()
 
 
@@ -1880,7 +2096,8 @@ def run_probe_id(ser: serial.Serial, args: argparse.Namespace) -> int:
     print()
 
     try:
-        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
+        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args,
+                            heartbeat=False)
         best, seq = probe_one_id(ser, reader, motor_id, seq, args, verbose_steps=True)
     finally:
         end_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
@@ -1891,7 +2108,8 @@ def run_probe_id(ser: serial.Serial, args: argparse.Namespace) -> int:
         print(f"Result: no CAN reply at probed ID 0x{motor_id:02X}.")
         print("  - Confirm THIS motor is wired (not the other RS02)")
         print("  - Try factory default: --probe-id 0x7F")
-        print(f"  - Run --mcp-smoke --bus {bus} first (verifies MCP TX without needing a reply)")
+        if bus in MCP_CAN_BUSES:
+            print(f"  - Run --mcp-smoke --bus {bus} first (verifies MCP TX without needing a reply)")
         print(f"  - {can_activity_led(bus)} should blink on TX even with no reply")
         return 1
 
@@ -1928,11 +2146,13 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
     print()
 
     try:
-        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args)
+        seq = begin_session(ser, reader, seq, max(args.timeout, 0.5), bus=bus, args=args,
+                            heartbeat=False)
 
         if args.reset_first:
             for rid in discover_reset_ids(bus):
-                send_diag(ser, reader, rid, PROBE_RESET, seq, discover_probe_timeout(0.45, bus), bus=bus)
+                send_diag(ser, reader, rid, PROBE_RESET, seq,
+                          discover_probe_timeout(0.45, bus, probe_kind=PROBE_RESET), bus=bus)
                 seq += 1
                 time.sleep(0.08)
             ids_s = ", ".join(f"0x{r:02X}" for r in discover_reset_ids(bus))
@@ -2137,7 +2357,11 @@ def main() -> None:
                     help="Hex-dump pdu[0:32] in link diagnostics")
     ap.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     ap.add_argument("--mcp-smoke", action="store_true",
-                    help="Min MCP2518 TX test on --bus: 3 enable frames + TEC/RX counters (flash new fw)")
+                    help="MCP2518 smoke on --bus 4|5|6 (1 enable TX + listen)")
+    ap.add_argument("--mcp-smoke-all", action="store_true",
+                    help="MCP smoke on CH4, CH5, and CH6 sequentially (find active rail)")
+    ap.add_argument("--mcp-wake", action="store_true",
+                    help="MCP step-2: reset+run_mode+enable (3 TX) + listen; no session")
     ap.add_argument("--ch4-discover", action="store_true",
                     help="CH4 wide discover: bus 4, full 1-127, deep wake every ID, MCP pre-reset")
     ap.add_argument("--discover", action="store_true",
@@ -2236,8 +2460,10 @@ def main() -> None:
             ser.read(ser.in_waiting)
         if args.link_test:
             rc = run_link_test(ser, args)
-        elif args.mcp_smoke:
+        elif args.mcp_smoke or args.mcp_smoke_all:
             rc = run_mcp_smoke(ser, args)
+        elif args.mcp_wake:
+            rc = run_mcp_wake(ser, args)
         elif args.probe_id is not None:
             rc = run_probe_id(ser, args)
         elif args.discover:

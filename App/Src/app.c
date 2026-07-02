@@ -6,8 +6,8 @@
 #include "plant/plugins/dynamixel.h"
 #include "plant/control_loop.h"
 #include "plant/plant_diag.h"
-#include "host/host_link.h"
 #include "plant/can/can_router.h"
+#include "host/host_link.h"
 #include "plant/plugin_schema/plugin_table.h"
 
 void app_init(void)
@@ -28,10 +28,11 @@ void app_init(void)
 
 void app_run(void)
 {
+	host_link_begin_loop();
 	control_loop_service();
 	host_link_poll_rx();
 	plant_diag_service();
 	led_service();
 	host_link_poll_tx();
-	can_router_poll();
+	plant_diag_can_router_poll();
 }

@@ -91,6 +91,10 @@ void actuator_apply_desire(void)
 		if (!actuator_table[i].enabled)
 			continue;
 
+		/* CH4–6 are MCP2518 — driven by host RS2 probes, not the 500 Hz loop. */
+		if (actuator_table[i].bus >= CAN_BUS_CH4)
+			continue;
+
 		if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
 			robstride_apply_cycle(&actuator_table[i],
 			                      &actuator_desire_live[i],

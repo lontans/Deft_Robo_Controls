@@ -33,9 +33,11 @@ Dynamixel neck servos (XL330, plant servos[] @ 500 Hz):
 Launch demo (sequential CW sweep slots 0→3, then all to zero):
   python scripts/host_teleop_laptop_usb.py --port COM9 --launch-seq
 
-CH4 SPI-CAN only (slot 3, motor 0x70):
-  python scripts/host_teleop_laptop_usb.py --port COM9 --plant-teleop --plant-slots 3
-  (then press 4 to filter motion to CH4)
+CH4 SPI-CAN (slot 3, motor 0x70) — RS2 PDU path, not 500 Hz plant loop:
+  python scripts/host_teleop_laptop_usb.py --port COM9 --monitor --bus 4 --motor-id 0x70
+  python scripts/host_teleop_laptop_usb.py --port COM9 --nudge --bus 4 --motor-id 0x70 --kp 10
+
+(--plant-teleop skips CH4–6 on current firmware; use --monitor/--nudge/--calibrate with --bus 4.)
 """
 
 from __future__ import annotations
@@ -553,7 +555,9 @@ def print_rs2_comm_reference() -> None:
     print()
 
 
-def run_read_params(ser: serial.Serial, motor_id: int, extra_indexes: list[int]) -> None:
+def run_read_params(
+    ser: serial.Serial, motor_id: int, extra_indexes: list[int], bus: int = 1
+) -> None:
     reader = FrameReader()
     stop = threading.Event()
     threading.Thread(target=serial_rx_thread, args=(ser, reader, stop), daemon=True).start()
@@ -564,15 +568,17 @@ def run_read_params(ser: serial.Serial, motor_id: int, extra_indexes: list[int])
     for index in extra_indexes:
         reads.append((f"custom (0x{index:04X})", index))
 
-    print(f"RS2 parameter read on {ser.port}  motor=0x{motor_id:02X}")
+    bus = normalize_can_bus(bus)
+    print(f"RS2 parameter read on {ser.port}  {probe_target_label(motor_id, bus)}")
+    print_can_bus_note(bus)
     print("Requires firmware PROBE_PARAREAD (kind 14). Success = comm 0x11 pararead reply.")
     print_rs2_comm_reference()
     try:
-        seq = rs2_begin_session(ser, reader, motor_id, seq)
-        seq = rs2_wake_motor(ser, reader, motor_id, seq, steps=RS2_WAKE_STEPS_PARAMS)
+        seq = rs2_begin_session(ser, reader, motor_id, seq, bus=bus)
+        seq = rs2_wake_motor(ser, reader, motor_id, seq, steps=RS2_WAKE_STEPS_PARAMS, bus=bus)
         print()
         for label, index in reads:
-            seq, resp, sniff = rs2_read_param(ser, reader, motor_id, index, seq)
+            seq, resp, sniff = rs2_read_param(ser, reader, motor_id, index, seq, bus=bus)
             time.sleep(0.15)
             if resp is None:
                 line = f"  {label}: no comm=0x11 pararead reply"
@@ -596,7 +602,7 @@ def run_read_params(ser: serial.Serial, motor_id: int, extra_indexes: list[int])
     finally:
         stop.set()
         time.sleep(0.05)
-        rs2_end_session(ser, reader, motor_id, seq)
+        rs2_end_session(ser, reader, motor_id, seq, bus=bus)
 
 
 def run_calibrate(
@@ -630,7 +636,7 @@ def run_calibrate(
     )
 
     try:
-        seq = rs2_begin_session(ser, reader, motor_id, seq)
+        seq = rs2_begin_session(ser, reader, motor_id, seq, bus=bus)
         seq = rs2_wake_motor(ser, reader, motor_id, seq, steps=RS2_WAKE_STEPS_PARAMS, bus=bus)
 
         print("--- enter running (ctrl burst before cal) ---")
@@ -743,10 +749,12 @@ def run_calibrate(
     finally:
         stop.set()
         time.sleep(0.05)
-        rs2_end_session(ser, reader, motor_id, seq)
+        rs2_end_session(ser, reader, motor_id, seq, bus=bus)
 
 
-def run_nudge_test(ser: serial.Serial, motor_id: int, kp: float, kd: float) -> None:
+def run_nudge_test(
+    ser: serial.Serial, motor_id: int, kp: float, kd: float, bus: int = 1
+) -> None:
     """Command small position steps; watch whether CAN feedback bytes ever go non-zero."""
     reader = FrameReader()
     stop = threading.Event()
@@ -757,14 +765,16 @@ def run_nudge_test(ser: serial.Serial, motor_id: int, kp: float, kd: float) -> N
     best_p_raw = 0
     any_nonzero_data = False
 
-    print(f"RS2 nudge test on {ser.port}  motor=0x{motor_id:02X}  kp={kp}  kd={kd}")
+    bus = normalize_can_bus(bus)
+    print(f"RS2 nudge test on {ser.port}  {probe_target_label(motor_id, bus)}  kp={kp}  kd={kd}")
+    print_can_bus_note(bus)
     print("Commands small setpoints — output must be free to move slightly.")
     print("Watch for non-zero can_data / p_raw (no hand rotation needed).")
     print()
 
     try:
-        seq = rs2_begin_session(ser, reader, motor_id, seq)
-        seq = rs2_wake_motor(ser, reader, motor_id, seq)
+        seq = rs2_begin_session(ser, reader, motor_id, seq, bus=bus)
+        seq = rs2_wake_motor(ser, reader, motor_id, seq, bus=bus)
 
         shaft_pos, _ = rs2_sync_cmd_from_feedback(reader)
         if shaft_pos == 0.0:
@@ -801,7 +811,7 @@ def run_nudge_test(ser: serial.Serial, motor_id: int, kp: float, kd: float) -> N
                                 f"with reduced kp={hold_kp:.1f}"
                             )
                             fault_announced = True
-                seq = rs2_send_ctrl_frame(ser, motor_id, hold_pos, hold_kp, kd, seq)
+                seq = rs2_send_ctrl_frame(ser, motor_id, hold_pos, hold_kp, kd, seq, bus=bus)
                 probe = latest_probe_feedback(reader)
                 if probe is not None:
                     decoded = decode_rs02_feedback_bytes(probe["can_data"])
@@ -820,12 +830,12 @@ def run_nudge_test(ser: serial.Serial, motor_id: int, kp: float, kd: float) -> N
         if any_nonzero_data:
             print(f"Result: saw non-zero feedback (best p_raw={best_p_raw}). Encoder path is alive.")
         else:
-            print("Result: motor moved but 8-byte feedback payload stayed all-zero.")
-            print("  - Control path OK (motion proves CAN TX/RX envelope works).")
-            print("  - Telemetry bytes usually need encoder calibration (RobStride tool / MOTOR_CALI).")
-            print("  - Reflash firmware for proactive-on wake step, then retry --nudge.")
+            print("Result: no RobStride feedback (all-zero ext_id / can_data).")
+            print("  - Motor likely did not enable — check supply current (~0.07 A = on).")
+            print("  - CH4: scope ACK slot; recessive = motor not on this bus segment.")
+            print("  - Compare --monitor --bus 1 if the same motor works on FDCAN.")
     finally:
-        rs2_end_session(ser, reader, motor_id, seq)
+        rs2_end_session(ser, reader, motor_id, seq, bus=bus)
         stop.set()
 
 
@@ -888,8 +898,15 @@ def rs2_init_motor_teleop_state(
     return motor
 
 
-def rs2_begin_session(ser: serial.Serial, reader: FrameReader, motor_id: int, seq: int) -> int:
-    resp = send_diag(ser, reader, motor_id, SESSION_BEGIN, seq, 2.0)
+def rs2_begin_session(
+    ser: serial.Serial,
+    reader: FrameReader,
+    motor_id: int,
+    seq: int,
+    bus: int = 1,
+) -> int:
+    bus = normalize_can_bus(bus)
+    resp = send_diag(ser, reader, 0, SESSION_BEGIN, seq, 2.0, bus=bus)
     if resp is None:
         print("Warning: RS2 session begin not acked (timeout — continuing anyway)")
     time.sleep(0.05)
@@ -919,8 +936,14 @@ def rs2_prime_running(
     return seq, False
 
 
-def rs2_end_session(ser: serial.Serial, reader: FrameReader, motor_id: int, seq: int) -> None:
-    send_diag(ser, reader, motor_id, SESSION_END, seq, 0.35)
+def rs2_end_session(
+    ser: serial.Serial,
+    reader: FrameReader,
+    motor_id: int,
+    seq: int,
+    bus: int = 1,
+) -> None:
+    send_diag(ser, reader, 0, SESSION_END, seq, 0.35, bus=normalize_can_bus(bus))
 
 
 def rs2_stop_motor(
@@ -1772,6 +1795,7 @@ def run_rs2_monitor(
     motor_id: int,
     wake_steps: tuple[tuple[int, float], ...] = RS2_WAKE_STEPS,
     skip_wake: bool = False,
+    bus: int = 1,
 ) -> None:
     reader = FrameReader()
     stop = threading.Event()
@@ -1781,10 +1805,14 @@ def run_rs2_monitor(
     cmd_position = 0.0
     stats = SessionStats()
     last_probe: Optional[dict] = None
+    bus = normalize_can_bus(bus)
 
-    cmd_seq = rs2_begin_session(ser, reader, motor_id, cmd_seq)
+    print(f"RS2 monitor on {ser.port} @ {send_hz:.0f} Hz  {probe_target_label(motor_id, bus)}")
+    print_can_bus_note(bus)
+
+    cmd_seq = rs2_begin_session(ser, reader, motor_id, cmd_seq, bus=bus)
     if not skip_wake:
-        cmd_seq = rs2_wake_motor(ser, reader, motor_id, cmd_seq, steps=wake_steps)
+        cmd_seq = rs2_wake_motor(ser, reader, motor_id, cmd_seq, steps=wake_steps, bus=bus)
     else:
         print("RS2 wake skipped (--skip-wake); motor should already be mms=running.")
         print()
@@ -1804,13 +1832,12 @@ def run_rs2_monitor(
         print("  warning: no feedback to sync cmd_pos — starting at 0 rad (may fight shaft)")
     print()
 
-    print(f"RS2 monitor on {ser.port} @ {send_hz:.0f} Hz  motor=0x{motor_id:02X}  (Ctrl+C to stop)")
     print("ack = low 8 bits of command seq (wraps 255→0). cmd trails ack by ~1 frame.")
     print("columns: fb#  ack  cmd  hit  ext_id  mms  pos  temp  faults  can_data")
     try:
         while True:
             cmd_seq = rs2_send_ctrl_frame(
-                ser, motor_id, cmd_position, kp, kd, cmd_seq
+                ser, motor_id, cmd_position, kp, kd, cmd_seq, bus=bus
             )
 
             probe = latest_probe_feedback(reader)
@@ -1825,7 +1852,7 @@ def run_rs2_monitor(
         if last_probe is not None:
             print(f"Last: {format_rs2_line(stats.fb_count, cmd_seq, last_probe)}")
     finally:
-        rs2_end_session(ser, reader, motor_id, cmd_seq)
+        rs2_end_session(ser, reader, motor_id, cmd_seq, bus=bus)
         stop.set()
 
 
@@ -1842,6 +1869,7 @@ def run_rs2_teleop(
     wake_steps: tuple[tuple[int, float], ...] = RS2_WAKE_STEPS,
     skip_wake: bool = False,
     vbus_poll: bool = False,
+    bus: int = 1,
 ) -> None:
     reader = FrameReader()
     stop = threading.Event()
@@ -1852,12 +1880,13 @@ def run_rs2_teleop(
     cmd_velocity = 0.0
     cmd_seq = 1
     round_robin = 0
+    bus = normalize_can_bus(bus)
 
     session_id = motor_ids[0]
-    cmd_seq = rs2_begin_session(ser, reader, session_id, cmd_seq)
+    cmd_seq = rs2_begin_session(ser, reader, session_id, cmd_seq, bus=bus)
     if not skip_wake:
         for mid in motor_ids:
-            cmd_seq = rs2_wake_motor(ser, reader, mid, cmd_seq, steps=wake_steps)
+            cmd_seq = rs2_wake_motor(ser, reader, mid, cmd_seq, steps=wake_steps, bus=bus)
     else:
         print("RS2 wake skipped (--skip-wake); motors should already be mms=running.")
         print()
@@ -1961,6 +1990,7 @@ def run_rs2_teleop(
                 kd,
                 cmd_seq,
                 cmd_velocity,
+                bus=bus,
             )
 
             coast = motion_dir == 0 and abs(cmd_velocity) >= vel_stop
@@ -1992,7 +2022,7 @@ def run_rs2_teleop(
         print("Stopping motor(s) (kp=0 burst → reset)...")
         for motor in motors:
             cmd_seq = rs2_stop_motor(ser, reader, motor.motor_id, cmd_seq, motor.cmd_position)
-        rs2_end_session(ser, reader, session_id, cmd_seq)
+        rs2_end_session(ser, reader, session_id, cmd_seq, bus=bus)
         stop.set()
 
 
@@ -2173,7 +2203,7 @@ def main() -> None:
     ap.add_argument("--calibrate", action="store_true",
                     help="Encoder cal (comm 0x05), zero (0x06), save (0x16) over Deft RS2 path")
     ap.add_argument("--bus", type=int, default=1, choices=list(range(1, MAX_CAN_BUS + 1)),
-                    help=f"Schematic CAN bus for RS2 --calibrate (1..{MAX_CAN_BUS}; 4–6 = MCP2518)")
+                    help=f"Schematic CAN bus for RS2 PDU modes (1..{MAX_CAN_BUS}; 4–6 = MCP2518)")
     ap.add_argument("--plant-teleop", action="store_true",
                     help="Plant actuator slots in one 562 B frame (default CH1 0x76/0x74, CH2 0x73, CH4 0x70)")
     ap.add_argument("--servo-teleop", action="store_true",
@@ -2255,8 +2285,11 @@ def main() -> None:
         mode = "arrow teleop (default)"
     else:
         mode = "legacy actuator"
+    bus = normalize_can_bus(args.bus)
     if use_rs2 and args.calibrate:
-        print(f"Opening {port} (USB CDC)  mode={mode}  bus=FDCAN{args.bus}  cal_timeout={args.cal_timeout:.0f}s")
+        print(f"Opening {port} (USB CDC)  mode={mode}  bus={can_bus_label(bus)}  cal_timeout={args.cal_timeout:.0f}s")
+    elif use_rs2 and (args.nudge or args.monitor or args.read_params):
+        print(f"Opening {port} (USB CDC)  mode={mode}  bus={can_bus_label(bus)}")
     elif args.plant_teleop or args.launch_seq or args.servo_teleop:
         print(f"Opening {port} (USB CDC) @ {args.hz:.0f} Hz  mode={mode}")
     elif use_rs2 and not args.read_params and not args.nudge:
@@ -2345,19 +2378,19 @@ def main() -> None:
                 ramp_down_s=args.plant_ramp_down,
             )
         elif args.read_params:
-            run_read_params(ser, args.motor_id, args.pararead)
+            run_read_params(ser, args.motor_id, args.pararead, bus=bus)
         elif args.calibrate:
             run_calibrate(
                 ser, args.motor_id, args.cal_timeout, args.kp, args.kd,
-                bus=normalize_can_bus(args.bus),
+                bus=bus,
             )
         elif args.nudge:
-            run_nudge_test(ser, args.motor_id, args.kp, args.kd)
+            run_nudge_test(ser, args.motor_id, args.kp, args.kd, bus=bus)
         elif use_rs2:
             if args.monitor:
                 run_rs2_monitor(
                     ser, args.hz, args.kp, args.kd, args.motor_id,
-                    wake_steps=wake_steps, skip_wake=args.skip_wake,
+                    wake_steps=wake_steps, skip_wake=args.skip_wake, bus=bus,
                 )
             else:
                 run_rs2_teleop(
@@ -2373,6 +2406,7 @@ def main() -> None:
                     wake_steps=wake_steps,
                     skip_wake=args.skip_wake,
                     vbus_poll=args.vbus,
+                    bus=bus,
                 )
         elif args.monitor:
             run_monitor(ser, args.hz, args.kp, args.kd)

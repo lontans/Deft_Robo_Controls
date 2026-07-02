@@ -1,6 +1,6 @@
 #include "plant/can/can_router.h"
 #include "plant/can/mcp2518fd.h"
-#include "plant/can/spi_can_port.h"
+#include "plant/can/spi_can_router.h"
 
 #include <string.h>
 
@@ -57,15 +57,17 @@ static const can_act_led_t can_act_led[CAN_BACKEND_COUNT] = {
 	{ CAN6_ACT_PORT, CAN6_ACT_PIN },
 };
 
-static can_rx_ring_t rx_rings[CAN_BUS_COUNT];
-static can_tx_queue_t tx_queues[CAN_BUS_COUNT];
+static can_rx_ring_t rx_rings[CAN_FDCAN_COUNT];
+static can_tx_queue_t tx_queues[CAN_FDCAN_COUNT];
 static uint32_t g_last_traffic_ms[CAN_BACKEND_COUNT];
 static uint32_t g_blink_last_ms[CAN_BACKEND_COUNT];
 static bool g_blink_on[CAN_BACKEND_COUNT];
 
-static bool bus_is_mcp2518(can_bus_id_t bus)
+/* All channels: idle ON (high); blink on TX/RX. CH4–6 start low in gpio.c until can_router_init(). */
+static void can_led_set_idle(uint8_t idx)
 {
-	return (bus >= CAN_BUS_CH4 && bus < CAN_BUS_COUNT);
+	HAL_GPIO_WritePin(can_act_led[idx].port, can_act_led[idx].pin, GPIO_PIN_SET);
+	g_blink_on[idx] = true;
 }
 
 static void fdcan_bus_start(FDCAN_HandleTypeDef *h)
@@ -116,8 +118,7 @@ static void can_led_poll(void)
 				                  g_blink_on[i] ? GPIO_PIN_SET : GPIO_PIN_RESET);
 			}
 		} else {
-			HAL_GPIO_WritePin(can_act_led[i].port, can_act_led[i].pin, GPIO_PIN_SET);
-			g_blink_on[i] = true;
+			can_led_set_idle(i);
 		}
 	}
 }
@@ -149,7 +150,7 @@ static uint8_t dlc_from_hal(uint32_t hal_dlc)
 
 void can_router_init(void)
 {
-	for (int i = 0; i < CAN_BUS_COUNT; i++) {
+	for (int i = 0; i < CAN_FDCAN_COUNT; i++) {
 		rx_rings[i].head = 0;
 		rx_rings[i].tail = 0;
 		tx_queues[i].head = 0;
@@ -159,20 +160,22 @@ void can_router_init(void)
 	for (uint8_t i = 0; i < CAN_BACKEND_COUNT; i++) {
 		g_last_traffic_ms[i] = 0u;
 		g_blink_last_ms[i] = 0u;
-		g_blink_on[i] = true;
-		HAL_GPIO_WritePin(can_act_led[i].port, can_act_led[i].pin, GPIO_PIN_SET);
+		can_led_set_idle(i);
 	}
 
 	fdcan_bus_start(&hfdcan1);
 	fdcan_bus_start(&hfdcan2);
 	fdcan_bus_start(&hfdcan3);
 
-	(void)mcp2518_init_all();
+	spi_can_router_init();
 }
 
 can_status_t can_tx_enqueue(can_bus_id_t bus, const can_frame_t *frame)
 {
-	if (bus >= CAN_BUS_COUNT || frame == NULL)
+	if (spi_can_bus_valid(bus))
+		return spi_can_router_tx_enqueue(bus, frame);
+
+	if (bus >= CAN_FDCAN_COUNT || frame == NULL)
 		return CAN_ERR_PARAM;
 
 	if (((tx_queues[bus].head + 1) % CAN_QUEUE_DEPTH) == tx_queues[bus].tail)
@@ -183,18 +186,10 @@ can_status_t can_tx_enqueue(can_bus_id_t bus, const can_frame_t *frame)
 	return CAN_OK;
 }
 
-static can_status_t backend_send(can_bus_id_t bus, const can_frame_t *frame)
+static can_status_t fdcan_backend_send(can_bus_id_t bus, const can_frame_t *frame)
 {
-	if (bus >= CAN_BACKEND_COUNT || frame == NULL)
+	if (bus >= CAN_FDCAN_COUNT || frame == NULL)
 		return CAN_ERR_PARAM;
-
-	if (bus_is_mcp2518(bus))
-	{
-		if (!mcp2518_send(bus, frame))
-			return CAN_ERR_HAL;
-		can_led_mark_traffic(bus);
-		return CAN_OK;
-	}
 
 	if (frame->dlc > CAN_MAX_DATA_LEN)
 		return CAN_ERR_PARAM;
@@ -226,20 +221,13 @@ static can_status_t backend_send(can_bus_id_t bus, const can_frame_t *frame)
 	return CAN_OK;
 }
 
-static can_status_t backend_recv(can_bus_id_t bus, can_frame_t *frame)
+static can_status_t fdcan_backend_recv(can_bus_id_t bus, can_frame_t *frame)
 {
 	FDCAN_RxHeaderTypeDef rx_header;
 	uint8_t rx_data[CAN_MAX_DATA_LEN];
 
-	if (bus >= CAN_BACKEND_COUNT || frame == NULL)
+	if (bus >= CAN_FDCAN_COUNT || frame == NULL)
 		return CAN_ERR_PARAM;
-
-	if (bus_is_mcp2518(bus)) {
-		if (!mcp2518_recv(bus, frame))
-			return CAN_ERR_EMPTY;
-		can_led_mark_traffic(bus);
-		return CAN_OK;
-	}
 
 	if (HAL_FDCAN_GetRxFifoFillLevel(bus_handle[bus], FDCAN_RX_FIFO0) == 0)
 		return CAN_ERR_EMPTY;
@@ -250,7 +238,6 @@ static can_status_t backend_recv(can_bus_id_t bus, can_frame_t *frame)
 	frame->id = rx_header.Identifier;
 	frame->id_type = (rx_header.IdType == FDCAN_EXTENDED_ID) ? CAN_ID_EXT : CAN_ID_STD;
 
-	/* RS02: identifier is the signal; pass full 8-byte buffer like FDCAN path. */
 	(void)dlc_from_hal(rx_header.DataLength);
 	frame->dlc = CAN_MAX_DATA_LEN;
 	memset(frame->data, 0, sizeof(frame->data));
@@ -262,13 +249,16 @@ static can_status_t backend_recv(can_bus_id_t bus, can_frame_t *frame)
 
 can_status_t can_tx_flush(can_bus_id_t bus)
 {
-	if (bus >= CAN_BUS_COUNT)
+	if (spi_can_bus_valid(bus))
+		return spi_can_router_tx_flush(bus);
+
+	if (bus >= CAN_FDCAN_COUNT)
 		return CAN_ERR_PARAM;
 
 	if (tx_queues[bus].head == tx_queues[bus].tail)
 		return CAN_ERR_EMPTY;
 
-	can_status_t status = backend_send(bus, &tx_queues[bus].buf[tx_queues[bus].tail]);
+	can_status_t status = fdcan_backend_send(bus, &tx_queues[bus].buf[tx_queues[bus].tail]);
 	if (status != CAN_OK)
 		return status;
 
@@ -280,7 +270,13 @@ void can_rx_drain(can_bus_id_t bus)
 {
 	can_frame_t junk;
 
-	if (bus >= CAN_BUS_COUNT)
+	if (spi_can_bus_valid(bus)) {
+		mcp2518_drain_rx(bus);
+		spi_can_router_rx_drain(bus);
+		return;
+	}
+
+	if (bus >= CAN_FDCAN_COUNT)
 		return;
 
 	while (can_rx_pop(bus, &junk) == CAN_OK)
@@ -289,7 +285,10 @@ void can_rx_drain(can_bus_id_t bus)
 
 can_status_t can_rx_pop(can_bus_id_t bus, can_frame_t *frame)
 {
-	if (bus >= CAN_BUS_COUNT || frame == NULL)
+	if (spi_can_bus_valid(bus))
+		return spi_can_router_rx_pop(bus, frame);
+
+	if (bus >= CAN_FDCAN_COUNT || frame == NULL)
 		return CAN_ERR_PARAM;
 
 	if (rx_rings[bus].head == rx_rings[bus].tail)
@@ -302,32 +301,79 @@ can_status_t can_rx_pop(can_bus_id_t bus, can_frame_t *frame)
 
 bool can_rx_available(can_bus_id_t bus)
 {
-	if (bus >= CAN_BUS_COUNT)
+	if (spi_can_bus_valid(bus))
+		return spi_can_router_rx_available(bus);
+
+	if (bus >= CAN_FDCAN_COUNT)
 		return false;
 	return rx_rings[bus].head != rx_rings[bus].tail;
 }
 
-void can_router_poll(void)
+void can_router_discard_pending_tx(void)
 {
-	for (int i = 0; i < (int)CAN_BACKEND_COUNT; i++) {
-		can_bus_id_t bus = (can_bus_id_t)i;
+	for (int i = 0; i < CAN_FDCAN_COUNT; i++) {
+		tx_queues[i].head = 0;
+		tx_queues[i].tail = 0;
+	}
+	spi_can_router_discard_pending_tx();
+}
 
-		if (bus_is_mcp2518(bus))
-			mcp2518_drain_rx(bus);
+static void fdcan_poll_rx_one(can_bus_id_t bus)
+{
+	can_frame_t temp;
 
-		can_frame_t temp;
-		while (backend_recv(bus, &temp) == CAN_OK) {
-			/* Drop oldest on overflow. */
-			if ((rx_rings[bus].head + 1) % CAN_QUEUE_DEPTH == rx_rings[bus].tail)
-				rx_rings[bus].tail = (rx_rings[bus].tail + 1) % CAN_QUEUE_DEPTH;
+	while (fdcan_backend_recv(bus, &temp) == CAN_OK) {
+		if ((rx_rings[bus].head + 1) % CAN_QUEUE_DEPTH == rx_rings[bus].tail)
+			rx_rings[bus].tail = (rx_rings[bus].tail + 1) % CAN_QUEUE_DEPTH;
 
-			rx_rings[bus].buf[rx_rings[bus].head] = temp;
-			rx_rings[bus].head = (rx_rings[bus].head + 1) % CAN_QUEUE_DEPTH;
-		}
+		rx_rings[bus].buf[rx_rings[bus].head] = temp;
+		rx_rings[bus].head = (rx_rings[bus].head + 1) % CAN_QUEUE_DEPTH;
+	}
+}
 
-		while (can_tx_flush(bus) == CAN_OK)
-			;
+static void fdcan_poll_one(can_bus_id_t bus)
+{
+	fdcan_poll_rx_one(bus);
+
+	while (can_tx_flush(bus) == CAN_OK)
+		;
+}
+
+void can_router_poll_bus_rx(can_bus_id_t bus)
+{
+	if (spi_can_bus_valid(bus)) {
+		spi_can_router_poll_bus_rx(bus);
+		can_led_poll();
+		return;
 	}
 
+	if (bus >= CAN_FDCAN_COUNT)
+		return;
+
+	fdcan_poll_rx_one(bus);
+	can_led_poll();
+}
+
+void can_router_poll_bus(can_bus_id_t bus)
+{
+	if (spi_can_bus_valid(bus)) {
+		spi_can_router_poll_bus(bus);
+		can_led_poll();
+		return;
+	}
+
+	if (bus >= CAN_FDCAN_COUNT)
+		return;
+
+	fdcan_poll_one(bus);
+	can_led_poll();
+}
+
+void can_router_poll(void)
+{
+	for (int i = 0; i < (int)CAN_FDCAN_COUNT; i++)
+		fdcan_poll_one((can_bus_id_t)i);
+
+	spi_can_router_poll();
 	can_led_poll();
 }
