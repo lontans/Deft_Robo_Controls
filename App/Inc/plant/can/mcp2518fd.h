@@ -72,6 +72,7 @@ typedef struct {
 	uint8_t tx_fail;
 	uint8_t tx_nack;
 	uint8_t rx_frames;
+	uint8_t rx_fifo_sta;
 	uint8_t tec;
 	uint8_t rec;
 	uint8_t tec_before;

@@ -651,6 +651,8 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 		pdu->data[6] = g_last_mcp_smoke.tec_before;
 		pdu->data[17] = g_last_mcp_smoke.rec;
 		pdu->data[18] = g_last_mcp_smoke.ext_loopback_ok;
+		if (!g_last_probe.found)
+			pdu->data[3] = g_last_mcp_smoke.rx_fifo_sta;
 	} else {
 		uint8_t rail = 0u;
 

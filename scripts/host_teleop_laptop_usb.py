@@ -120,6 +120,8 @@ ACTUATOR0_CMD_OFF = 16
 ACTUATOR0_FB_OFF = 16
 
 P_MIN, P_MAX = -12.57, 12.57
+# After encoder zero/cal, comm 0x02 p_raw can still decode near ±P_MIN — never sync to that.
+RS2_SYNC_POS_MAX = 3.0
 V_MIN, V_MAX = -44.0, 44.0
 POS_STEP = 0.02
 DEFAULT_ARROW_VEL = 22.0
@@ -225,6 +227,26 @@ def format_payload_line(decoded: dict) -> str:
         f"p_raw={decoded['p_raw']:5d}  pos={decoded['position']:+.4f}  "
         f"data={decoded['raw_hex']}"
     )
+
+
+def rs2_cmd_sync_position(decoded: dict, probe: Optional[dict] = None) -> float:
+    """Command position for teleop sync — avoid latching stale comm 0x02 endpoint p_raw."""
+    if decoded.get("payload_empty"):
+        return 0.0
+    pos = decoded["position"]
+    probe_pos = probe.get("position") if probe is not None else None
+    if probe_pos is not None and abs(probe_pos) <= RS2_SYNC_POS_MAX and abs(pos) > RS2_SYNC_POS_MAX:
+        print(
+            f"  note: can_data decodes {pos:+.2f} rad but probe float {probe_pos:+.4f} — using probe"
+        )
+        return float(probe_pos)
+    if abs(pos) > RS2_SYNC_POS_MAX:
+        print(
+            f"  warning: comm 0x02 p_raw → {pos:+.2f} rad (data={decoded['raw_hex']}) — "
+            f"using cmd=0 (post-cal p_raw can lie; shaft is usually at zero)"
+        )
+        return 0.0
+    return pos
 
 
 def build_command_image(position: float, seq: int, kp: float, kd: float) -> bytes:
@@ -505,7 +527,7 @@ def poll_rs2_reader_all(
                     decoded = decode_rs02_feedback_bytes(probe["can_data"])
                     if not target.feedback_synced and not decoded["payload_empty"]:
                         target.feedback_synced = True
-                        target.cmd_position = decoded["position"]
+                        target.cmd_position = rs2_cmd_sync_position(decoded, probe)
         frame = reader.pop()
     return motors
 
@@ -847,7 +869,7 @@ def rs2_sync_cmd_from_feedback(reader: FrameReader) -> Tuple[float, Optional[dic
         if probe is not None and probe.get("found"):
             decoded = decode_rs02_feedback_bytes(probe["can_data"])
             if not decoded["payload_empty"]:
-                return decoded["position"], probe
+                return rs2_cmd_sync_position(decoded, probe), probe
         time.sleep(0.01)
     return 0.0, None
 
@@ -863,7 +885,7 @@ def rs2_sync_cmd_for_motor(reader: FrameReader, motor_id: int, timeout_s: float 
             if parsed is not None and (parsed.get("probe_id", 0) & 0xFF) == motor_id:
                 decoded = decode_rs02_feedback_bytes(parsed["can_data"])
                 if not decoded["payload_empty"]:
-                    return decoded["position"], parsed
+                    return rs2_cmd_sync_position(decoded, parsed), parsed
             frame = reader.pop()
         time.sleep(0.01)
     return 0.0, None
@@ -886,8 +908,10 @@ def rs2_init_motor_teleop_state(
             ext = decode_ext_id(sync_probe["ext_id"])
             mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else "?"
             fault_s = ",".join(ext.faults) if ext.faults else "none"
+            raw_pos = decoded["position"]
+            note = f" (can_data={raw_pos:+.2f})" if abs(raw_pos - synced_pos) > 0.05 else ""
             print(
-                f"  0x{motor.motor_id:02X} synced cmd_pos to shaft  fb={synced_pos:+.4f} rad  "
+                f"  0x{motor.motor_id:02X} synced cmd_pos to shaft  fb={synced_pos:+.4f} rad{note}  "
                 f"mms={mms}  faults=[{fault_s}]"
             )
         else:
@@ -1939,7 +1963,7 @@ def run_rs2_teleop(
                         if sync_probe is not None:
                             decoded = decode_rs02_feedback_bytes(sync_probe["can_data"])
                             if not decoded["payload_empty"]:
-                                motor.cmd_position = sync_pos
+                                motor.cmd_position = rs2_cmd_sync_position(decoded, sync_probe)
                                 motor.feedback_synced = True
                                 motor.last_probe = sync_probe
                                 motor.sync_kp(kp)

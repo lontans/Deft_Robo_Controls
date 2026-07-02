@@ -39,7 +39,13 @@
 #define REG_C1FIFOSTA(n)  (0x060u + (uint16_t)(n) * 12u)
 #define REG_C1FIFOUA(n)   (0x064u + (uint16_t)(n) * 12u)
 
-#define MCP_RX_FIFO_IDX  1u
+/*
+ * MCP2518 naming: FIFO channel 0 = TXQ (cannot receive). First RX FIFO is
+ * channel 1 — CiFIFOCON SFR block at REG_C1FIFOCON(0) / 0x05C (after TXQ).
+ * Filter FnBP must be 1 for FIFO1; FnBP=0 silently drops all matched RX.
+ */
+#define MCP_RX_FIFO_REG   0u
+#define MCP_RX_FILTER_BP  1u
 
 #define MCP_RAM_BASE     0x400u
 #define MCP_RAM_SIZE     2048u
@@ -102,7 +108,7 @@
 
 /* TXQ: PLSIZE=0 (8 B), FSIZE=0 (1 slot), TXEN=1. */
 #define MCP_TXQ_1X8      ((0u << 29) | (0u << 24) | FIFO_TXEN)
-/* RX FIFO1: 4×8 B receive-only. */
+/* RX FIFO1 @ CiFIFOCON(0)/0x05C: 4×8 B receive-only (MCP channel 1). */
 #define MCP_RX_FIFO_4X8  ((0u << 29) | (3u << 24))
 
 #define MCP_T1_FDF  (1u << 7)
@@ -591,8 +597,8 @@ static void mcp_config_rx_fifo(mcp2518_dev_t *d)
 {
 	uint32_t rxcon = MCP_RX_FIFO_4X8 | FIFO_TFNRFNIE | FIFO_FRESET;
 
-	mcp_write32(d, REG_C1FIFOCON(MCP_RX_FIFO_IDX), rxcon);
-	mcp_write32(d, REG_C1FIFOCON(MCP_RX_FIFO_IDX),
+	mcp_write32(d, REG_C1FIFOCON(MCP_RX_FIFO_REG), rxcon);
+	mcp_write32(d, REG_C1FIFOCON(MCP_RX_FIFO_REG),
 	            MCP_RX_FIFO_4X8 | FIFO_TFNRFNIE);
 }
 
@@ -601,12 +607,14 @@ static void mcp_config_rx_fifo(mcp2518_dev_t *d)
 
 static void mcp_config_filters_accept_all(mcp2518_dev_t *d)
 {
-	/* Disable filter 0, accept all 29-bit extended frames into RX FIFO1. */
-	(void)mcp_write_byte(d, REG_C1FLTCON0, 0x00u);
-	mcp_write32(d, REG_C1FLTOBJ0, FLTOBJ_EXIDE);
-	mcp_write32(d, REG_C1MASK0, MASK_MIDE); /* MIDE=1 + zero ID mask → any ext ID */
+	/* Mask=0 → all bits "don't care" → accept any ID into RX FIFO0. */
+	for (uint8_t f = 0u; f < 32u; f++)
+		(void)mcp_write_byte(d, (uint16_t)(REG_C1FLTCON0 + f), 0x00u);
+
+	mcp_write32(d, REG_C1FLTOBJ0, 0u);
+	mcp_write32(d, REG_C1MASK0, 0u);
 	(void)mcp_write_byte(d, REG_C1FLTCON0,
-	                     (uint8_t)(0x80u | MCP_RX_FIFO_IDX)); /* FLTEN0 | FIFO1 */
+	                     (uint8_t)(0x80u | MCP_RX_FILTER_BP)); /* FLTEN0 → FIFO1 */
 }
 
 static void mcp_enable_rx_irq(mcp2518_dev_t *d)
@@ -621,7 +629,7 @@ static bool mcp_rx_fifo_not_empty(mcp2518_dev_t *d)
 {
 	uint8_t sta = 0u;
 
-	if (!mcp_read_buf(d, REG_C1FIFOSTA(MCP_RX_FIFO_IDX), &sta, 1u))
+	if (!mcp_read_buf(d, REG_C1FIFOSTA(MCP_RX_FIFO_REG), &sta, 1u))
 		return false;
 
 	return (sta & FIFO_STA_TFNRFNIF) != 0u;
@@ -629,7 +637,7 @@ static bool mcp_rx_fifo_not_empty(mcp2518_dev_t *d)
 
 static void mcp_rx_fifo_uinc(mcp2518_dev_t *d)
 {
-	(void)mcp_write_byte(d, (uint16_t)(REG_C1FIFOCON(MCP_RX_FIFO_IDX) + 1u), 0x01u);
+	(void)mcp_write_byte(d, (uint16_t)(REG_C1FIFOCON(MCP_RX_FIFO_REG) + 1u), 0x01u);
 }
 
 static void mcp_clear_rx_irq_flag(mcp2518_dev_t *d)
@@ -746,7 +754,7 @@ static bool mcp_hw_pop_rx(mcp2518_dev_t *d, can_frame_t *frame)
 	if (!mcp_rx_fifo_not_empty(d))
 		return false;
 
-	uint32_t ua = mcp_read32(d, REG_C1FIFOUA(MCP_RX_FIFO_IDX));
+	uint32_t ua = mcp_read32(d, REG_C1FIFOUA(MCP_RX_FIFO_REG));
 	uint16_t ram = (uint16_t)(MCP_RAM_BASE + (ua & 0x0FFFu));
 
 	uint32_t r0 = mcp_read32(d, ram + 0u);
@@ -843,8 +851,8 @@ static void mcp_note_tx_result(mcp2518_dev_t *d, uint8_t tec_before)
 static bool mcp_ext_loopback_test(mcp2518_dev_t *d)
 {
 	can_frame_t tx = {
-		.id = 0x123u,
-		.id_type = CAN_ID_STD,
+		.id = 0x0300FD70u,
+		.id_type = CAN_ID_EXT,
 		.dlc = 2u,
 		.data = { 0xDEu, 0xADu },
 	};
@@ -902,6 +910,7 @@ static void mcp_fill_smoke_diag(mcp2518_dev_t *d, mcp2518_smoke_result_t *out)
 	out->bdiag1_b1 = (uint8_t)((bdiag1 >> 16) & 0xFFu);
 	out->tx_fifo_sta = (uint8_t)(mcp_read32(d, REG_C1TXQSTA) & 0xFFu);
 	out->tx_fifo_con = (uint8_t)(mcp_read32(d, REG_C1TXQCON) & 0xFFu);
+	out->rx_fifo_sta = (uint8_t)(mcp_read32(d, REG_C1FIFOSTA(MCP_RX_FIFO_REG)) & 0xFFu);
 	out->init_fail_bits = (uint8_t)(d->init_diag.fail_bits & 0xFFu);
 	out->ext_loopback_ok = d->init_diag.ext_loopback_ok;
 	out->devid = d->init_diag.devid;
@@ -1214,10 +1223,10 @@ void mcp2518_poll_rx(can_bus_id_t bus)
 	if (!d->initialized)
 		return;
 
-	if (g_dev[rail].rx_irq_pending ||
-	    spi_can_port_int_active(rail) ||
-	    mcp_rx_fifo_not_empty(d))
-		g_dev[rail].rx_irq_pending = true;
+	if (spi_can_port_int_active(rail))
+		d->rx_irq_pending = true;
+
+	(void)mcp_rx_fifo_not_empty(d);
 }
 
 void mcp2518_reset_tx_stats(can_bus_id_t bus)
@@ -1340,6 +1349,17 @@ bool mcp2518_bus_smoke(can_bus_id_t bus, const can_frame_t *frame,
 		out->tx_nack = d->tx_nack;
 	} else {
 		out->tx_fail = d->tx_fail;
+	}
+
+	/* Motor reply often lands before the main listen window — poll immediately. */
+	for (uint8_t burst = 0; burst < 50u; burst++) {
+		can_frame_t early;
+
+		while (mcp2518_recv(bus, &early)) {
+			if (out->rx_frames < 0xFFu)
+				out->rx_frames++;
+		}
+		HAL_Delay(1);
 	}
 
 	mcp_read_trec(d, &out->tec, &out->rec);

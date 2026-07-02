@@ -910,6 +910,8 @@ def format_mcp_status(resp: Optional[dict], bus: int = 4) -> str:
     tec_note = f" Δ+{tec_delta}" if tec_delta > 0 else ""
     rec = int(resp.get("mcp_rec", 0)) & 0xFF
     ext_lb = int(resp.get("mcp_ext_loopback_ok", 0)) & 0xFF
+    rxq_sta = int(resp.get("mcp_rxq_sta", 0)) & 0xFF
+    rxq_hint = f" rxq_sta=0x{rxq_sta:02X}" if rx == 0 and rxq_sta else ""
     if mask == 0x07:
         mask_hint = "rails CH4–CH6 (0x07)"
     elif mask == 0x00:
@@ -922,7 +924,7 @@ def format_mcp_status(resp: Optional[dict], bus: int = 4) -> str:
         f"  mcp_init_mask=0x{mask:02X} ({mask_hint})  "
         f"CH{bus}_opmod={opmod_label} (6=CAN2.0 normal)  "
         f"tx_ok={tx_ok} tx_fail={tx_fail} tx_nack={tx_nack} tec={tec}{tec_note} rx={rx}  "
-        f"rec={rec} ext_lb={ext_lb}"
+        f"rec={rec} ext_lb={ext_lb}{rxq_hint}"
     )
     if (mask & rail_bit) == 0:
         return line + (
@@ -1041,6 +1043,7 @@ def parse_probe_pdu(frame: bytes) -> Optional[dict]:
         "mcp_tx_nack": pdu[24],
         "mcp_rec": pdu[17],
         "mcp_ext_loopback_ok": pdu[18],
+        "mcp_rxq_sta": pdu[3] if pdu[2] == 0 else 0,
     }
 
 
