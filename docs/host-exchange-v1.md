@@ -22,8 +22,22 @@ Bump `HOST_LAYOUT_VERSION` and add `host-exchange-v2.md` when the layout changes
 | 12 | 4 | `system` — e-stop / mcu_state / heartbeat bitfields |
 | 16 | 500 | `actuator_commands[25]` — 20 B each |
 | 516 | 12 | `servos[2]` — 6 B each |
-| 528 | 2 | `leds[1]` |
+| 528 | 2 | `leds[1]` — packed uint16 LE; see below |
 | 530 | 32 | `pdu` — opaque payload (RS2 bench backdoor when tagged) |
+
+### LED command (offset 528, 2 B)
+
+Single `host_led_command_t` as **uint16 little-endian** at byte 528:
+
+| Bits | Field | Range |
+|------|-------|-------|
+| 0–4 | `mode` | 0 = test scan, 1 = off (firmware-defined) |
+| 5–9 | `master_brightness` | 0–31 (SK9822 global brightness) |
+| 10–15 | `led_count` | 0 = use firmware `LED_STRIP_MAX`; else 1–63 |
+
+Python: `word = (mode & 0x1F) | ((brightness & 0x1F) << 5) | ((count & 0x3F) << 10)` → `struct.pack_into("<H", buf, 528, word)`.
+
+Script: `scripts/sk9822_led_test.py`. MCU applies via `led_command_mount` + `led_service()` (~30 Hz in main loop, not 500 Hz TIM6).
 
 ### Actuator command (20 B per slot)
 
@@ -54,6 +68,24 @@ When `pdu.data[0..2] == 'R','S','2'`, firmware runs `plant_diag` instead of (or 
 Feedback probe results are mirrored in `pdu` on the feedback image (see `parse_probe_pdu` in Python).
 
 **Plant teleop:** leave `pdu` zero — only `actuator_commands[]` are consumed at 500 Hz.
+
+### DM0 PDU backdoor (`pdu` offset 530) — Damiao bench
+
+When `pdu.data[0..2] == 'D','M','0'` and `system.mcu_state == DIAG_ONLY (2)`, firmware runs `plant_diag_on_dm_command` (CH3 standard CAN probes). Same 562 B image as RS2; host script: `scripts/damiao_scan.py`.
+
+| `pdu` offset | Field |
+|-------------|-------|
+| 0–2 | Tag `'D','M','0'` |
+| 3 | Motor ID (candidate ESC_ID) |
+| 4 | Probe kind (`DM_PROBE_REG_SCAN` = 16 preferred for discover) |
+| 5 | Master ID filter (`0xFF` = any; ignored for reg scan) |
+| 6 | listen_ms |
+| 7 | param_rid (e.g. ESC_ID `0x08`) |
+| **11** | Schematic CAN bus (`3` = CH3 Damiao) |
+
+Feedback: `pdu.data[0] == 'm'` with `found`, `discovered_id`, `master_id`, `raw_frames_seen`, `tx_frames_sent`. Slot 2 actuator mirror also carries probe results during bench (`fault` marker `0xDA000000`).
+
+**Host note:** `mcu_state` is bits 1–3 of the u32 at offset 12 — use `patch_system_mcu_state()` in Python (same as RS2 scripts).
 
 ## Feedback image layout (562 B)
 

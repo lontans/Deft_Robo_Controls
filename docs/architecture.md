@@ -15,8 +15,9 @@ The host publishes **desire** commands at its own rate (hold-last-command). The 
 
 | Path | Trigger | MCU behavior | Host scripts |
 |------|---------|--------------|--------------|
-| **Plant teleop** | `pdu` all zero (no RS2 tag) | `actuator_command_mount` → 500 Hz `actuator_apply_desire` on **all** `ACTUATOR_COUNT` slots | `host_teleop_laptop_usb.py --plant-teleop` |
+| **Plant teleop** | `pdu` all zero (no RS2/DM tag) | `actuator_command_mount` → 500 Hz `actuator_apply_desire` on **all** `ACTUATOR_COUNT` slots | `host_teleop_laptop_usb.py --plant-teleop` |
 | **RS2 PDU bench** | `pdu.data[0..2] = 'R','S','2'` | `plant_diag_on_command` — blocking probes, cal, session; **skips** 500 Hz CAN while session active | `rs02_can_scan.py`, `--calibrate`, RS2 arrow teleop |
+| **DM0 PDU bench** | `pdu.data[0..2] = 'D','M','0'` + `DIAG_ONLY` | `plant_diag_on_dm_command` — sync Damiao probe on CH3 (std CAN); session skips 500 Hz on that bus | `damiao_scan.py` |
 
 RS2 ctrl probes (`PROBE_CTRL_FAST`, etc.) may also mount `actuator_commands[0]` desires. Cal / pararead / session kinds do **not** mount desires (avoids kp fights during cal).
 
@@ -62,17 +63,16 @@ flowchart LR
     AS["actuator_state_live[4]"]
   end
 
-  subgraph can["FDCAN CH1–CH3"]
-    M0["0x70 RS02"]
-    M1["0x74 RS01"]
-    M2["0x73 RS01"]
-    M3["0x75 RS01"]
+  subgraph can["FDCAN CH1 / CH3"]
+    M0["0x76 RS02 CH1"]
+    M1["0x74 RS01 CH1"]
+    M2["Damiao CH3"]
   end
 
   CMD --> HL_RX --> DISPATCH --> DS
   DISPATCH -.->|RS2 PDU| DIAG["plant_diag / robstride_probe_id"]
   DS --> APPLY --> AD --> M0 & M1 & M2 & M3
-  M0 & M1 & M2 & M3 --> APPLY --> AS --> CAP --> SS
+  M0 & M1 & M2 --> APPLY --> AS --> CAP --> SS
   SS --> FETCH --> HL_TX --> FB
 ```
 
@@ -88,7 +88,7 @@ flowchart LR
 | Wire feedback image | 562 B | `host_link` | Host | Magic + tick + ack seq |
 | CAN RX rings | 128 frames / bus | ISR | `can_router_poll` | Drop-oldest on overflow |
 
-**Wire vs plant:** Exchange structs define **25 actuator slots** on the wire. Firmware uses `ACTUATOR_COUNT` (**4**) ≤ `HOST_EXCHANGE_ACTUATOR_SLOTS`. Slots 0–3 map to `plant_config.c` table.
+**Wire vs plant:** Exchange structs define **25 actuator slots** on the wire. Firmware uses `ACTUATOR_COUNT` (**6**) ≤ `HOST_EXCHANGE_ACTUATOR_SLOTS`. Slots 0–5 map to `plant_config.c` table (CH3 slot 2 = Damiao).
 
 ## Module map
 
@@ -114,15 +114,16 @@ App/
 | `can_router` | Per-bus TX queue, RX ring, FDCAN1/2/3 | `App/Src/plant/can/can_router.c` |
 | `plugin_table` | Dispatch pack/parse by protocol | `App/Src/plant/plugin_schema/plugin_table.c` |
 | `robstride` | RobStride extended-frame protocol | `App/Src/plant/plugins/robstride.c` |
-| `plant_config` | Four-actuator table (bus, ID, enable) | `App/Src/plant/plant_config.c` |
+| `damiao` | Damiao standard-frame MIT / reg scan | `App/Src/plant/plugins/damiao.c` |
+| `plant_config` | Six-actuator table (bus, ID, protocol) | `App/Src/plant/plant_config.c` |
 
 ## CAN topology (schematic)
 
 | `can_bus_id_t` | MCU peripheral | Pins | Actuators |
 |----------------|----------------|------|-----------|
-| `CAN_BUS_CH1` | FDCAN1 | PB8 / PB9 | `0x70`, `0x74` (daisy) |
-| `CAN_BUS_CH2` | FDCAN2 | PA8 / PA15 | `0x73` |
-| `CAN_BUS_CH3` | FDCAN3 | PB12 / PB13 | `0x75` |
+| `CAN_BUS_CH1` | FDCAN1 | PB8 / PB9 | `0x76`, `0x74` (daisy, ext CAN) |
+| `CAN_BUS_CH2` | FDCAN3 | PA8 / PA15 | (unused in current `plant_config`) |
+| `CAN_BUS_CH3` | FDCAN2 | PB12 / PB13 | Damiao slot 2 (std CAN) |
 
 ## Host transport selection
 
