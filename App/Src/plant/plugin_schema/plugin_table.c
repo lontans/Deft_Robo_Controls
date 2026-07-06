@@ -3,10 +3,12 @@
 #include "plant/actuator.h"
 
 extern const plugin_ops_t robstride_ops;
+extern const plugin_ops_t damiao_ops;
 
 static const plugin_ops_t *const handlers[PROTO_COUNT] = {
 	[PROTO_NONE]      = NULL,
 	[PROTO_ROBSTRIDE] = &robstride_ops,
+	[PROTO_DAMIAO]    = &damiao_ops,
 	[PROTO_CUBEMARS]  = NULL,
 };
 

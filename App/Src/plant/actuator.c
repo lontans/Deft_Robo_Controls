@@ -2,6 +2,7 @@
 #include "plant/plugin_schema/plugin_table.h"
 #include "plant/can/can_router.h"
 #include "plant/plugins/robstride.h"
+#include "plant/plugins/damiao.h"
 #include "plant/plant_diag.h"
 #include "plant/plant_command.h"
 #include "host/host_link.h"
@@ -57,11 +58,17 @@ void plant_recovery_all(void)
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		if (!actuator_table[i].enabled)
 			continue;
-		if (actuator_table[i].protocol != PROTO_ROBSTRIDE)
-			continue;
 
-		if (robstride_send_reset(&actuator_table[i], &frame) == PLUGIN_OK)
-			(void)can_tx_enqueue(actuator_table[i].bus, &frame);
+		if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
+			if (robstride_send_reset(&actuator_table[i], &frame) == PLUGIN_OK)
+				(void)can_tx_enqueue(actuator_table[i].bus, &frame);
+			continue;
+		}
+
+		if (actuator_table[i].protocol == PROTO_DAMIAO) {
+			if (damiao_send_disable(&actuator_table[i], &frame) == PLUGIN_OK)
+				(void)can_tx_enqueue(actuator_table[i].bus, &frame);
+		}
 	}
 
 	can_router_poll();
@@ -102,6 +109,13 @@ void actuator_apply_desire(void)
 			continue;
 		}
 
+		if (actuator_table[i].protocol == PROTO_DAMIAO) {
+			damiao_apply_cycle(&actuator_table[i],
+			                   &actuator_desire_live[i],
+			                   &actuator_state_live[i]);
+			continue;
+		}
+
 		can_frame_t tx;
 		if (plugin_pack_tx(&actuator_table[i], &actuator_desire_live[i], &tx) == PLUGIN_OK)
 			(void)can_tx_enqueue(actuator_table[i].bus, &tx);
@@ -111,6 +125,8 @@ void actuator_apply_desire(void)
 
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		if (actuator_table[i].protocol == PROTO_ROBSTRIDE)
+			continue;
+		if (actuator_table[i].protocol == PROTO_DAMIAO)
 			continue;
 
 		can_frame_t rx;

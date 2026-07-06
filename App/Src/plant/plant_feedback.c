@@ -15,6 +15,9 @@ void plant_feedback_image_fetch(host_feedback_image_t *out)
 	plant_diag_feedback_fill(&out->pdu);
 	/* Keep RS2 ('r') and Dynamixel ('d') probe PDUs; default to servo SVD otherwise. */
 	if (out->pdu.data[0] != (uint8_t)'d' &&
-	    out->pdu.data[0] != (uint8_t)PLANT_DIAG_PDU_RESP_TAG)
+	    out->pdu.data[0] != (uint8_t)PLANT_DIAG_DM_RESP_TAG &&
+	    out->pdu.data[0] != (uint8_t)PLANT_DIAG_PDU_RESP_TAG) {
 		servo_diag_feedback_fill(&out->pdu);
+		plant_diag_feedback_stamp_fw_marker(&out->pdu);
+	}
 }

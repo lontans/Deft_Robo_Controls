@@ -8,6 +8,7 @@ typedef enum {
 	PROTO_NONE = 0,
 	PROTO_ROBSTRIDE,
 	PROTO_CUBEMARS,
+	PROTO_DAMIAO,
 	PROTO_COUNT,
 } protocol_t;
 
@@ -15,6 +16,7 @@ typedef struct {
 	can_bus_id_t bus;
 	protocol_t protocol;
 	uint32_t motor_id;
+	uint32_t master_id; /* feedback CAN ID; protocol-specific (Damiao: 0 or DM_MASTER_ID_AUTO) */
 	bool enabled;
 } actuator_config_t;
 

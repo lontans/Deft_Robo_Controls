@@ -25,6 +25,11 @@
 #define CAN_LED_BLINK_MS    125u
 #define CAN_QUEUE_DEPTH     128u
 
+typedef enum {
+	FDCAN_FILTER_EXT_ALL = 0,
+	FDCAN_FILTER_STD_ALL,
+} fdcan_filter_mode_t;
+
 typedef struct {
 	GPIO_TypeDef *port;
 	uint16_t pin;
@@ -70,27 +75,46 @@ static void can_led_set_idle(uint8_t idx)
 	g_blink_on[idx] = true;
 }
 
-static void fdcan_bus_start(FDCAN_HandleTypeDef *h)
+static void fdcan_bus_start(FDCAN_HandleTypeDef *h, fdcan_filter_mode_t mode)
 {
 	FDCAN_FilterTypeDef filter = {0};
 
-	filter.IdType = FDCAN_EXTENDED_ID;
-	filter.FilterIndex = 0;
-	filter.FilterType = FDCAN_FILTER_MASK;
-	filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-	filter.FilterID1 = 0;
-	filter.FilterID2 = 0;
+	if (mode == FDCAN_FILTER_STD_ALL) {
+		filter.IdType = FDCAN_STANDARD_ID;
+		filter.FilterIndex = 0;
+		filter.FilterType = FDCAN_FILTER_MASK;
+		filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+		filter.FilterID1 = 0;
+		filter.FilterID2 = 0;
+
+	} else {
+		filter.IdType = FDCAN_EXTENDED_ID;
+		filter.FilterIndex = 0;
+		filter.FilterType = FDCAN_FILTER_MASK;
+		filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+		filter.FilterID1 = 0;
+		filter.FilterID2 = 0;
+	}
 
 	if (HAL_FDCAN_ConfigFilter(h, &filter) != HAL_OK)
 		Error_Handler();
 
-	if (HAL_FDCAN_ConfigGlobalFilter(h,
-			FDCAN_REJECT, FDCAN_REJECT,
-			FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE) != HAL_OK)
-		Error_Handler();
+	if (mode == FDCAN_FILTER_STD_ALL) {
+		if (HAL_FDCAN_ConfigGlobalFilter(h,
+				FDCAN_ACCEPT_IN_RX_FIFO0,
+				FDCAN_REJECT,
+				FDCAN_FILTER_REMOTE,
+				FDCAN_FILTER_REMOTE) != HAL_OK)
+			Error_Handler();
+	} else {
+		if (HAL_FDCAN_ConfigGlobalFilter(h,
+				FDCAN_REJECT, FDCAN_REJECT,
+				FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE) != HAL_OK)
+			Error_Handler();
+	}
 
 	if (HAL_FDCAN_Start(h) != HAL_OK)
-		Error_Handler();
+			Error_Handler();
 }
 
 static void can_led_mark_traffic(can_bus_id_t bus)
@@ -163,9 +187,10 @@ void can_router_init(void)
 		can_led_set_idle(i);
 	}
 
-	fdcan_bus_start(&hfdcan1);
-	fdcan_bus_start(&hfdcan2);
-	fdcan_bus_start(&hfdcan3);
+	// CH1/CH2 RobStride (ext). CH3 Damiao (std) — bus_handle[2] is hfdcan2.
+	fdcan_bus_start(&hfdcan1, FDCAN_FILTER_EXT_ALL);
+	fdcan_bus_start(&hfdcan3, FDCAN_FILTER_EXT_ALL);
+	fdcan_bus_start(&hfdcan2, FDCAN_FILTER_STD_ALL);
 
 	spi_can_router_init();
 }

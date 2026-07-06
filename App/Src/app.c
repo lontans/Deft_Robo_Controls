@@ -29,9 +29,9 @@ void app_init(void)
 void app_run(void)
 {
 	host_link_begin_loop();
-	control_loop_service();
 	host_link_poll_rx();
 	plant_diag_service();
+	control_loop_service();
 	led_service();
 	host_link_poll_tx();
 	plant_diag_can_router_poll();

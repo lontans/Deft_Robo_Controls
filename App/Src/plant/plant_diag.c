@@ -6,6 +6,7 @@
 #include "plant/can/spi_can_router.h"
 #include "plant/plugins/dynamixel.h"
 #include "plant/plugins/robstride.h"
+#include "plant/plugins/damiao.h"
 #include "plant/plugin_schema/plugin_table.h"
 #include "host/host_link.h"
 #include "main.h"
@@ -38,6 +39,80 @@ static bool g_rs2_pending_has_desire;
 static uint16_t g_rs2_pending_param_index;
 static uint32_t g_rs2_pending_param_raw;
 static uint8_t g_rs2_clear_after_send_kind;
+static damiao_probe_result_t g_last_dm_probe;
+static volatile bool g_dm_feedback_active;
+static uint8_t g_dm_pending_kind;
+static uint8_t g_dm_pending_motor_id;
+static uint8_t g_dm_pending_master_id;
+static uint8_t g_dm_pending_param_rid;
+static uint16_t g_dm_pending_listen_ms;
+static can_bus_id_t g_dm_pending_bus;
+static volatile bool g_dm_session_active;
+static can_bus_id_t g_dm_can_bus;
+static uint8_t g_dm_feedback_ttl;
+
+static void plant_diag_dm_clear_actuator_mirror(void)
+{
+	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		if (!actuator_table[i].enabled)
+			continue;
+		if (actuator_table[i].protocol != PROTO_DAMIAO)
+			continue;
+
+		actuator_state_live[i].fault = 0u;
+	}
+
+	actuator_capture_state();
+}
+
+static void plant_diag_dm_publish_actuator_state(void)
+{
+	uint8_t slot = ACTUATOR_COUNT;
+
+	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		if (!actuator_table[i].enabled)
+			continue;
+		if (actuator_table[i].protocol != PROTO_DAMIAO)
+			continue;
+		if (actuator_table[i].bus != g_dm_pending_bus)
+			continue;
+		slot = i;
+		break;
+	}
+
+	if (slot >= ACTUATOR_COUNT) {
+		for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+			if (actuator_table[i].enabled &&
+			    actuator_table[i].protocol == PROTO_DAMIAO) {
+				slot = i;
+				break;
+			}
+		}
+	}
+
+	if (slot >= ACTUATOR_COUNT)
+		return;
+
+	actuator_state_t *st = &actuator_state_live[slot];
+
+	st->position    = g_last_dm_probe.position;
+	st->velocity    = g_last_dm_probe.velocity;
+	st->torque      = g_last_dm_probe.torque;
+	st->temperature = g_last_dm_probe.temperature;
+	/* Bench mirror: velocity=probed ID, torque=ESC_ID, temperature=Master ID. */
+	if (g_last_dm_probe.probe_kind != 0u) {
+		st->velocity    = (float)g_last_dm_probe.motor_id;
+		st->torque      = (float)g_last_dm_probe.discovered_id;
+		st->temperature = (float)g_last_dm_probe.master_id;
+	}
+	st->fault = PLANT_DM_FB_MAGIC |
+	            ((uint32_t)(g_last_dm_probe.found ? 1u : 0u) << 23) |
+	            ((uint32_t)g_last_dm_probe.tx_frames_sent << 16) |
+	            ((uint32_t)g_last_dm_probe.raw_frames_seen << 8) |
+	            (uint32_t)g_last_dm_probe.err;
+
+	actuator_capture_state();
+}
 
 bool plant_diag_is_dxl_command(const host_command_image_t *cmd)
 {
@@ -63,7 +138,9 @@ void plant_diag_on_dxl_command(const host_command_image_t *cmd)
 
 void plant_diag_can_router_poll(void)
 {
-	if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
+	if (g_dm_session_active && g_dm_can_bus < CAN_BACKEND_COUNT)
+		can_router_poll_bus(g_dm_can_bus);
+	else if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
 		can_router_poll_bus(g_rs2_can_bus);
 	else
 		can_router_poll();
@@ -71,7 +148,9 @@ void plant_diag_can_router_poll(void)
 
 void plant_diag_yield_usb(void)
 {
-	if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
+	if (g_dm_session_active && g_dm_can_bus < CAN_BACKEND_COUNT)
+		can_router_poll_bus_rx(g_dm_can_bus);
+	else if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
 		can_router_poll_bus_rx(g_rs2_can_bus);
 	else
 		plant_diag_can_router_poll();
@@ -118,15 +197,15 @@ static void plant_diag_finalize_probe(uint8_t kind, uint8_t motor_id, bool got)
 
 static void plant_diag_flush_usb(void)
 {
-	for (uint8_t i = 0; i < 16u; i++) {
-		if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
+	for (uint8_t i = 0; i < 32u; i++) {
+		if (g_dm_session_active && g_dm_can_bus < CAN_BACKEND_COUNT)
+			can_router_poll_bus_rx(g_dm_can_bus);
+		else if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
 			can_router_poll_bus_rx(g_rs2_can_bus);
 		else
 			plant_diag_can_router_poll();
 
-		if (host_link_poll_tx_once())
-			return;
-
+		(void)host_link_poll_tx_once();
 		HAL_Delay(1);
 	}
 }
@@ -444,7 +523,8 @@ static can_bus_id_t plant_diag_pdu_can_bus(const host_pdu_command_t *pdu)
 
 bool plant_diag_skip_actuator_can(void)
 {
-	if (g_rs2_session_active || g_probe_in_progress)
+	if (g_rs2_session_active || g_dm_session_active ||
+	    g_probe_in_progress)
 		return true;
 
 	if (g_rs2_quiet_until_ms != 0u &&
@@ -456,7 +536,8 @@ bool plant_diag_skip_actuator_can(void)
 
 bool plant_diag_skip_servo_bus(void)
 {
-	return g_rs2_session_active || g_probe_in_progress;
+	return g_rs2_session_active || g_dm_session_active ||
+	       g_probe_in_progress;
 }
 
 static bool pdu_is_scan_request(const host_pdu_command_t *pdu)
@@ -475,6 +556,86 @@ bool plant_diag_is_rs2_command(const host_command_image_t *cmd)
 		return false;
 
 	return pdu_is_scan_request(&cmd->pdu);
+}
+
+bool plant_diag_is_dm_command(const host_command_image_t *cmd)
+{
+	if (cmd == NULL)
+		return false;
+
+	return cmd->pdu.data[0] == (uint8_t)PLANT_DIAG_DM_TAG0 &&
+	       cmd->pdu.data[1] == (uint8_t)PLANT_DIAG_DM_TAG1 &&
+	       cmd->pdu.data[2] == (uint8_t)PLANT_DIAG_DM_TAG2;
+}
+
+void plant_diag_on_dm_command(const host_command_image_t *cmd)
+{
+	if (cmd == NULL || !plant_diag_is_dm_command(cmd))
+		return;
+
+	uint8_t kind = cmd->pdu.data[4];
+	can_bus_id_t bus = plant_diag_pdu_can_bus(&cmd->pdu);
+
+	if (kind == PLANT_DIAG_SESSION_BEGIN) {
+		g_dm_session_active = true;
+		g_dm_can_bus = bus;
+		can_router_discard_pending_tx();
+		if (bus < CAN_BUS_CH4)
+			can_rx_drain(bus);
+		actuator_desire_clear();
+		plant_diag_dm_clear_actuator_mirror();
+		memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
+		g_last_dm_probe.probe_kind = kind;
+		g_last_dm_probe.motor_id = cmd->pdu.data[3];
+		g_last_dm_probe.found = true;
+		g_dm_feedback_active = true;
+		g_dm_feedback_ttl = PLANT_DM_FB_TTL_SESSION;
+		plant_diag_flush_usb();
+		return;
+	}
+
+	if (kind == PLANT_DIAG_SESSION_END) {
+		g_dm_session_active = false;
+		memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
+		g_last_dm_probe.probe_kind = kind;
+		g_last_dm_probe.motor_id = cmd->pdu.data[3];
+		g_last_dm_probe.found = true;
+		g_dm_feedback_active = true;
+		g_dm_feedback_ttl = PLANT_DM_FB_TTL_SESSION;
+		plant_diag_flush_usb();
+		return;
+	}
+
+	if (g_probe_in_progress || g_rs2_probe_pending)
+		return;
+
+	g_dm_pending_motor_id = cmd->pdu.data[3];
+	g_dm_pending_kind = kind;
+	g_dm_pending_master_id = cmd->pdu.data[PLANT_DIAG_DM_PDU_MASTER_ID];
+	g_dm_pending_listen_ms = cmd->pdu.data[PLANT_DIAG_DM_PDU_LISTEN_MS];
+	g_dm_pending_param_rid = cmd->pdu.data[PLANT_DIAG_DM_PDU_PARAM_RID];
+	if (g_dm_pending_listen_ms == 0u)
+		g_dm_pending_listen_ms = 15u;
+	g_dm_pending_bus = bus;
+
+	plant_diag_dm_clear_actuator_mirror();
+	memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
+	g_last_dm_probe.motor_id = g_dm_pending_motor_id;
+	g_last_dm_probe.probe_kind = g_dm_pending_kind;
+
+	if (!damiao_probe_id(g_dm_pending_bus,
+	                     g_dm_pending_motor_id,
+	                     g_dm_pending_kind,
+	                     g_dm_pending_master_id,
+	                     g_dm_pending_param_rid,
+	                     g_dm_pending_listen_ms,
+	                     &g_last_dm_probe))
+		g_last_dm_probe.found = false;
+
+	plant_diag_dm_publish_actuator_state();
+	g_dm_feedback_active = true;
+	g_dm_feedback_ttl = PLANT_DM_FB_TTL_PROBE;
+	plant_diag_flush_usb();
 }
 
 static void plant_diag_reset_motor(uint8_t motor_id, can_bus_id_t bus)
@@ -587,6 +748,15 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 	plant_diag_queue_probe(cmd, motor_id, kind, bus);
 }
 
+void plant_diag_feedback_stamp_fw_marker(host_pdu_feedback_t *pdu)
+{
+	if (pdu == NULL)
+		return;
+
+	pdu->data[29] = (uint8_t)PLANT_DM_FW_MARKER0;
+	pdu->data[30] = (uint8_t)PLANT_DM_FW_MARKER1;
+}
+
 void plant_diag_feedback_sent(uint8_t probe_kind)
 {
 	if (g_rs2_clear_after_send_kind != 0u &&
@@ -604,6 +774,29 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 	if (g_dxl_feedback_active) {
 		dynamixel_probe_feedback_fill(pdu);
 		g_dxl_feedback_active = false;
+		return;
+	}
+
+	if (g_dm_feedback_active || g_dm_feedback_ttl > 0u) {
+		memset(pdu->data, 0, sizeof(pdu->data));
+		pdu->data[0] = (uint8_t)PLANT_DIAG_DM_RESP_TAG;
+		pdu->data[1] = g_last_dm_probe.motor_id;
+		pdu->data[2] = g_last_dm_probe.found ? 1u : 0u;
+		pdu->data[3] = g_last_dm_probe.probe_kind;
+		memcpy(&pdu->data[4], &g_last_dm_probe.rx_can_id, sizeof(uint32_t));
+		memcpy(&pdu->data[8], g_last_dm_probe.data, 8u);
+		memcpy(&pdu->data[16], &g_last_dm_probe.param_value, sizeof(uint32_t));
+		memcpy(&pdu->data[20], &g_last_dm_probe.position, sizeof(float));
+		pdu->data[24] = g_last_dm_probe.discovered_id;
+		pdu->data[25] = g_last_dm_probe.master_id;
+		pdu->data[26] = g_last_dm_probe.raw_frames_seen;
+		pdu->data[27] = g_last_dm_probe.err;
+		pdu->data[28] = g_last_dm_probe.tx_frames_sent;
+		pdu->data[31] = g_last_dm_probe.param_rid;
+		if (g_dm_feedback_ttl > 0u)
+			g_dm_feedback_ttl--;
+		else
+			g_dm_feedback_active = false;
 		return;
 	}
 

@@ -26,6 +26,10 @@ Calibrate on a specific FDCAN branch (host sets pdu.data[11]; MCU Phase 4 must r
 Multi-bus runtime teleop (500 Hz plant slots — auto-homes to 0, then all actuators):
   python scripts/host_teleop_laptop_usb.py --port COM9 --plant-teleop
 
+Damiao ID discover (CH3 std CAN, no USB-UART adapter):
+  python scripts/damiao_scan.py --port COM9 --discover --bus 3
+  python scripts/damiao_scan.py --port COM9 --probe-id 1 --bus 3 --all-modes
+
 Dynamixel neck servos (XL330, plant servos[] @ 500 Hz):
   python scripts/dynamixel_teleop.py --port COM9
   python scripts/host_teleop_laptop_usb.py --port COM9 --servo-teleop

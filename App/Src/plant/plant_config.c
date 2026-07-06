@@ -2,6 +2,7 @@
 #include "plant/actuator.h"
 #include "plant/plugins/dynamixel.h"
 #include "plant/plugins/sk9822.h"
+#include "plant/plugins/damiao.h"
 
 // Servo table initialization
 servo_config_t servo_table[SERVO_COUNT];
@@ -27,9 +28,10 @@ void plant_config_init(void)
 	};
 
 	actuator_table[2] = (actuator_config_t){
-		.bus = CAN_BUS_CH2,
-		.protocol = PROTO_ROBSTRIDE,
-		.motor_id = 0x73,
+		.bus = CAN_BUS_CH3,
+		.protocol = PROTO_DAMIAO,
+		.motor_id = 0x01,
+		.master_id = DM_MASTER_ID_AUTO,
 		.enabled = true,
 	};
 
