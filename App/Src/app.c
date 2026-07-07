@@ -8,6 +8,7 @@
 #include "plant/plant_diag.h"
 #include "plant/can/can_router.h"
 #include "host/host_link.h"
+#include "host/host_uart_bridge.h"
 #include "plant/plugin_schema/plugin_table.h"
 
 void app_init(void)
@@ -22,6 +23,7 @@ void app_init(void)
 
 	can_router_init();
 	host_link_init();
+	host_uart_bridge_init();
 
 	control_loop_init();
 }

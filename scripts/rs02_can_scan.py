@@ -72,9 +72,9 @@ MAX_CAN_BUS = 6
 
 # Mirror App/Src/plant/plant_config.c — (schematic_bus, motor_id) per actuator slot.
 PLANT_ACTUATOR_TABLE: Tuple[Tuple[int, int], ...] = (
-    (1, 0x76),  # slot 0 CH1 FDCAN
-    (1, 0x74),  # slot 1 CH1 FDCAN
-    (2, 0x73),  # slot 2 CH2 FDCAN
+    (1, 0x76),  # slot 0 CH1 FDCAN RobStride
+    (1, 0x74),  # slot 1 CH1 FDCAN RobStride
+    (3, 0x06),  # slot 2 CH3 FDCAN Damiao DM-J4310
     (4, 0x70),  # slot 3 CH4 MCP2518 SPI-CAN
     (5, 0x70),  # slot 4 CH5 MCP2518 SPI-CAN
     (6, 0x70),  # slot 5 CH6 MCP2518 SPI-CAN

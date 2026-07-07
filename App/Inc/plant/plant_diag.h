@@ -21,6 +21,7 @@
 #define PLANT_DIAG_DM_PDU_MASTER_ID  5u
 #define PLANT_DIAG_DM_PDU_LISTEN_MS  6u
 #define PLANT_DIAG_DM_PDU_PARAM_RID  7u
+#define PLANT_DIAG_DM_PDU_END_ID     8u   /* DM_PROBE_ID_SWEEP only: range end (data[3]=start) */
 
 /* actuator_feedback[slot].fault marker when DM probe results are mirrored */
 #define PLANT_DM_FB_MAGIC            0xDA000000u
@@ -64,6 +65,10 @@ void plant_diag_feedback_stamp_fw_marker(host_pdu_feedback_t *pdu);
 #define PLANT_DIAG_PDU_CAN_BUS       11u
 
 #define PLANT_DIAG_RS2_QUIET_MS      3000u
+#define PLANT_DIAG_DM_QUIET_MS       3000u
+
+/* Drop bench session gates so plant teleop can drive actuators immediately. */
+void plant_diag_release_actuator_can(void);
 
 bool plant_diag_skip_actuator_can(void);
 bool plant_diag_skip_servo_bus(void);

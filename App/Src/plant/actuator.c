@@ -66,12 +66,14 @@ void plant_recovery_all(void)
 		}
 
 		if (actuator_table[i].protocol == PROTO_DAMIAO) {
+			damiao_reset_enable_latch(i);
 			if (damiao_send_disable(&actuator_table[i], &frame) == PLUGIN_OK)
 				(void)can_tx_enqueue(actuator_table[i].bus, &frame);
 		}
 	}
 
 	can_router_poll();
+	plant_diag_release_actuator_can();
 	actuator_desire_clear();
 }
 

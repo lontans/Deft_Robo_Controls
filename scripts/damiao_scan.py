@@ -12,6 +12,10 @@ Examples:
   python scripts/damiao_scan.py --port COM9 --discover --bus 3
   python scripts/damiao_scan.py --port COM9 --probe-id 1 --bus 3 --reg-scan
   python scripts/damiao_scan.py --port COM9 --discover --start 1 --end 16 --mit-fallback
+
+  # Same register-read discovery, but the whole 0-127 range is swept inside
+  # one firmware command (no per-ID USB round trip):
+  python scripts/damiao_scan.py --port COM9 --fw-sweep --bus 3 --start 0 --end 127
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ IMAGE_BYTES = 562
 PDU_OFF = 530
 PDU_BUS_OFF = PDU_OFF + 11
 PLANT_MCU_STATE_DIAG_ONLY = 2
+PLANT_MCU_STATE_NORMAL = 0
 SYSTEM_CMD_OFF = 12
 
 DM_PROBE_MIT = 0
@@ -50,6 +55,8 @@ DM_PROBE_CLEAR_FAULT = 13
 DM_PROBE_READ_PARAM = 14
 DM_PROBE_DISCOVER = 15
 DM_PROBE_REG_SCAN = 16
+DM_PROBE_ID_SWEEP = 17
+DM_PROBE_SET_ZERO = 18
 DM_PROBE_PROMISC = 10
 DM_REG_ESC_ID = 0x08
 DM_REG_MST_ID = 0x07
@@ -67,7 +74,7 @@ ACTUATOR_SLOT_BYTES = 20
 
 # Seeed wiki: Master ID = CAN_ID + 0x10 (e.g. id 1 -> master 0x11). Avoid master 0.
 DEFAULT_MASTER_IDS: Tuple[int, ...] = (
-    0x11, 0x12, 0x13, 0, 1, 2, 0x7F, 0x7E, 0xFD, 0xFC,
+    0x16, 0x11, 0x12, 0x13, 0, 1, 2, 0x7F, 0x7E, 0xFD, 0xFC,
 )
 
 # Priority motor IDs (factory / bench defaults).
@@ -84,6 +91,8 @@ PROBE_KIND_NAMES = {
     DM_PROBE_READ_PARAM: "read_param",
     DM_PROBE_DISCOVER: "discover",
     DM_PROBE_REG_SCAN: "reg_scan",
+    DM_PROBE_ID_SWEEP: "id_sweep",
+    DM_PROBE_SET_ZERO: "set_zero",
     DM_PROBE_PROMISC: "promisc",
 }
 
@@ -161,6 +170,11 @@ def normalize_bus(bus: int) -> int:
     return max(1, min(6, int(bus)))
 
 
+def clamp_listen_ms(ms: int, *, minimum: int = 20, maximum: int = 255) -> int:
+    """PDU listen field is one byte; MCU uses it as milliseconds per listen window."""
+    return max(minimum, min(maximum, int(ms)))
+
+
 def patch_system_mcu_state(buf: bytearray, mcu_state: int) -> None:
     """host_system_command_t.mcu_state is bits 1..3 of the u32 at offset 12."""
     word, = struct.unpack_from("<I", buf, SYSTEM_CMD_OFF)
@@ -176,6 +190,7 @@ def build_dm_probe_command(
     master_id: int = 0,
     listen_ms: int = 15,
     param_rid: int = DM_REG_ESC_ID,
+    end_id: int = 0,
 ) -> bytes:
     buf = bytearray(IMAGE_BYTES)
     struct.pack_into("<I", buf, 0, HOST_COMMAND_MAGIC)
@@ -191,6 +206,7 @@ def build_dm_probe_command(
     buf[PDU_OFF + 5] = master_id & 0xFF
     buf[PDU_OFF + 6] = listen_ms & 0xFF
     buf[PDU_OFF + 7] = param_rid & 0xFF
+    buf[PDU_OFF + 8] = end_id & 0xFF  # DM_PROBE_ID_SWEEP only: range end
     buf[PDU_BUS_OFF] = normalize_bus(bus) & 0xFF
     return bytes(buf)
 
@@ -230,6 +246,17 @@ def probe_kind_matches(resp_kind: int, expect_kind: Optional[int]) -> bool:
     if expect_kind == resp_kind:
         return True
     if expect_kind == DM_PROBE_REG_SCAN and resp_kind in (DM_PROBE_REG_SCAN, DM_PROBE_READ_PARAM):
+        return True
+    if expect_kind == DM_PROBE_DISCOVER and resp_kind in (
+        DM_PROBE_DISCOVER,
+        DM_PROBE_ENABLE,
+        DM_PROBE_MIT,
+        DM_PROBE_POS,
+        DM_PROBE_VEL,
+        DM_PROBE_ALL,
+    ):
+        return True
+    if expect_kind == DM_PROBE_MIT and resp_kind == DM_PROBE_MIT:
         return True
     return False
 
@@ -352,6 +379,11 @@ def wait_probe_response(
                 if probe_kind in (SESSION_BEGIN, SESSION_END):
                     if parsed["probe_kind"] == probe_kind:
                         return parsed
+                elif probe_kind == DM_PROBE_ID_SWEEP:
+                    # MCU swept the whole range internally; the hit ID isn't
+                    # known ahead of time, so match on probe_kind alone.
+                    if parsed["probe_kind"] == DM_PROBE_ID_SWEEP:
+                        return parsed
                 elif parsed["probe_id"] == (probe_id & 0xFF):
                     if probe_kind_matches(parsed["probe_kind"], probe_kind):
                         return parsed
@@ -364,11 +396,21 @@ def wait_probe_response(
     return None
 
 
-def probe_timeout_s(probe_kind: int, listen_ms: int) -> float:
+def probe_timeout_s(probe_kind: int, listen_ms: int, id_span: int = 1) -> float:
+    if probe_kind == DM_PROBE_ID_SWEEP:
+        # MCU loops the whole range internally before replying at all (on a
+        # miss) -- one probe can legitimately take id_span * listen_ms, plus
+        # per-id CAN TX/RX poll overhead (not just the raw HAL_Delay budget).
+        # Pad generously: a too-short host timeout gives up while the MCU is
+        # still genuinely sweeping, which looks like a hang but isn't.
+        return (id_span * (listen_ms + 5)) / 1000.0 + 3.0
     if probe_kind == DM_PROBE_REG_SCAN:
-        return max(2.0, (listen_ms * 2) / 1000.0 + 1.0)
+        # ESC listen + up to 120 ms RX-only grace + MST follow-up on MCU.
+        return max(3.0, (listen_ms * 3 + 140) / 1000.0 + 1.5)
     if probe_kind == DM_PROBE_DISCOVER:
-        return max(2.5, (listen_ms * 5) / 1000.0 + 1.0)
+        return max(6.0, (listen_ms * 8) / 1000.0 + 2.0)
+    if probe_kind == DM_PROBE_MIT:
+        return max(2.0, listen_ms / 1000.0 + 1.0)
     if probe_kind == DM_PROBE_ALL:
         return max(1.5, (listen_ms * 3) / 1000.0 + 0.75)
     return max(1.0, listen_ms / 1000.0 + 0.75)
@@ -385,9 +427,16 @@ def format_miss(
     if mcu_timeout or resp is None:
         return f"MISS  id=0x{motor_id:02X}  {kind_name}  timeout (no 'm' PDU or slot2 mirror)"
     via = " slot2" if resp.get("via_actuator_slot") else ""
+    rx_id = resp.get("rx_can_id", 0)
+    extra = f"  rx_id=0x{rx_id:03X}" if rx_id else ""
+    raw = resp.get("raw_frames", 0)
+    if raw > 0 and not resp.get("found"):
+        extra += "  (bus traffic — not a valid register reply for this ID)"
+    elif raw > 0 and resp.get("found") and not is_can_motor_hit(resp):
+        extra += "  (stale/partial parse — ignore found bit)"
     return (
         f"MISS  id=0x{motor_id:02X}  {kind_name}{via}  "
-        f"tx={resp.get('tx_frames', 0)}  rx_raw={resp['raw_frames']}  "
+        f"tx={resp.get('tx_frames', 0)}  rx_raw={resp['raw_frames']}{extra}  "
         f"found={int(resp['found'])}"
     )
 
@@ -403,13 +452,14 @@ def send_dm_probe(
     master_id: int = 0,
     listen_ms: int = 15,
     param_rid: int = DM_REG_ESC_ID,
+    end_id: int = 0,
 ) -> Tuple[Optional[dict], int, bool]:
     reader.drain()
     ser.write(
         build_dm_probe_command(
             motor_id, probe_kind, seq, bus=bus,
             master_id=master_id, listen_ms=listen_ms,
-            param_rid=param_rid,
+            param_rid=param_rid, end_id=end_id,
         )
     )
     ser.flush()
@@ -433,16 +483,20 @@ def format_hit(resp: dict, motor_id: int, master_id: int, kind: int) -> str:
     bid = feedback_motor_id(data[0]) if data else resp["discovered_id"]
     kind_name = PROBE_KIND_NAMES.get(resp["probe_kind"], f"0x{resp['probe_kind']:02X}")
     reg = ""
-    if resp.get("param_rid"):
-        rid = resp["param_rid"]
+    rid = resp.get("param_rid", 0)
+    if rid in (DM_REG_ESC_ID, DM_REG_MST_ID, DM_REG_CTRL_MODE):
         rval = resp.get("param_value", 0)
         rname = {DM_REG_ESC_ID: "ESC_ID", DM_REG_MST_ID: "MST_ID", DM_REG_CTRL_MODE: "CTRL_MODE"}.get(rid, f"0x{rid:02X}")
         reg = f"  {rname}=0x{rval & 0xFFFFFFFF:X}"
+    is_param = resp.get("probe_kind") in (DM_PROBE_REG_SCAN, DM_PROBE_READ_PARAM, DM_PROBE_ID_SWEEP)
+    if is_param:
+        motion = "  motion=n/a (register read; use MIT probe while enabled for pos/temp)"
+    else:
+        motion = f"  pos={resp['position']:.4f}  temp={resp['temperature']:.1f}C"
     return (
         f"FOUND  probe=0x{motor_id:02X}  esc_id=0x{bid:02X}  "
         f"master_rx=0x{resp['master_id']:02X}  "
-        f"mode={kind_name}{reg}  "
-        f"pos={resp['position']:.4f}  temp={resp['temperature']:.1f}C  "
+        f"mode={kind_name}{reg}{motion}  "
         f"err=0x{resp['err']:X}  raw={resp['raw_frames']}  tx={resp['tx_frames']}"
     )
 
@@ -470,21 +524,38 @@ def resolve_master_id_list(master_id_arg: str) -> Sequence[int]:
     return (int(master_id_arg, 0) & 0xFF,)
 
 
+def true_esc_id(resp: Optional[dict]) -> int:
+    if resp is None:
+        return 0
+    if resp.get("param_rid") == DM_REG_ESC_ID and resp.get("param_value", 0):
+        return int(resp["param_value"]) & 0xFF
+    return int(resp.get("discovered_id", 0)) & 0xFF
+
+
 def is_can_motor_hit(resp: Optional[dict]) -> bool:
-    """True when MCU saw Damiao feedback on CAN for this probe."""
+    """True when MCU parsed a Damiao CAN response for this probe."""
     if resp is None:
         return False
     if resp.get("probe_kind") in (SESSION_BEGIN, SESSION_END):
         return False
     if resp.get("raw_frames", 0) <= 0:
         return False
-    if resp.get("found"):
-        return True
-    # REG_SCAN: param read success even if found bit was missed on old firmware.
-    if resp.get("probe_kind") in (DM_PROBE_REG_SCAN, DM_PROBE_READ_PARAM):
-        esc = resp.get("discovered_id", 0) or (resp.get("param_value", 0) & 0xFF)
-        return esc != 0 or resp.get("master_id", 0) != 0
-    return False
+    if not resp.get("found"):
+        return False
+    if resp.get("probe_kind") in (DM_PROBE_CLEAR_FAULT, DM_PROBE_ENABLE):
+        return False
+    if resp.get("probe_kind") in (DM_PROBE_REG_SCAN, DM_PROBE_READ_PARAM, DM_PROBE_ID_SWEEP):
+        esc = true_esc_id(resp)
+        probe_id = int(resp.get("probe_id", 0)) & 0xFF
+        if esc == 0 and resp.get("master_id", 0) in (0, 0xFF):
+            return False
+        # Register discovery is ESC_ID read only (MST is supplemental metadata).
+        if resp.get("param_rid") == DM_REG_MST_ID:
+            return False
+        if resp.get("probe_kind") == DM_PROBE_ID_SWEEP:
+            return esc != 0
+        return esc == probe_id
+    return True
 
 
 def probe_has_hit(resp: Optional[dict]) -> bool:
@@ -604,7 +675,7 @@ def run_ack_debug(ser: serial.Serial, args: argparse.Namespace) -> int:
     reader = FrameReader()
     bus = normalize_bus(args.bus)
     motor_id = (args.probe_id if args.probe_id is not None else 1) & 0xFF
-    listen_ms = max(20, min(80, args.listen_ms))
+    listen_ms = clamp_listen_ms(args.listen_ms)
 
     with SerialRxPump(ser, reader):
         print(f"MCU ack debug on {ser.port}  bus=CH{bus}  probe_id=0x{motor_id:02X}")
@@ -698,12 +769,14 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
     reader = FrameReader()
 
     with SerialRxPump(ser, reader):
+        wake_mcu_from_teleop(ser)
+        reader.drain()
         bus = normalize_bus(args.bus)
         master_ids = resolve_master_id_list(args.master_id)
 
         id_list = build_id_list(args.start, args.end, args.deep)
         probe_kind = DM_PROBE_REG_SCAN
-        listen_ms = max(20, min(80, args.listen_ms))
+        listen_ms = clamp_listen_ms(args.listen_ms)
         per_probe_timeout = probe_timeout_s(probe_kind, listen_ms)
 
         print(f"Damiao discover on bus {bus} (schematic CH{bus})")
@@ -718,16 +791,50 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
         mcu_timeouts = 0
         zero_tx = 0
 
-        resp, seq, _ = send_dm_probe(
-            ser, reader, 0, SESSION_BEGIN, seq, 1.5, bus=bus,
-        )
-        if resp is None:
-            print("WARN: DM session begin — no MCU ack")
-            if getattr(args, "debug_usb", False):
-                peek = collect_frames(reader, 0.2)
-                summarize_usb_frames(reader, peek, "  USB peek after session")
-            print("  Run: python scripts/damiao_scan.py --port COM5 --link-test")
+        seq, _ = begin_dm_session(ser, reader, seq, bus)
+        if getattr(args, "debug_usb", False):
+            peek = collect_frames(reader, 0.2)
+            summarize_usb_frames(reader, peek, "  USB peek after session")
 
+        start_id = max(0, min(255, args.start))
+        end_id = max(0, min(255, args.end))
+        sweep_listen = clamp_listen_ms(args.listen_ms, minimum=40)
+        span = abs(end_id - start_id) + 1
+        sweep_timeout = probe_timeout_s(DM_PROBE_ID_SWEEP, sweep_listen, id_span=span)
+
+        if not getattr(args, "host_only", False):
+            print(f"MCU-side sweep first (listen={sweep_listen}ms/id, span={span})...")
+            resp, seq, mcu_timeout = send_dm_probe(
+                ser, reader, start_id, DM_PROBE_ID_SWEEP, seq, sweep_timeout,
+                bus=bus, master_id=DM_MASTER_ANY, listen_ms=sweep_listen,
+                param_rid=DM_REG_ESC_ID, end_id=end_id,
+            )
+            if probe_has_hit(resp) and resp:
+                esc = true_esc_id(resp)
+                master = int(resp.get("master_id", 0)) & 0xFF
+                print(format_hit(resp, esc, master or DM_MASTER_ANY, DM_PROBE_ID_SWEEP))
+                hits.append(resp)
+            elif not mcu_timeout and resp is not None:
+                print(f"  Sweep: no hit (raw={resp.get('raw_frames', 0)} tx={resp.get('tx_frames', 0)})")
+            else:
+                print("  Sweep: timeout — falling back to per-ID reg_scan")
+            print()
+
+        if hits:
+            best = hits[0]
+            esc = true_esc_id(best)
+            master = int(best.get("master_id", 0)) & 0xFF
+            print(f"Motor on bus: ESC_ID=0x{esc:02X}  Master ID=0x{master:02X}  "
+                  f"(rx_raw={best['raw_frames']}  rx_can_id=0x{best.get('rx_can_id', 0):03X})")
+            print("  Update plant_config slot 2: motor_id=0x{:02X}  "
+                  "master_id=DM_MASTER_ID_AUTO or 0x{:02X}".format(esc, master))
+            print("  Confirm: python scripts/damiao_scan.py --port {} --probe-id 0x{:02X} --bus {}".format(
+                ser.port, esc, bus))
+            send_dm_probe(ser, reader, 0, SESSION_END, seq, 0.5, bus=bus)
+            print("\nDone: motor candidate(s) seen during scan.")
+            return 0
+
+        print("Per-ID reg_scan fallback (slow on this motor — replies often arrive late):")
         try:
             for mid in id_list:
                 resp, seq, mcu_timeout = send_dm_probe(
@@ -741,36 +848,42 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
 
                 hit = probe_has_hit(resp)
                 if hit and resp:
-                    esc = resp.get("discovered_id") or (resp.get("param_value", 0) & 0xFF)
-                    if esc and esc != mid:
-                        print(
-                            f"FOUND  probe=0x{mid:02X}  esc_id=0x{esc:02X}  "
-                            f"(motor ESC_ID differs from probe target)"
-                        )
-                    else:
-                        print(format_hit(resp, mid, DM_MASTER_ANY, probe_kind))
+                    esc = true_esc_id(resp)
+                    master = int(resp.get("master_id", 0)) & 0xFF
+                    print(format_hit(resp, mid, master or DM_MASTER_ANY, probe_kind))
                     hits.append(resp)
                     continue
 
                 if not args.quiet:
                     print(format_miss(mid, DM_MASTER_ANY, probe_kind, resp, mcu_timeout))
 
+            if hits:
+                best = max(hits, key=lambda r: (true_esc_id(r), r.get("raw_frames", 0)))
+                esc = true_esc_id(best)
+                master = int(best.get("master_id", 0)) & 0xFF
+                print()
+                print(f"Motor on bus: ESC_ID=0x{esc:02X}  Master ID=0x{master:02X}  "
+                      f"(rx_raw={best['raw_frames']}  rx_can_id=0x{best.get('rx_can_id', 0):03X})")
+                print("  Update plant_config slot 2: motor_id=0x{:02X}  "
+                      "master_id=DM_MASTER_ID_AUTO or 0x{:02X}".format(esc, master))
+                print("  Confirm: python scripts/damiao_scan.py --port {} --probe-id 0x{:02X} --bus {}".format(
+                    ser.port, esc, bus))
+
             if not hits and getattr(args, "mit_fallback", False):
-                print("\nNo reg-scan hits — MIT discover fallback (enable + MIT/POS/VEL)...")
-                fallback_kind = DM_PROBE_DISCOVER
+                print("\nNo reg-scan hits — MIT feedback fallback (one MIT frame per ID)...")
+                fallback_kind = DM_PROBE_MIT
                 fallback_timeout = probe_timeout_s(fallback_kind, listen_ms)
                 for mid in id_list[:32]:
-                    for master in master_ids:
-                        resp, seq, mcu_timeout = send_dm_probe(
-                            ser, reader, mid, fallback_kind, seq, fallback_timeout,
-                            bus=bus, master_id=master, listen_ms=listen_ms,
-                        )
-                        if probe_has_hit(resp):
-                            print(format_hit(resp, mid, master, fallback_kind))
-                            hits.append(resp)
-                            break
-                        if not args.quiet:
-                            print(format_miss(mid, master, fallback_kind, resp, mcu_timeout))
+                    resp, seq, mcu_timeout = send_dm_probe(
+                        ser, reader, mid, fallback_kind, seq, fallback_timeout,
+                        bus=bus, master_id=DM_MASTER_ANY, listen_ms=listen_ms,
+                    )
+                    if probe_has_hit(resp):
+                        print(format_hit(resp, mid, DM_MASTER_ANY, fallback_kind))
+                        hits.append(resp)
+                        break
+                    if not args.quiet:
+                        print(format_miss(mid, DM_MASTER_ANY, fallback_kind, resp, mcu_timeout))
 
             if not hits and getattr(args, "all_modes", False):
                 print("\nNo param hits — retrying with MIT+POS+VEL (DM_PROBE_ALL)...")
@@ -812,7 +925,7 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
         if zero_tx:
             print(f"Probes with tx=0: {zero_tx} (wrong bus index or CAN TX not running on CH{bus})")
         if hits:
-            print(f"Done: {len(hits)} response(s). Update plant_config motor_id + DM_MASTER_ID in firmware.")
+            print(f"\nDone: motor candidate(s) seen during scan.")
         else:
             print("No Damiao feedback found.")
             if zero_tx == 0 and mcu_timeouts == 0:
@@ -826,33 +939,194 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
         return 0 if hits else 1
 
 
-def send_can_enable(
+def run_fw_sweep(ser: serial.Serial, args: argparse.Namespace) -> int:
+    """One command sweeps the whole ESC_ID range on the MCU -- no per-ID USB
+    round trip. Same fixed-0x7FF register read as --reg-scan; master ID is
+    read out of the reply's arbitration ID, never guessed."""
+    reader = FrameReader()
+
+    with SerialRxPump(ser, reader):
+        wake_mcu_from_teleop(ser)
+        reader.drain()
+        bus = normalize_bus(args.bus)
+        start_id = max(0, min(255, args.start))
+        end_id = max(0, min(255, args.end))
+        listen_ms = clamp_listen_ms(args.sweep_listen_ms, minimum=1)
+        span = abs(end_id - start_id) + 1
+        timeout_s = probe_timeout_s(DM_PROBE_ID_SWEEP, listen_ms, id_span=span)
+
+        print(f"Damiao firmware-side ID sweep on bus {bus} (schematic CH{bus})")
+        print(f"  ESC_ID 0x{start_id:02X}..0x{end_id:02X} ({span} candidates), "
+              f"listen={listen_ms}ms/id, worst-case {timeout_s:.1f}s")
+        print("  Single command: MCU loops the range internally, replies once done or on first hit.")
+        print()
+
+        seq = 1
+        seq, _ = begin_dm_session(ser, reader, seq, bus)
+
+        print(f"Sweeping (MCU-side, blocking) -- waiting up to {timeout_s:.1f}s for a single reply...")
+        try:
+            resp, seq, mcu_timeout = send_dm_probe(
+                ser, reader, start_id, DM_PROBE_ID_SWEEP, seq, timeout_s,
+                bus=bus, master_id=DM_MASTER_ANY, listen_ms=listen_ms,
+                param_rid=DM_REG_ESC_ID, end_id=end_id,
+            )
+        finally:
+            end_dm_session(ser, reader, seq, bus)
+
+        if mcu_timeout or resp is None:
+            print("No MCU response (timeout) -- sweep may still be running past our wait,")
+            print("  or the command never reached plant_diag. Try --ack-debug or --link-test.")
+            return 1
+
+        if probe_has_hit(resp):
+            hit_id = resp.get("discovered_id") or resp["probe_id"]
+            print(format_hit(resp, hit_id, resp.get("master_id", DM_MASTER_ANY), DM_PROBE_ID_SWEEP))
+            print(f"\nDone: motor found at ESC_ID=0x{hit_id:02X}, "
+                  f"Master ID=0x{resp['master_id']:02X}. Update plant_config with these.")
+            return 0
+
+        print(f"No hit across 0x{start_id:02X}..0x{end_id:02X}  "
+              f"(raw_frames_seen={resp['raw_frames']}, tx={resp['tx_frames']})")
+        if resp["raw_frames"] == 0:
+            print("  No CAN traffic at all -- wrong bus, wrong baud (this motor may not be at 1 Mbps),")
+            print("  or wiring/termination issue. See docs/damiao-bringup.md.")
+        return 1
+
+
+def send_can_disable(
     ser: serial.Serial,
     reader: FrameReader,
     motor_id: int,
     seq: int,
     bus: int = 3,
 ) -> int:
-    """Send Damiao CAN enable (FF*7 + FC) per Seeed / orin-control DM_Control_Python."""
-    print(f"  CAN enable  id=0x{motor_id:02X}  (FF..FF FC on std CAN id)")
+    """Disable motor (FF..FF FD in D[7]) — safe idle state, no comm-timeout fault."""
+    mid = motor_id & 0xFF
+    print(f"  CAN disable  id=0x{mid:02X}  (FF..FF FD in D[7])")
     _, seq, _ = send_dm_probe(
-        ser, reader, motor_id & 0xFF, DM_PROBE_ENABLE, seq, 0.6,
-        bus=bus, master_id=DM_MASTER_ANY, listen_ms=30,
+        ser, reader, mid, DM_PROBE_DISABLE, seq, 0.8,
+        bus=bus, master_id=DM_MASTER_ANY, listen_ms=12,
     )
-    time.sleep(0.15)
+    time.sleep(0.1)
     return seq
+
+
+def send_can_enable(
+    ser: serial.Serial,
+    reader: FrameReader,
+    motor_id: int,
+    seq: int,
+    bus: int = 3,
+    clear_fault: bool = False,
+) -> int:
+    """Send a single Damiao enable frame (0xFC). Optional clear-fault first."""
+    mid = motor_id & 0xFF
+    if clear_fault:
+        print(f"  CAN clear fault  id=0x{mid:02X}  (FF..FF FB)")
+        _, seq, _ = send_dm_probe(
+            ser, reader, mid, DM_PROBE_CLEAR_FAULT, seq, 0.8,
+            bus=bus, master_id=DM_MASTER_ANY, listen_ms=12,
+        )
+        time.sleep(0.15)
+    print(f"  CAN enable  id=0x{mid:02X}  (FF..FF FC in D[7], legacy J4310 layout)")
+    _, seq, _ = send_dm_probe(
+        ser, reader, mid, DM_PROBE_ENABLE, seq, 0.8,
+        bus=bus, master_id=DM_MASTER_ANY, listen_ms=12,
+    )
+    time.sleep(0.2)
+    return seq
+
+
+def wake_mcu_from_teleop(ser: serial.Serial) -> None:
+    """NORMAL empty frame clears DM session / quiet gates after plant teleop."""
+    ser.write(build_plant_command(0, mcu_state=PLANT_MCU_STATE_NORMAL))
+    ser.flush()
+    time.sleep(0.08)
+
+
+def begin_dm_session(
+    ser: serial.Serial,
+    reader: FrameReader,
+    seq: int,
+    bus: int,
+) -> Tuple[int, bool]:
+    """One SESSION_BEGIN (1s). Warn on miss but always continue — probes may still run."""
+    reader.drain()
+    resp, seq, timed_out = send_dm_probe(
+        ser, reader, 0, SESSION_BEGIN, seq, 1.0, bus=bus,
+    )
+    if timed_out or resp is None:
+        print("WARN: DM session begin — no MCU ack")
+        print("  Run: python scripts/damiao_scan.py --port COM5 --link-test")
+        return seq, False
+    return seq, True
+
+
+def end_dm_session(
+    ser: serial.Serial,
+    reader: FrameReader,
+    seq: int,
+    bus: int,
+) -> int:
+    _, seq, _ = send_dm_probe(ser, reader, 0, SESSION_END, seq, 0.5, bus=bus)
+    return seq
+
+
+def send_mit_hold_stream(
+    ser: serial.Serial,
+    reader: FrameReader,
+    motor_id: int,
+    seq: int,
+    bus: int,
+    hold_ms: int,
+    listen_ms: int = 32,
+) -> int:
+    """Stream MIT bursts so enabled motors do not hit TIMEOUT (ERR=D)."""
+    if hold_ms <= 0:
+        return seq
+    listen_ms = clamp_listen_ms(listen_ms)
+    per_probe_s = probe_timeout_s(DM_PROBE_MIT, listen_ms)
+    deadline = time.monotonic() + hold_ms / 1000.0
+    bursts = 0
+    print(f"  MIT hold {hold_ms} ms (burst listen_ms={listen_ms}) — keeps ERR=1 alive...")
+    try:
+        while time.monotonic() < deadline:
+            _, seq, _ = send_dm_probe(
+                ser, reader, motor_id & 0xFF, DM_PROBE_MIT, seq, per_probe_s,
+                bus=bus, master_id=DM_MASTER_ANY, listen_ms=listen_ms,
+            )
+            bursts += 1
+    except KeyboardInterrupt:
+        print("\n  Hold interrupted.")
+    print(f"  Hold done ({bursts} MIT burst(s)). Start teleop before TIMEOUT expires.")
+    return seq
+
+
+def resolve_keep_hold_ms(args: argparse.Namespace) -> int:
+    hold_ms = getattr(args, "hold_ms", None)
+    if hold_ms is not None:
+        return max(0, int(hold_ms))
+    if getattr(args, "keep_enabled", False):
+        return 3000
+    return 0
 
 
 def run_single_probe(ser: serial.Serial, args: argparse.Namespace) -> int:
     reader = FrameReader()
 
     with SerialRxPump(ser, reader):
+        wake_mcu_from_teleop(ser)
+        reader.drain()
         bus = normalize_bus(args.bus)
-        listen_ms = max(20, min(80, args.listen_ms))
-        if getattr(args, "reg_scan", False) or getattr(args, "can_enable", False) or args.all_modes:
+        if args.mit_fallback:
+            listen_ms = clamp_listen_ms(max(args.listen_ms, 80))
+        else:
+            listen_ms = clamp_listen_ms(args.listen_ms)
+        if getattr(args, "reg_scan", False) or args.all_modes:
             kind = DM_PROBE_REG_SCAN
-        elif getattr(args, "mit_fallback", False):
-            kind = DM_PROBE_DISCOVER
+        elif getattr(args, "mit_fallback", False) or getattr(args, "feedback", False):
+            kind = DM_PROBE_MIT
         else:
             kind = DM_PROBE_REG_SCAN
         master_ids = resolve_master_id_list(args.master_id)
@@ -860,22 +1134,65 @@ def run_single_probe(ser: serial.Serial, args: argparse.Namespace) -> int:
         motor_id = args.probe_id & 0xFF
         seq = 1
 
-        resp, seq, _ = send_dm_probe(
-            ser, reader, 0, SESSION_BEGIN, seq, 1.5, bus=bus,
-        )
-        if resp is None:
-            print("WARN: DM session begin — no MCU ack")
-            print("  Run: python scripts/damiao_scan.py --port COM5 --link-test")
+        seq, _ = begin_dm_session(ser, reader, seq, bus)
 
-        if getattr(args, "can_enable", False) and kind == DM_PROBE_DISCOVER:
+        if getattr(args, "enable", False) and not args.mit_fallback and not getattr(args, "feedback", False):
             mid = (args.probe_id if args.probe_id is not None else 1) & 0xFF
-            seq = send_can_enable(ser, reader, mid, seq, bus=bus)
+            seq = send_can_enable(
+                ser, reader, mid, seq, bus=bus,
+                clear_fault=True,
+            )
+            if not args.all_modes and not args.reg_scan:
+                verify_listen = clamp_listen_ms(max(args.listen_ms, 40))
+                verify_timeout = probe_timeout_s(DM_PROBE_MIT, verify_listen)
+                print("  Verifying enable (MIT feedback, ERR nibble should be 1)...")
+                resp, seq, mcu_timeout = send_dm_probe(
+                    ser, reader, mid, DM_PROBE_MIT, seq, verify_timeout,
+                    bus=bus, master_id=DM_MASTER_ANY, listen_ms=verify_listen,
+                )
+                if resp and not mcu_timeout:
+                    err = int(resp.get("err", 0)) & 0x0F
+                    if err == 1:
+                        print(f"  OK: motor reports enabled (ERR=0x{err:X}, green LED expected).")
+                    elif err == 0:
+                        print(f"  WARN: feedback ERR=0x{err:X} (disabled).")
+                    elif err == 0xD:
+                        print(f"  WARN: feedback ERR=0x{err:X} (comm timeout).")
+                    else:
+                        print(f"  WARN: feedback ERR=0x{err:X} (fault).")
+                    if probe_has_hit(resp):
+                        print(format_hit(resp, mid, DM_MASTER_ANY, DM_PROBE_MIT))
+                elif mcu_timeout:
+                    print("  WARN: no MIT feedback after enable (timeout).")
+                if getattr(args, "keep_enabled", False):
+                    hold_ms = resolve_keep_hold_ms(args)
+                    hold_listen = clamp_listen_ms(max(args.listen_ms, 32))
+                    seq = send_mit_hold_stream(
+                        ser, reader, mid, seq, bus, hold_ms, listen_ms=hold_listen,
+                    )
+                    print("Enable sequence done — motor left enabled (no disable sent).")
+                else:
+                    print("Sending disable (safe idle)...")
+                    seq = send_can_disable(ser, reader, mid, seq, bus=bus)
+                    print("Enable test done — motor disabled.")
+                end_dm_session(ser, reader, seq, bus)
+                return 0
+
+        if getattr(args, "mit_fallback", False) and getattr(args, "enable", False):
+            mid = (args.probe_id if args.probe_id is not None else 1) & 0xFF
+            seq = send_can_enable(
+                ser, reader, mid, seq, bus=bus,
+                clear_fault=getattr(args, "clear_fault", False),
+            )
 
         try:
             resp = None
             mcu_timeout = True
             master = DM_MASTER_ANY
-            masters = (DM_MASTER_ANY,) if kind in (DM_PROBE_REG_SCAN, DM_PROBE_READ_PARAM) else master_ids
+            masters = (DM_MASTER_ANY,) if kind in (
+                DM_PROBE_REG_SCAN, DM_PROBE_READ_PARAM, DM_PROBE_DISCOVER,
+                DM_PROBE_MIT,
+            ) else master_ids
             for master in masters:
                 resp, seq, mcu_timeout = send_dm_probe(
                     ser, reader, motor_id, kind, seq, per_probe_timeout,
@@ -886,6 +1203,9 @@ def run_single_probe(ser: serial.Serial, args: argparse.Namespace) -> int:
                 if not mcu_timeout and resp is not None and kind not in (DM_PROBE_REG_SCAN, DM_PROBE_READ_PARAM):
                     break
         finally:
+            if getattr(args, "enable", False) and not getattr(args, "keep_enabled", False):
+                mid = (args.probe_id if args.probe_id is not None else 1) & 0xFF
+                seq = send_can_disable(ser, reader, mid, seq, bus=bus)
             send_dm_probe(ser, reader, 0, SESSION_END, seq, 0.5, bus=bus)
 
         if mcu_timeout or resp is None:
@@ -906,7 +1226,12 @@ def main() -> None:
     ap.add_argument("--port", default=None)
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--bus", type=int, default=3, help="Schematic bus 1-6 (Damiao default CH3)")
-    ap.add_argument("--discover", action="store_true", help="Sweep motor CAN IDs")
+    ap.add_argument("--discover", action="store_true",
+                     help="Find motor ID (MCU sweep first, then per-ID reg_scan fallback)")
+    ap.add_argument("--host-only", action="store_true",
+                     help="With --discover: skip MCU sweep, per-ID reg_scan only")
+    ap.add_argument("--fw-sweep", action="store_true",
+                     help="Sweep --start..--end in a single command (MCU loops the range, no per-ID USB round trip)")
     ap.add_argument("--probe-id", type=lambda x: int(x, 0), default=None, help="Probe one ID")
     ap.add_argument("--start", type=lambda x: int(x, 0), default=0)
     ap.add_argument("--end", type=lambda x: int(x, 0), default=127)
@@ -918,9 +1243,41 @@ def main() -> None:
         help="Register read scan (default for discover and --probe-id)",
     )
     ap.add_argument(
+        "--enable",
+        action="store_true",
+        help="Send single 0xFC enable with --probe-id (skips reg-scan unless --reg-scan)",
+    )
+    ap.add_argument(
+        "--clear-fault",
+        action="store_true",
+        help="With --enable: send 0xFB before 0xFC (skip after power-cycle unless fault latched)",
+    )
+    ap.add_argument(
+        "--feedback",
+        action="store_true",
+        help="MIT feedback only (motor must already be enabled — no 0xFC)",
+    )
+    ap.add_argument(
+        "--no-enable",
+        action="store_true",
+        help="Deprecated: mit-fallback no longer enables by default",
+    )
+    ap.add_argument(
         "--mit-fallback",
         action="store_true",
-        help="If reg-scan fails, retry enable + MIT/POS/VEL with --master-id filters",
+        help="Single MIT frame for live pos/temp (no enable — works while disabled per manual)",
+    )
+    ap.add_argument(
+        "--keep-enabled",
+        action="store_true",
+        help="With --enable: no disable at end; default 3s MIT hold stream (see --hold-ms)",
+    )
+    ap.add_argument(
+        "--hold-ms",
+        type=int,
+        default=None,
+        metavar="MS",
+        help="With --keep-enabled: MIT burst stream duration before exit (default 3000; 0=verify only)",
     )
     ap.add_argument(
         "--can-enable",
@@ -933,6 +1290,9 @@ def main() -> None:
         help="Master filter for --mit-fallback only (reg-scan always uses ANY)",
     )
     ap.add_argument("--listen-ms", type=int, default=24, help="MCU listen window per probe step")
+    ap.add_argument("--sweep-listen-ms", type=int, default=4,
+                     help="--fw-sweep only: MCU listen window per candidate ID. Kept short because "
+                          "there's no USB round trip within the sweep -- just CAN turnaround.")
     ap.add_argument("--quiet", action="store_true", help="Only print hits, not per-ID misses")
     ap.add_argument("--link-test", action="store_true", help="USB sanity check (no CAN sweep)")
     ap.add_argument(
@@ -964,11 +1324,13 @@ def main() -> None:
             time.sleep(0.3)
             raise SystemExit(run_ack_debug(ser, args))
 
-    if not args.discover and args.probe_id is None:
-        ap.error("use --discover or --probe-id")
+    if not args.discover and not args.fw_sweep and args.probe_id is None:
+        ap.error("use --discover, --fw-sweep, or --probe-id")
 
     with serial.Serial(args.port, args.baud, timeout=0.05) as ser:
         time.sleep(0.3)
+        if args.fw_sweep:
+            raise SystemExit(run_fw_sweep(ser, args))
         if args.discover:
             raise SystemExit(run_discover(ser, args))
         raise SystemExit(run_single_probe(ser, args))

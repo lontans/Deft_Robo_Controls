@@ -30,7 +30,7 @@ void plant_config_init(void)
 	actuator_table[2] = (actuator_config_t){
 		.bus = CAN_BUS_CH3,
 		.protocol = PROTO_DAMIAO,
-		.motor_id = 0x01,
+		.motor_id = 0x06,
 		.master_id = DM_MASTER_ID_AUTO,
 		.enabled = true,
 	};

@@ -70,7 +70,7 @@
 
 #define DM_PROBE_PROMISC          10u  /* accept any motor id in feedback */
 
-#define DM_PROBE_ENABLE           11u  /* FF..FF FC on std id=motor_id */
+#define DM_PROBE_ENABLE           11u  /* FF*7 + FC in D[7] on std id=ESC_ID (J4310 legacy) */
 
 #define DM_PROBE_DISABLE          12u  /* FF..FF FD */
 
@@ -78,9 +78,15 @@
 
 #define DM_PROBE_READ_PARAM       14u  /* 0x7FF read; param RID in PDU data[7] */
 
-#define DM_PROBE_DISCOVER         15u  /* clear fault, enable, then ALL modes */
+#define DM_PROBE_DISCOVER         15u  /* enable once, then MIT feedback (no POS/VEL) */
 
 #define DM_PROBE_REG_SCAN         16u  /* 0x7FF read ESC_ID + MST_ID; master=ANY */
+
+#define DM_PROBE_ID_SWEEP         17u  /* 0x7FF read across an ID range; motor_id=start,
+                                        * PDU data[8]=end; master ID not needed -- reply
+                                        * arbitration ID *is* the master ID. */
+
+#define DM_PROBE_SET_ZERO         18u  /* FF..FF FE in D[7] — set mechanical zero here */
 
 
 
@@ -150,6 +156,10 @@ void damiao_apply_cycle(const actuator_config_t *cfg,
 
 
 
+void damiao_reset_enable_latch(uint8_t slot);
+
+
+
 bool damiao_probe_id(can_bus_id_t bus,
 
                      uint8_t motor_id,
@@ -163,4 +173,26 @@ bool damiao_probe_id(can_bus_id_t bus,
                      uint16_t listen_ms,
 
                      damiao_probe_result_t *out);
+
+
+
+/* Sweeps a whole ESC_ID range in one call: same fixed-0x7FF register read as
+
+ * DM_PROBE_REG_SCAN, just looped over [start_id, end_id] on the MCU side so
+
+ * the host doesn't pay a USB round trip per candidate ID. Stops at the first
+
+ * hit; no master ID filter (the reply's arbitration ID is read out of it). */
+
+bool damiao_probe_id_range(can_bus_id_t bus,
+
+                           uint8_t start_id,
+
+                           uint8_t end_id,
+
+                           uint8_t param_rid,
+
+                           uint16_t listen_ms_per_id,
+
+                           damiao_probe_result_t *out);
 

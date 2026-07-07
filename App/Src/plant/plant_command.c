@@ -3,6 +3,7 @@
 #include "plant/servo.h"
 #include "plant/led.h"
 #include "plant/plant_diag.h"
+#include "host/host_uart_bridge.h"
 #include <stdbool.h>
 
 /*
@@ -52,9 +53,12 @@ void plant_command_image_dispatch(const host_command_image_t *cmd)
 	bool pdu_rs2 = plant_diag_is_rs2_command(cmd);
 	bool pdu_dxl = plant_diag_is_dxl_command(cmd);
 	bool pdu_dm  = plant_diag_is_dm_command(cmd);
+	bool pdu_ub  = host_uart_bridge_is_command(cmd);
 	bool diag_only = (mcu_state == PLANT_MCU_STATE_DIAG_ONLY);
 
-	if (pdu_dxl)
+	if (pdu_ub)
+		host_uart_bridge_on_command(cmd);
+	else if (pdu_dxl)
 		plant_diag_on_dxl_command(cmd);
 	else if (pdu_dm)
 		plant_diag_on_dm_command(cmd);
@@ -69,11 +73,14 @@ void plant_command_image_dispatch(const host_command_image_t *cmd)
 	 * RS2 frame but not a ctrl probe (cali/pararead/reset/session/…):
 	 * plant_diag handled it; do not mount desires onto the 500 Hz loop.
 	 */
-	if (pdu_dxl || pdu_dm)
+	if (pdu_dxl || pdu_dm || pdu_ub)
 		return;
 
 	if (pdu_rs2 && !probe_kind_needs_actuator_mount(cmd->pdu.data[4]))
 		return;
+
+	/* Plant teleop / runtime: end DM bench session gates before mounting desires. */
+	plant_diag_release_actuator_can();
 
 	/* Normal path + RS2 ctrl probes: copy actuator_commands[0..ACTUATOR_COUNT-1]. */
 	actuator_command_mount(cmd);

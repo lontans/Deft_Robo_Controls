@@ -78,14 +78,20 @@ static bool damiao_master_id_matches(const actuator_config_t *cfg, uint32_t rx_i
 
 static uint8_t damiao_feedback_motor_id(uint8_t id_err)
 {
-	uint8_t err = (id_err >> 4) & 0x0Fu;
-	uint8_t lo  = id_err & 0x0Fu;
-
+	/* D[0] = (ERR << 4) | (ESC_ID & 0x0F). ERR 0–7 = status, 8+ = fault. */
 	if (id_err <= 0x0Fu)
 		return id_err;
-	if (err >= 0x08u)
-		return lo;
-	return id_err;
+	return id_err & 0x0Fu;
+}
+
+static void damiao_probe_copy_rx(const can_frame_t *frame, damiao_probe_result_t *out)
+{
+	if (frame == NULL || out == NULL)
+		return;
+
+	out->rx_can_id = frame->id;
+	out->master_id = (uint8_t)(frame->id & 0xFFu);
+	memcpy(out->data, frame->data, 8u);
 }
 
 static void damiao_decode_feedback_payload(const uint8_t *data,
@@ -113,6 +119,9 @@ static void damiao_decode_feedback_payload(const uint8_t *data,
 
 static void damiao_pack_cmd(uint8_t motor_id, uint8_t cmd, can_frame_t *frame_out)
 {
+	/* J4310 on our bench accepts the legacy layout (0xFF fill, opcode in D[7]).
+	 * V1.2 manual table shows D[0]=0xFF D[1]=cmd — that layout did not enable
+	 * the motor here (LED stayed red). MIT/Seeed reference uses D[7]. */
 	frame_out->id_type = CAN_ID_STD;
 	frame_out->id      = (uint32_t)motor_id & CAN_STD_ID_MASK;
 	frame_out->dlc     = 8;
@@ -237,13 +246,16 @@ static plugin_status_t damiao_parse_rx(const actuator_config_t *cfg,
 		return PLUGIN_ERR_UNSUPPORTED;
 	if (frame_in->id_type != CAN_ID_STD)
 		return PLUGIN_ERR_UNSUPPORTED;
-	if (!damiao_master_id_matches(cfg, frame_in->id))
-		return PLUGIN_ERR_UNSUPPORTED;
+	if (!damiao_master_id_matches(cfg, frame_in->id)) {
+		/* Bench fallback: accept feedback on ESC_ID when Master ID unset/wrong. */
+		if ((uint8_t)(frame_in->id & 0xFFu) != (uint8_t)(cfg->motor_id & 0xFFu))
+			return PLUGIN_ERR_UNSUPPORTED;
+	}
 
 	uint8_t expect_id = (uint8_t)(cfg->motor_id & 0xFFu);
 	uint8_t rx_id = damiao_feedback_motor_id(frame_in->data[0]);
 
-	if (rx_id != expect_id)
+	if (rx_id != expect_id && (frame_in->data[0] & 0xFFu) != expect_id)
 		return PLUGIN_ERR_UNSUPPORTED;
 
 	state_out->fault = (uint32_t)((frame_in->data[0] >> 4) & 0x0Fu);
@@ -285,12 +297,11 @@ static bool damiao_try_parse_feedback(const can_frame_t *frame,
 			return false;
 	}
 
-	uint8_t rx_id = damiao_feedback_motor_id(frame->data[0]);
 	if (!promiscuous && !damiao_id_matches(probed_id, frame->data[0]))
 		return false;
 
 	out->found = true;
-	out->discovered_id = rx_id;
+	out->discovered_id = damiao_feedback_motor_id(frame->data[0]);
 	out->master_id = (uint8_t)(frame->id & 0xFFu);
 	out->rx_can_id = frame->id;
 	out->err = (frame->data[0] >> 4) & 0x0Fu;
@@ -311,6 +322,7 @@ static bool damiao_probe_is_param_kind(uint8_t kind)
 static bool damiao_try_parse_param_read(const can_frame_t *frame,
                                         uint8_t probed_id,
                                         uint8_t register_id,
+                                        bool sweep_mode,
                                         damiao_probe_result_t *out)
 {
 	if (frame == NULL || out == NULL)
@@ -324,32 +336,57 @@ static bool damiao_try_parse_param_read(const can_frame_t *frame,
 	if (register_id != 0u && frame->data[3] != register_id)
 		return false;
 
-	uint16_t resp_id = (uint16_t)frame->data[0] | ((uint16_t)frame->data[1] << 8);
-	if ((resp_id & 0xFFu) != probed_id &&
-	    (resp_id & 0x7FFu) != (probed_id & 0x7FFu))
+	uint8_t esc = 0u;
+	uint8_t mst = 0u;
+	uint32_t param_value = 0u;
+
+	if (frame->dlc >= 8u) {
+		param_value = (uint32_t)frame->data[4] |
+		              ((uint32_t)frame->data[5] << 8) |
+		              ((uint32_t)frame->data[6] << 16) |
+		              ((uint32_t)frame->data[7] << 24);
+	} else if (frame->dlc >= 5u) {
+		param_value = (uint32_t)frame->data[4];
+	}
+
+	if (register_id == DM_REG_ESC_ID) {
+		esc = (frame->dlc >= 5u) ? (uint8_t)(param_value & 0xFFu)
+		                         : (uint8_t)(frame->data[0] & 0xFFu);
+		if (frame->data[0] != esc)
+			return false;
+		if (!sweep_mode && esc != probed_id)
+			return false;
+	} else if (register_id == DM_REG_MST_ID) {
+		mst = (frame->dlc >= 5u) ? (uint8_t)(param_value & 0xFFu)
+		                         : (uint8_t)(frame->id & 0xFFu);
+		if (!sweep_mode && frame->data[0] != (uint8_t)(probed_id & 0xFFu))
+			return false;
+	} else {
 		return false;
+	}
 
 	out->found = true;
 	out->param_rid = frame->data[3];
-	if (frame->dlc >= 8u) {
-		out->param_value = (uint32_t)frame->data[4] |
-		                   ((uint32_t)frame->data[5] << 8) |
-		                   ((uint32_t)frame->data[6] << 16) |
-		                   ((uint32_t)frame->data[7] << 24);
-	} else {
-		out->param_value = 0u;
-	}
-	/* Response CAN ID is the configured Master ID — key for discovery. */
+	out->param_value = param_value;
 	out->master_id = (uint8_t)(frame->id & 0xFFu);
 	out->rx_can_id = frame->id;
 	out->discovered_id = probed_id;
 	if (frame->dlc >= 8u)
 		memcpy(out->data, frame->data, 8u);
 
-	if (out->param_rid == DM_REG_ESC_ID)
-		out->discovered_id = (uint8_t)(out->param_value & 0xFFu);
-	else if (out->param_rid == DM_REG_MST_ID)
-		out->master_id = (uint8_t)(out->param_value & 0xFFu);
+	if (out->param_rid == DM_REG_ESC_ID) {
+		out->discovered_id = esc;
+		out->motor_id = esc;
+	} else if (out->param_rid == DM_REG_MST_ID) {
+		out->master_id = mst;
+	}
+
+	/* 0x7FF register replies are not MIT feedback — do not decode motion. */
+	out->position    = 0.0f;
+	out->velocity    = 0.0f;
+	out->torque      = 0.0f;
+	out->temperature = 0.0f;
+	out->err         = 0u;
 
 	return true;
 }
@@ -368,11 +405,18 @@ static uint8_t damiao_actuator_slot(const actuator_config_t *cfg)
 	return ACTUATOR_COUNT;
 }
 
+static bool damiao_enable_latched[ACTUATOR_COUNT];
+
+void damiao_reset_enable_latch(uint8_t slot)
+{
+	if (slot < ACTUATOR_COUNT)
+		damiao_enable_latched[slot] = false;
+}
+
 void damiao_apply_cycle(const actuator_config_t *cfg,
                         const actuator_desire_t *desire,
                         actuator_state_t *state_out)
 {
-	static uint32_t last_maintain_ms[ACTUATOR_COUNT];
 	can_frame_t frame;
 	can_bus_id_t bus;
 	uint8_t slot;
@@ -387,15 +431,12 @@ void damiao_apply_cycle(const actuator_config_t *cfg,
 
 	bus = cfg->bus;
 
-	{
-		uint32_t now = HAL_GetTick();
-
-		if (last_maintain_ms[slot] == 0u ||
-		    (now - last_maintain_ms[slot]) >= 500u) {
-			last_maintain_ms[slot] = now;
-			if (damiao_send_enable(cfg, &frame) == PLUGIN_OK)
-				(void)can_tx_enqueue(bus, &frame);
-		}
+	/* Plant teleop: one clear-fault + enable per session; MIT stream keeps ERR=1. */
+	if (!damiao_enable_latched[slot]) {
+		if (damiao_send_clear_fault(cfg, &frame) == PLUGIN_OK)
+			(void)can_tx_enqueue(bus, &frame);
+		if (damiao_send_enable(cfg, &frame) == PLUGIN_OK)
+			(void)can_tx_enqueue(bus, &frame);
 	}
 
 	for (uint8_t i = 0; i < 3u; i++) {
@@ -405,9 +446,22 @@ void damiao_apply_cycle(const actuator_config_t *cfg,
 
 	can_router_poll_bus(bus);
 
-	while (can_rx_pop(bus, &frame) == CAN_OK) {
-		if (state_out != NULL)
-			(void)damiao_parse_rx(cfg, &frame, state_out);
+	{
+		bool got_fb = false;
+
+		while (can_rx_pop(bus, &frame) == CAN_OK) {
+			if (state_out != NULL) {
+				(void)damiao_parse_rx(cfg, &frame, state_out);
+				got_fb = true;
+			}
+		}
+
+		/* Re-arm enable only after fresh feedback (ERR 1 = enabled). */
+		if (got_fb && state_out != NULL) {
+			uint8_t err = (uint8_t)(state_out->fault & 0x0Fu);
+
+			damiao_enable_latched[slot] = (err == 1u);
+		}
 	}
 }
 
@@ -443,6 +497,8 @@ static bool damiao_probe_send(can_bus_id_t bus,
 		return damiao_send_disable(&local, tx) == PLUGIN_OK;
 	case DM_PROBE_CLEAR_FAULT:
 		return damiao_send_clear_fault(&local, tx) == PLUGIN_OK;
+	case DM_PROBE_SET_ZERO:
+		return damiao_send_set_zero(&local, tx) == PLUGIN_OK;
 	case DM_PROBE_READ_PARAM:
 	case DM_PROBE_REG_SCAN:
 		if (param_rid == 0u)
@@ -472,13 +528,32 @@ static uint8_t damiao_probe_tx_burst(uint8_t probe_kind)
 	case DM_PROBE_ENABLE:
 	case DM_PROBE_DISABLE:
 	case DM_PROBE_CLEAR_FAULT:
-		return 8u;
+		return 1u;
 	case DM_PROBE_READ_PARAM:
 	case DM_PROBE_REG_SCAN:
 		return 6u;
 	default:
 		return 1u;
 	}
+}
+
+static bool damiao_probe_listen_rx_only(can_bus_id_t bus,
+                                        uint8_t motor_id,
+                                        uint8_t param_rid,
+                                        bool param_sweep,
+                                        uint16_t listen_ms,
+                                        damiao_probe_result_t *out);
+
+static bool damiao_probe_is_maintenance_kind(uint8_t kind)
+{
+	return kind == DM_PROBE_ENABLE || kind == DM_PROBE_DISABLE ||
+	       kind == DM_PROBE_CLEAR_FAULT || kind == DM_PROBE_SET_ZERO;
+}
+
+/* Bench MIT feedback: one command frame, then listen — not a 20× retransmit flood. */
+static bool damiao_probe_is_one_shot_tx_kind(uint8_t kind)
+{
+	return damiao_probe_is_maintenance_kind(kind) || kind == DM_PROBE_MIT;
 }
 
 static bool damiao_probe_listen_window(can_bus_id_t bus,
@@ -489,11 +564,20 @@ static bool damiao_probe_listen_window(can_bus_id_t bus,
                                        uint8_t master_id_filter,
                                        uint8_t param_rid,
                                        bool promiscuous,
+                                       bool param_sweep,
                                        uint16_t listen_ms,
                                        damiao_probe_result_t *out)
 {
 	for (uint16_t attempt = 0; attempt < listen_ms; attempt++) {
-		if (attempt == 0u || (attempt % 4u) == 0u) {
+		if (damiao_probe_is_one_shot_tx_kind(active_kind)) {
+			if (attempt == 0u) {
+				if (can_tx_enqueue(bus, tx) == CAN_OK) {
+					if (out->tx_frames_sent < 255u)
+						out->tx_frames_sent++;
+				}
+				can_router_poll_bus(bus);
+			}
+		} else if (attempt == 0u || (attempt % 4u) == 0u) {
 			for (uint8_t b = 0; b < tx_burst; b++) {
 				if (can_tx_enqueue(bus, tx) == CAN_OK) {
 					if (out->tx_frames_sent < 255u)
@@ -507,14 +591,16 @@ static bool damiao_probe_listen_window(can_bus_id_t bus,
 		while (can_rx_pop(bus, &rx) == CAN_OK) {
 			if (out->raw_frames_seen < 255u)
 				out->raw_frames_seen++;
+			damiao_probe_copy_rx(&rx, out);
 
 			if (damiao_probe_is_param_kind(active_kind)) {
-				if (damiao_try_parse_param_read(&rx, motor_id, param_rid, out))
+				if (damiao_try_parse_param_read(&rx, motor_id, param_rid,
+				                                param_sweep, out))
 					return true;
-			} else if (damiao_try_parse_feedback(&rx, motor_id, master_id_filter,
-			                                      promiscuous, out)) {
-				return true;
 			}
+			if (damiao_try_parse_feedback(&rx, motor_id, master_id_filter,
+			                              promiscuous, out))
+				return true;
 		}
 
 		plant_diag_yield_usb();
@@ -541,6 +627,8 @@ bool damiao_probe_id(can_bus_id_t bus,
 		.enabled = true,
 	};
 	bool promiscuous = (probe_kind == DM_PROBE_PROMISC);
+	bool discover_request = (probe_kind == DM_PROBE_DISCOVER);
+	uint8_t host_probe_kind = probe_kind;
 
 	if (out == NULL || bus >= CAN_BUS_CH4)
 		return false;
@@ -552,57 +640,76 @@ bool damiao_probe_id(can_bus_id_t bus,
 	out->probe_kind = probe_kind;
 	out->param_rid = param_rid;
 
-	can_rx_drain(bus);
-
 	/* Param reads reply on Master ID — always listen promiscuously. */
 	if (damiao_probe_is_param_kind(probe_kind))
 		master_id_filter = DM_MASTER_ID_ANY;
 
 	if (probe_kind == DM_PROBE_REG_SCAN) {
-		static const uint8_t reg_scan_rids[] = { DM_REG_ESC_ID, DM_REG_MST_ID };
 		uint16_t reg_listen = (listen_ms < 20u) ? 20u : listen_ms;
 
-		for (uint8_t ri = 0; ri < (uint8_t)(sizeof(reg_scan_rids) / sizeof(reg_scan_rids[0])); ri++) {
-			uint8_t rid = reg_scan_rids[ri];
+		if (!damiao_probe_send(bus, &cfg, motor_id, DM_PROBE_READ_PARAM,
+		                       DM_REG_ESC_ID, &tx))
+			return false;
 
-			if (!damiao_probe_send(bus, &cfg, motor_id, DM_PROBE_READ_PARAM, rid, &tx))
-				continue;
+		out->probe_kind = DM_PROBE_REG_SCAN;
+		out->param_rid = DM_REG_ESC_ID;
+		out->found = false;
 
-			out->probe_kind = DM_PROBE_REG_SCAN;
-			out->param_rid = rid;
+		if (!damiao_probe_listen_window(bus, &tx,
+		                                damiao_probe_tx_burst(DM_PROBE_READ_PARAM),
+		                                motor_id, DM_PROBE_READ_PARAM,
+		                                DM_MASTER_ID_ANY, DM_REG_ESC_ID,
+		                                false, false, reg_listen, out)) {
+			uint16_t grace = reg_listen;
+
+			if (grace < 60u)
+				grace = 60u;
+			if (grace > 120u)
+				grace = 120u;
+
 			out->found = false;
-
-			if (damiao_probe_listen_window(bus, &tx,
-			                               damiao_probe_tx_burst(DM_PROBE_READ_PARAM),
-			                               motor_id, DM_PROBE_READ_PARAM,
-			                               DM_MASTER_ID_ANY, rid,
-			                               false, reg_listen, out))
-				return true;
+			if (!damiao_probe_listen_rx_only(bus, motor_id, DM_REG_ESC_ID,
+			                                 false, grace, out))
+				return false;
 		}
 
-		return (out->raw_frames_seen > 0u);
+		{
+			damiao_probe_result_t esc_hit = *out;
+
+			if (damiao_probe_send(bus, &cfg, motor_id, DM_PROBE_READ_PARAM,
+			                      DM_REG_MST_ID, &tx)) {
+				uint16_t mst_listen = reg_listen;
+
+				if (mst_listen > 60u)
+					mst_listen = 60u;
+
+				out->found = false;
+				if (damiao_probe_listen_window(bus, &tx,
+				                               damiao_probe_tx_burst(DM_PROBE_READ_PARAM),
+				                               motor_id, DM_PROBE_READ_PARAM,
+				                               DM_MASTER_ID_ANY, DM_REG_MST_ID,
+				                               false, false, mst_listen, out)) {
+					if (out->param_rid == DM_REG_MST_ID &&
+					    (out->param_value & 0xFFu) != 0u)
+						esc_hit.master_id = (uint8_t)(out->param_value & 0xFFu);
+					else if (out->master_id != 0u)
+						esc_hit.master_id = out->master_id;
+				}
+			}
+
+			*out = esc_hit;
+			out->probe_kind = DM_PROBE_REG_SCAN;
+			out->param_rid = DM_REG_ESC_ID;
+			out->found = true;
+		}
+
+		return true;
 	}
 
 	if (probe_kind == DM_PROBE_DISCOVER) {
-		uint8_t prep[] = { DM_PROBE_CLEAR_FAULT, DM_PROBE_ENABLE };
-		uint16_t prep_listen = (listen_ms < 12u) ? 12u : listen_ms;
-
-		for (uint8_t i = 0; i < (uint8_t)(sizeof(prep) / sizeof(prep[0])); i++) {
-			if (!damiao_probe_send(bus, &cfg, motor_id, prep[i], param_rid, &tx))
-				continue;
-
-			out->probe_kind = prep[i];
-			(void)damiao_probe_listen_window(bus, &tx,
-			                                 damiao_probe_tx_burst(prep[i]),
-			                                 motor_id, prep[i],
-			                                 master_id_filter, param_rid,
-			                                 false, prep_listen, out);
-			if (out->found)
-				return true;
-		}
-
-		probe_kind = DM_PROBE_ALL;
-		out->probe_kind = probe_kind;
+		/* DISCOVER = MIT feedback probe only. Do not auto-enable: enabled motors
+		 * require sustained commands (TIMEOUT register) or they fault (ERR=D). */
+		probe_kind = DM_PROBE_MIT;
 	}
 
 	uint8_t step_count = (probe_kind == DM_PROBE_ALL) ? 3u : 1u;
@@ -617,11 +724,115 @@ bool damiao_probe_id(can_bus_id_t bus,
 
 		if (damiao_probe_listen_window(bus, &tx, damiao_probe_tx_burst(kind),
 		                               motor_id, kind, master_id_filter,
-		                               param_rid, promiscuous, listen_ms, out))
+		                               param_rid, promiscuous, false,
+		                               listen_ms, out)) {
+			if (discover_request)
+				out->probe_kind = host_probe_kind;
 			return true;
+		}
 	}
 
-	return (out->raw_frames_seen > 0u);
+	if (discover_request)
+		out->probe_kind = host_probe_kind;
+
+	return out->found;
+}
+
+static bool damiao_probe_listen_rx_only(can_bus_id_t bus,
+                                        uint8_t motor_id,
+                                        uint8_t param_rid,
+                                        bool param_sweep,
+                                        uint16_t listen_ms,
+                                        damiao_probe_result_t *out)
+{
+	for (uint16_t attempt = 0; attempt < listen_ms; attempt++) {
+		can_frame_t rx;
+
+		while (can_rx_pop(bus, &rx) == CAN_OK) {
+			if (out->raw_frames_seen < 255u)
+				out->raw_frames_seen++;
+			damiao_probe_copy_rx(&rx, out);
+
+			if (damiao_try_parse_param_read(&rx, motor_id, param_rid,
+			                                param_sweep, out))
+				return true;
+		}
+
+		plant_diag_yield_usb();
+		HAL_Delay(1);
+	}
+
+	return false;
+}
+
+bool damiao_probe_id_range(can_bus_id_t bus,
+                           uint8_t start_id,
+                           uint8_t end_id,
+                           uint8_t param_rid,
+                           uint16_t listen_ms_per_id,
+                           damiao_probe_result_t *out)
+{
+	actuator_config_t cfg = {
+		.bus = bus,
+		.protocol = PROTO_DAMIAO,
+		.master_id = DM_MASTER_ID_AUTO,
+		.enabled = true,
+	};
+	can_frame_t tx;
+	uint16_t lo = start_id;
+	uint16_t hi = end_id;
+
+	if (out == NULL || bus >= CAN_BUS_CH4)
+		return false;
+	if (listen_ms_per_id == 0u)
+		listen_ms_per_id = 3u;
+	if (param_rid == 0u)
+		param_rid = DM_REG_ESC_ID;
+	if (hi < lo) {
+		uint16_t tmp = lo;
+		lo = hi;
+		hi = tmp;
+	}
+
+	memset(out, 0, sizeof(*out));
+	out->probe_kind = DM_PROBE_ID_SWEEP;
+	out->param_rid = param_rid;
+
+	/* Register-read request is always frame ID 0x7FF; only the ESC_ID byte in
+	 * the payload changes per candidate. Any motor whose configured ESC_ID
+	 * matches replies -- on whatever Master ID it's configured with, so no
+	 * master ID filter is applied here (damiao_try_parse_param_read doesn't
+	 * check frame->id at all, only the echoed ESC_ID in the payload). */
+	for (uint16_t id = lo; id <= hi; id++) {
+		cfg.motor_id = (uint8_t)id;
+
+		if (damiao_send_param_read(&cfg, param_rid, &tx) != PLUGIN_OK)
+			continue;
+
+		out->motor_id = (uint8_t)id;
+
+		if (damiao_probe_listen_window(bus, &tx,
+		                               2u,
+		                               (uint8_t)id, DM_PROBE_READ_PARAM,
+		                               DM_MASTER_ID_ANY, param_rid,
+		                               false, true, listen_ms_per_id, out))
+			return true;
+
+		{
+			uint16_t grace = listen_ms_per_id;
+
+			if (grace < 40u)
+				grace = 40u;
+			if (grace > 80u)
+				grace = 80u;
+
+			if (damiao_probe_listen_rx_only(bus, (uint8_t)id, param_rid,
+			                                true, grace, out))
+				return true;
+		}
+	}
+
+	return false;
 }
 
 const plugin_ops_t damiao_ops = {

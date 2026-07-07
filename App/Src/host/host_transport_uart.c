@@ -1,8 +1,15 @@
 #include "host/host_transport.h"
 #include "host/host_transport_uart.h"
 #include "host/host_exchange_schema.h"
+#include "host/uart4_mode.h"
 #include "usart.h"
 #include <string.h>
+
+#if HOST_TRANSPORT_UART && (UART4_MODE != UART4_MODE_TELEM)
+#error "HOST_TRANSPORT_UART=1 requires UART4_MODE_TELEM (see host/uart4_mode.h) — UART4 is claimed by another mode"
+#endif
+
+#if UART4_MODE == UART4_MODE_TELEM
 
 #define UART_TRANSPORT_RX_RING_SIZE 2048u
 
@@ -89,3 +96,5 @@ const host_transport_ops_t host_transport_uart_ops = {
 	.write = uart_write,
 	.tx_ready = uart_tx_ready,
 };
+
+#endif /* UART4_MODE == UART4_MODE_TELEM */

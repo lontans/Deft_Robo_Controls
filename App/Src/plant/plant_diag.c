@@ -50,6 +50,7 @@ static can_bus_id_t g_dm_pending_bus;
 static volatile bool g_dm_session_active;
 static can_bus_id_t g_dm_can_bus;
 static uint8_t g_dm_feedback_ttl;
+static uint32_t g_dm_quiet_until_ms;
 
 static void plant_diag_dm_clear_actuator_mirror(void)
 {
@@ -521,6 +522,14 @@ static can_bus_id_t plant_diag_pdu_can_bus(const host_pdu_command_t *pdu)
 	return CAN_BUS_CH1;
 }
 
+void plant_diag_release_actuator_can(void)
+{
+	g_dm_session_active = false;
+	g_dm_quiet_until_ms = 0u;
+	g_rs2_probe_pending = false;
+	g_probe_in_progress = false;
+}
+
 bool plant_diag_skip_actuator_can(void)
 {
 	if (g_rs2_session_active || g_dm_session_active ||
@@ -529,6 +538,10 @@ bool plant_diag_skip_actuator_can(void)
 
 	if (g_rs2_quiet_until_ms != 0u &&
 	    (int32_t)(HAL_GetTick() - g_rs2_quiet_until_ms) < 0)
+		return true;
+
+	if (g_dm_quiet_until_ms != 0u &&
+	    (int32_t)(HAL_GetTick() - g_dm_quiet_until_ms) < 0)
 		return true;
 
 	return servo_host_session_active();
@@ -577,6 +590,9 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 	can_bus_id_t bus = plant_diag_pdu_can_bus(&cmd->pdu);
 
 	if (kind == PLANT_DIAG_SESSION_BEGIN) {
+		/* Drop stale RS2 queue flags — they block all DM probes at the guard below. */
+		g_rs2_probe_pending = false;
+		g_probe_in_progress = false;
 		g_dm_session_active = true;
 		g_dm_can_bus = bus;
 		can_router_discard_pending_tx();
@@ -595,7 +611,10 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 	}
 
 	if (kind == PLANT_DIAG_SESSION_END) {
+		g_rs2_probe_pending = false;
+		g_probe_in_progress = false;
 		g_dm_session_active = false;
+		g_dm_quiet_until_ms = HAL_GetTick() + PLANT_DIAG_DM_QUIET_MS;
 		memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
 		g_last_dm_probe.probe_kind = kind;
 		g_last_dm_probe.motor_id = cmd->pdu.data[3];
@@ -606,7 +625,7 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 		return;
 	}
 
-	if (g_probe_in_progress || g_rs2_probe_pending)
+	if (g_probe_in_progress)
 		return;
 
 	g_dm_pending_motor_id = cmd->pdu.data[3];
@@ -622,8 +641,23 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 	memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
 	g_last_dm_probe.motor_id = g_dm_pending_motor_id;
 	g_last_dm_probe.probe_kind = g_dm_pending_kind;
+	g_dm_feedback_active = false;
+	g_dm_feedback_ttl = 0u;
 
-	if (!damiao_probe_id(g_dm_pending_bus,
+	/* DM probes run synchronously in plant_diag_on_dm_command; keep USB alive. */
+	g_probe_in_progress = false;
+
+	if (g_dm_pending_kind == DM_PROBE_ID_SWEEP) {
+		uint8_t end_id = cmd->pdu.data[PLANT_DIAG_DM_PDU_END_ID];
+
+		if (!damiao_probe_id_range(g_dm_pending_bus,
+		                          g_dm_pending_motor_id,
+		                          end_id,
+		                          g_dm_pending_param_rid,
+		                          g_dm_pending_listen_ms,
+		                          &g_last_dm_probe))
+			g_last_dm_probe.found = false;
+	} else if (!damiao_probe_id(g_dm_pending_bus,
 	                     g_dm_pending_motor_id,
 	                     g_dm_pending_kind,
 	                     g_dm_pending_master_id,
@@ -631,6 +665,7 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 	                     g_dm_pending_listen_ms,
 	                     &g_last_dm_probe))
 		g_last_dm_probe.found = false;
+	g_probe_in_progress = false;
 
 	plant_diag_dm_publish_actuator_state();
 	g_dm_feedback_active = true;
@@ -793,6 +828,7 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 		pdu->data[27] = g_last_dm_probe.err;
 		pdu->data[28] = g_last_dm_probe.tx_frames_sent;
 		pdu->data[31] = g_last_dm_probe.param_rid;
+		plant_diag_feedback_stamp_fw_marker(pdu);
 		if (g_dm_feedback_ttl > 0u)
 			g_dm_feedback_ttl--;
 		else
