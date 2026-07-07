@@ -1,0 +1,129 @@
+"""RobStride RS2 bench probes over RS2 PDU."""
+from __future__ import annotations
+
+import time
+from typing import Optional
+
+from .. import commands as cmd
+from ..feedback import parse_probe_pdu
+from ..protocol import PROBE_ENABLE_ONLY, PROBE_FULL, PROBE_PROMISC, SESSION_BEGIN, SESSION_END
+from ..protocol.can_bus import can_bus_label, print_can_bus_note
+from ..session import PcbSession
+from ..transport import FrameReader
+
+
+def wait_probe_response(
+    reader: FrameReader,
+    probe_id: int,
+    timeout_s: float,
+    probe_kind: Optional[int] = None,
+) -> Optional[dict]:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        frame = reader.pop()
+        while frame is not None:
+            parsed = parse_probe_pdu(frame)
+            if parsed is not None:
+                if probe_kind in (SESSION_BEGIN, SESSION_END):
+                    if parsed["probe_kind"] == probe_kind:
+                        return parsed
+                elif parsed["probe_id"] == (probe_id & 0xFF):
+                    if probe_kind is not None and parsed["probe_kind"] != probe_kind:
+                        frame = reader.pop()
+                        continue
+                    return parsed
+            frame = reader.pop()
+        time.sleep(0.005)
+    return None
+
+
+def send_diag(
+    session: PcbSession,
+    motor_id: int,
+    probe_kind: int,
+    timeout_s: float,
+    *,
+    probe_param: int = 0,
+    position: float = 0.0,
+    velocity: float = 0.0,
+    kp: float = 0.0,
+    kd: float = 0.0,
+    bus: int = 1,
+) -> Optional[dict]:
+    seq = session.next_seq()
+    if probe_param != 0:
+        frame = cmd.build_rs2_probe_command(
+            motor_id,
+            probe_kind,
+            seq,
+            probe_param,
+            position=position,
+            kp=kp,
+            kd=kd,
+            bus=bus,
+        )
+    else:
+        buf = bytearray(cmd.build_rs2_scan_command(motor_id, probe_kind, seq, bus=bus))
+        if position != 0.0 or velocity != 0.0 or kp != 0.0 or kd != 0.0:
+            cmd.patch_actuator_desire(buf, position=position, velocity=velocity, kp=kp, kd=kd)
+        frame = bytes(buf)
+    session.write_command(frame)
+    return wait_probe_response(session.reader, motor_id, timeout_s, probe_kind=probe_kind)
+
+
+def format_probe_line(resp: dict) -> str:
+    found = int(resp.get("found", 0))
+    return (
+        f"probe_id=0x{resp['probe_id']:02X}  kind={resp.get('probe_kind')}  "
+        f"found={found}  comm={resp.get('comm_mode')}  "
+        f"pos={resp.get('position', 0):+.4f}"
+    )
+
+
+def discover_id(
+    session: PcbSession,
+    bus: int,
+    start: int = 0x40,
+    end: int = 0x80,
+) -> Optional[int]:
+    print(f"RS2 discover on {can_bus_label(bus)}  IDs 0x{start:02X}..0x{end:02X}")
+    print_can_bus_note(bus)
+    with session.rx_pump():
+        session.rs2_session_begin(bus)
+        try:
+            for mid in range(start, end + 1):
+                for kind, label, tmo in (
+                    (PROBE_ENABLE_ONLY, "enable", 0.55),
+                    (PROBE_PROMISC, "promisc", 0.40),
+                ):
+                    resp = send_diag(session, mid, kind, tmo, bus=bus)
+                    if resp is not None and resp.get("found"):
+                        print(f"FOUND  id=0x{mid:02X}  via {label}  {format_probe_line(resp)}")
+                        return mid
+                    if resp is not None and resp.get("raw_frames", 0) > 0:
+                        print(f"  traffic  id=0x{mid:02X}  {label}  raw={resp['raw_frames']}")
+            print("No RS2 motor found in range.")
+            return None
+        finally:
+            session.rs2_session_end(bus)
+
+
+def probe_id(
+    session: PcbSession,
+    bus: int,
+    motor_id: int,
+    *,
+    kind: int = PROBE_FULL,
+    timeout_s: float = 0.5,
+) -> Optional[dict]:
+    with session.rx_pump():
+        session.rs2_session_begin(bus)
+        try:
+            resp = send_diag(session, motor_id, kind, timeout_s, bus=bus)
+            if resp is None:
+                print(f"MISS  id=0x{motor_id:02X}  kind={kind}")
+            else:
+                print(f"OK  {format_probe_line(resp)}")
+            return resp
+        finally:
+            session.rs2_session_end(bus)

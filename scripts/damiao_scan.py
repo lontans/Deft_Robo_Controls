@@ -16,6 +16,10 @@ Examples:
   # Same register-read discovery, but the whole 0-127 range is swept inside
   # one firmware command (no per-ID USB round trip):
   python scripts/damiao_scan.py --port COM9 --fw-sweep --bus 3 --start 0 --end 127
+
+Unified hub:
+  python scripts/controls_pcb_host.py --port COM9 discover --protocol damiao --bus 3
+  python scripts/controls_pcb_host.py --port COM9 probe --slot 2 --enable --hold-ms 3000
 """
 
 from __future__ import annotations

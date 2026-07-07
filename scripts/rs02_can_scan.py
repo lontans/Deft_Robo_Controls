@@ -26,11 +26,16 @@ Examples:
   python scripts/rs02_can_scan.py --port COM9 --ch4-discover
   python scripts/rs02_can_scan.py --port COM9 --discover --bus 4 --discover-deep --reset-first
   python scripts/rs02_can_scan.py --port COM9 --bench-cmds --bus 3 --target 0x74
+
+Unified hub (recommended for handoff):
+  python scripts/controls_pcb_host.py --port COM9 discover --bus 4
+  python scripts/controls_pcb_host.py expert rs02 -- --port COM9 --param-scan
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import struct
 import sys
 import threading
@@ -70,15 +75,23 @@ PDU_BUS_OFF = PDU_OFF + 11
 MIN_CAN_BUS = 1
 MAX_CAN_BUS = 6
 
-# Mirror App/Src/plant/plant_config.c — (schematic_bus, motor_id) per actuator slot.
-PLANT_ACTUATOR_TABLE: Tuple[Tuple[int, int], ...] = (
-    (1, 0x76),  # slot 0 CH1 FDCAN RobStride
-    (1, 0x74),  # slot 1 CH1 FDCAN RobStride
-    (3, 0x06),  # slot 2 CH3 FDCAN Damiao DM-J4310
-    (4, 0x70),  # slot 3 CH4 MCP2518 SPI-CAN
-    (5, 0x70),  # slot 4 CH5 MCP2518 SPI-CAN
-    (6, 0x70),  # slot 5 CH6 MCP2518 SPI-CAN
-)
+# Mirror plant_config.c — prefer controls_pcb_host.actuator_config when available.
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+try:
+    from controls_pcb_host.actuator_config import plant_actuator_table_pairs
+
+    PLANT_ACTUATOR_TABLE = plant_actuator_table_pairs()
+except ImportError:
+    PLANT_ACTUATOR_TABLE = (
+        (1, 0x76),
+        (1, 0x74),
+        (3, 0x06),
+        (4, 0x70),
+        (5, 0x70),
+        (6, 0x70),
+    )
 PLANT_ACTUATOR_MOTOR_IDS: Tuple[int, ...] = tuple(mid for _, mid in PLANT_ACTUATOR_TABLE)
 
 PROBE_FULL = 0
