@@ -524,6 +524,9 @@ static can_bus_id_t plant_diag_pdu_can_bus(const host_pdu_command_t *pdu)
 
 void plant_diag_release_actuator_can(void)
 {
+	/* Plant teleop must not inherit RS2 bench session / post-cal quiet gates. */
+	g_rs2_session_active = false;
+	g_rs2_quiet_until_ms = 0u;
 	g_dm_session_active = false;
 	g_dm_quiet_until_ms = 0u;
 	g_rs2_probe_pending = false;

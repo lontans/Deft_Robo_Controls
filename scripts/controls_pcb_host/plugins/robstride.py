@@ -6,7 +6,16 @@ from typing import Optional
 
 from .. import commands as cmd
 from ..feedback import parse_probe_pdu
-from ..protocol import PROBE_ENABLE_ONLY, PROBE_FULL, PROBE_PROMISC, SESSION_BEGIN, SESSION_END
+from ..protocol import (
+    PROBE_CTRL_ONLY,
+    PROBE_ENABLE_CTRL,
+    PROBE_ENABLE_ONLY,
+    PROBE_FULL,
+    PROBE_PROMISC,
+    PROBE_RESET,
+    SESSION_BEGIN,
+    SESSION_END,
+)
 from ..protocol.can_bus import can_bus_label, print_can_bus_note
 from ..session import PcbSession
 from ..transport import FrameReader
@@ -113,14 +122,22 @@ def probe_id(
     bus: int,
     motor_id: int,
     *,
-    kind: int = PROBE_FULL,
-    timeout_s: float = 0.5,
+    kind: int = PROBE_ENABLE_ONLY,
+    timeout_s: float = 0.55,
 ) -> Optional[dict]:
+    """Bench probe: reset then enable-only by default (matches discover hit path).
+
+    Use kind=PROBE_FULL for run_mode+enable+ctrl init (--full on CLI).
+    """
     with session.rx_pump():
         session.rs2_session_begin(bus)
         try:
+            send_diag(session, motor_id, PROBE_RESET, 0.45, bus=bus)
+            kw: dict = {}
+            if kind in (PROBE_FULL, PROBE_ENABLE_CTRL, PROBE_CTRL_ONLY):
+                kw = dict(kp=50.0, kd=1.0)
             resp = send_diag(
-                session, motor_id, kind, timeout_s, bus=bus, kp=50.0, kd=1.0
+                session, motor_id, kind, timeout_s, bus=bus, **kw
             )
             if resp is None:
                 print(f"MISS  id=0x{motor_id:02X}  kind={kind}")

@@ -15,6 +15,7 @@
 #include "usb_device.h"
 #include "app.h"
 #include "plant/control_loop.h"
+#include "host/host_link.h"
 
 /* Private variables ---------------------------------------------------------*/
 osThreadId defaultTaskHandle;
@@ -39,10 +40,11 @@ void ControlTask(void const *argument)
 {
 	(void)argument;
 
-	/* TIM6 + heartbeat run from main() before the scheduler; this task only
-	 * drains the pending-tick flag (same split as pre-RTOS app_run). */
+	/* TIM6 + heartbeat run from main() before the scheduler; this task drains
+	 * pending ticks then pushes USB feedback (same order as pre-RTOS app_run). */
 	for (;;) {
 		control_loop_service();
+		host_link_poll_tx();
 		osDelay(1);
 	}
 }

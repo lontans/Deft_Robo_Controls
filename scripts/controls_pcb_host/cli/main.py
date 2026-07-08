@@ -15,6 +15,7 @@ from ..actuator_config import (
 )
 from ..feedback import format_status_line
 from ..plugins import damiao, dynamixel, led, robstride, uart_bridge
+from ..protocol import PROBE_ENABLE_ONLY, PROBE_FULL
 from ..session import PcbSession
 from ..teleop import run_calibrate, run_plant_teleop_for_slot, run_servo_teleop
 from ..transport import auto_pick_port, list_serial_ports
@@ -108,7 +109,8 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 listen_ms=args.listen_ms,
             )
         else:
-            robstride.probe_id(session, bus, motor_id)
+            kind = PROBE_FULL if getattr(args, "full", False) else PROBE_ENABLE_ONLY
+            robstride.probe_id(session, bus, motor_id, kind=kind)
     return 0
 
 
@@ -126,8 +128,22 @@ def cmd_teleop(args: argparse.Namespace) -> int:
 
 
 def cmd_calibrate(args: argparse.Namespace) -> int:
-    slot = args.slot if args.slot is not None else 0
-    run_calibrate(_port(args), slot)
+    if args.slot is not None:
+        cfg = slot_config(args.slot)
+        bus = cfg.bus
+        motor_id = cfg.motor_id
+    elif args.bus is not None and args.id is not None:
+        bus = args.bus
+        motor_id = args.id
+    else:
+        print("calibrate requires --slot N or --bus and --id", file=sys.stderr)
+        return 2
+    run_calibrate(
+        _port(args),
+        bus,
+        motor_id,
+        cal_timeout=args.timeout,
+    )
     return 0
 
 
@@ -236,6 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--enable", action="store_true", help="Damiao: clear-fault + enable")
     p.add_argument("--listen-ms", type=int, default=15)
     p.add_argument("--hold-ms", type=int, default=0, help="Damiao MIT hold after --enable")
+    p.add_argument(
+        "--full",
+        action="store_true",
+        help="RS02: PROBE_FULL init (default: reset + enable-only, same as discover)",
+    )
     p.set_defaults(func=cmd_probe)
 
     p = sub.add_parser("teleop", help="Interactive teleop (delegates to legacy runner)")
@@ -244,8 +265,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-home", action="store_true")
     p.set_defaults(func=cmd_teleop)
 
-    p = sub.add_parser("calibrate", help="RS02 encoder cal (slot 0 default)")
-    p.add_argument("--slot", type=int, default=0)
+    p = sub.add_parser(
+        "calibrate",
+        help="RS02 encoder cal (comm 0x05/0x06/0x16 via MCU probe path)",
+    )
+    p.add_argument("--slot", type=int, default=None, help="Actuator slot (e.g. 1 = CH2 0x70)")
+    p.add_argument("--bus", type=int, default=None)
+    p.add_argument("--id", type=lambda x: int(x, 0), default=None, dest="id")
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Cali listen seconds (default 28; shaft must spin freely)",
+    )
     p.set_defaults(func=cmd_calibrate)
 
     cfg = sub.add_parser("config", help="Actuator slot configuration (host mirror)")

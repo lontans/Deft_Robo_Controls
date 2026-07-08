@@ -42,14 +42,19 @@ void app_run(void)
 
 	host_link_begin_loop();
 	host_link_poll_rx();
-	/* TX before any blocking CAN/SPI work so host link stays alive during bring-up. */
-	host_link_poll_tx();
+	plant_diag_service();
 
 #if !USE_FREERTOS_SCHEDULER
+	/* Match pre-RTOS (14eb426): CAN apply + capture before USB feedback TX. */
 	control_loop_service();
 #endif
-	plant_diag_service();
+
 	led_service();
+
+#if !USE_FREERTOS_SCHEDULER
+	host_link_poll_tx();
+#endif
+
 	plant_diag_can_router_poll();
 
 	if (now - s_app_run_heartbeat_ms >= APP_RUN_HEARTBEAT_MS) {

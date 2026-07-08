@@ -152,6 +152,7 @@ PLANT_HOME_POS_TOL = 0.05
 PLANT_HOME_VEL_TOL = 0.15
 PLANT_HOME_DWELL_S = 0.6
 PLANT_HOME_TIMEOUT_S = 120.0
+PLANT_TELEOP_MAX_CMD_LEAD = 0.35
 PLANT_TELEOP_BUS_KEYS: Tuple[str, ...] = tuple(str(i) for i in range(MAX_CAN_BUS + 1))
 # Damiao DM-J4310 on plant slot 2 (CH3) — mirror plant_config.c
 DM_TELEOP_SLOT = 2
@@ -1128,6 +1129,7 @@ class PlantSlotTeleop:
     cmd_position: float = 0.0
     cmd_velocity: float = 0.0
     kp: float = 0.0
+    kd: float = 0.0
     feedback_synced: bool = False
     fb_position: float = 0.0
     fb_velocity: float = 0.0
@@ -1254,10 +1256,12 @@ def plant_slew_all_to(
                 plant_step_toward(st, target, slew_rate, dt)
                 all_done = False
             st.kp = 0.0 if plant_at_target(st, target) else move_kp
+            st.kd = 0.0 if plant_at_target(st, target) else kd
 
         for st in slot_states:
             if st not in active:
                 st.kp = 0.0
+                st.kd = 0.0
                 st.cmd_velocity = 0.0
 
         cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
@@ -1277,6 +1281,7 @@ def plant_slew_all_to(
         if st.feedback_synced:
             st.cmd_position = target
         st.kp = 0.0
+        st.kd = 0.0
 
     for _ in range(max(4, int(send_hz * 0.15))):
         cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
@@ -1520,9 +1525,11 @@ def plant_send_slots(
     slot_states: List[PlantSlotTeleop],
     kd: float,
 ) -> int:
-    slot_commands = {
-        st.slot: (st.cmd_position, st.cmd_velocity, st.kp, kd, 0.0) for st in slot_states
-    }
+    """Send plant frame; each slot's st.kd is used (set before call; kd fills unset motion slots)."""
+    slot_commands = {}
+    for st in slot_states:
+        eff_kd = st.kd if (st.kd != 0.0 or st.kp == 0.0) else kd
+        slot_commands[st.slot] = (st.cmd_position, st.cmd_velocity, st.kp, eff_kd, 0.0)
     ser.write(build_plant_command(cmd_seq, slot_commands))
     ser.flush()
     return (cmd_seq + 1) & 0xFFFFFFFF
@@ -1586,6 +1593,7 @@ def plant_home_to_zero(
             at_fb = abs(st.fb_position - PLANT_HOME_TARGET) <= pos_tol
             at_target = at_fb if home_on_fb else at_cmd
             st.kp = 0.0 if at_target else home_kp
+            st.kd = 0.0 if at_target else kd
             if not at_cmd:
                 slew_done = False
             if home_on_fb and not at_fb:
@@ -1616,10 +1624,14 @@ def plant_home_to_zero(
     for st in slot_states:
         if home_on_fb:
             st.cmd_position = st.fb_position
+        elif abs(st.fb_position - PLANT_HOME_TARGET) > pos_tol:
+            # Shaft could not reach zero (limits) — track feedback, not cmd=0.
+            st.cmd_position = st.fb_position
         else:
             st.cmd_position = PLANT_HOME_TARGET
         st.cmd_velocity = 0.0
         st.kp = handoff_kp
+        st.kd = 0.0 if handoff_kp == 0.0 else kd
 
     for _ in range(max(6, int(send_hz * 0.25))):
         for st in slot_states:
@@ -1717,6 +1729,7 @@ def run_plant_teleop(
         print("  ERR nibble: 0=disabled  1=enabled  D=comm timeout  (solid red at power-on is normal)")
     else:
         print("Motors must be woken (probe/recovery once per branch). Auto-homes to 0.00 before teleop.")
+        print("  Idle (no arrow): kp=0 kd=0 — shaft is backdrivable by hand.")
     print("  Left / Right     velocity on active bus selection")
     print("  0                all buses (all configured slots)")
     print("  1–6              CH1..CH6 only (FDCAN 1–3, MCP SPI-CAN 4–6)")
@@ -1802,6 +1815,9 @@ def run_plant_teleop(
                     if abs(st.cmd_velocity) < vel_stop:
                         st.cmd_velocity = 0.0
                     st.kp = 0.0
+                    st.kd = 0.0
+                    if st.feedback_synced:
+                        st.cmd_position = st.fb_position
                     continue
                 if motion_dir != 0:
                     target_vel = motion_dir * abs(arrow_vel)
@@ -1813,20 +1829,29 @@ def run_plant_teleop(
                     st.cmd_velocity = 0.0
                 if not st.feedback_synced:
                     st.kp = 0.0
+                    st.kd = 0.0
                 elif abs(st.cmd_velocity) < vel_stop:
                     if idle_kp > 0.0:
                         st.kp = idle_kp
                         st.cmd_position = st.fb_position
+                        st.kd = kd
                     else:
                         st.kp = 0.0
+                        st.kd = 0.0
+                        st.cmd_position = st.fb_position
                 else:
                     st.kp = st.max_kp
+                    st.kd = kd
 
             for st in slot_states:
                 if abs(st.cmd_velocity) >= vel_stop:
                     st.cmd_position = max(
                         P_MIN, min(P_MAX, st.cmd_position + st.cmd_velocity * dt)
                     )
+                    lead = st.cmd_position - st.fb_position
+                    max_lead = PLANT_TELEOP_MAX_CMD_LEAD
+                    if st.feedback_synced and abs(lead) > max_lead:
+                        st.cmd_position = st.fb_position + math.copysign(max_lead, lead)
 
             cmd_seq = plant_send_slots(ser, cmd_seq, slot_states, kd)
             plant_poll_feedback(reader, slot_states)
@@ -1842,8 +1867,10 @@ def run_plant_teleop(
                         err_s = f" err=0x{err_n:X}"
                         if err_n not in (0, 1):
                             err_s += "!"
+                    elif st.fb_fault:
+                        err_s = f" flt=0x{st.fb_fault:02X}"
                     parts.append(
-                        f"{mark}{st.slot}:v={st.cmd_velocity:+.1f} kp={st.kp:.0f} "
+                        f"{mark}{st.slot}:v={st.cmd_velocity:+.1f} kp={st.kp:.0f} kd={st.kd:.1f} "
                         f"cmd={st.cmd_position:+.3f} fb={st.fb_position:+.3f}{err_s}"
                     )
                 write_live_line("  ".join(parts))
@@ -1855,11 +1882,15 @@ def run_plant_teleop(
         coast_kp = idle_kp
         for st in slot_states:
             st.cmd_velocity = 0.0
+            st.kd = 0.0
             if coast_kp > 0.0:
                 st.kp = coast_kp
                 st.cmd_position = st.fb_position
+                st.kd = kd
             else:
                 st.kp = 0.0
+                if st.feedback_synced:
+                    st.cmd_position = st.fb_position
         for _ in range(max(8, int(send_hz * ramp_down_s))):
             if coast_kp > 0.0:
                 for st in slot_states:

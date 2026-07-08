@@ -37,19 +37,27 @@ def run_servo_teleop(port: str) -> None:
     dynamixel_teleop.main()
 
 
-def run_calibrate(port: str, slot: int) -> None:
-    cfg = slot_config(slot)
+def run_calibrate(
+    port: str,
+    bus: int,
+    motor_id: int,
+    *,
+    cal_timeout: float | None = None,
+) -> None:
     ensure_scripts_path()
     import host_teleop_laptop_usb as teleop  # noqa: WPS433
 
-    sys.argv = [
+    argv = [
         sys.argv[0],
         "--port",
         port,
         "--calibrate",
         "--bus",
-        str(cfg.bus),
+        str(bus),
         "--motor-id",
-        hex(cfg.motor_id),
+        hex(motor_id),
     ]
+    if cal_timeout is not None:
+        argv.extend(["--cal-timeout", str(cal_timeout)])
+    sys.argv = argv
     teleop.main()

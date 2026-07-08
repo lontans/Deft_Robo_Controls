@@ -699,7 +699,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 	                        (proactive ? 50u :
 	                         (cali ? 0u :
 	                          (zero_cmd ? 500u :
-	                           (data_save ? 800u : 80u)))))));
+	                         (data_save ? 800u : 150u)))))));
 	if (bus >= CAN_BUS_CH4)
 		listen_ms = (uint16_t)(listen_ms + listen_ms / 2u + 120u);
 
@@ -905,6 +905,16 @@ bool robstride_probe_id(can_bus_id_t bus,
 			return false;
 		HAL_Delay(10);
 	} else {
+		/* rs02_can_scan WAKE_SEQUENCE / --bench-cmds: reset before full init. */
+		if (probe_kind == RS02_PROBE_FULL || probe_kind == RS02_PROBE_ENABLE_CTRL) {
+			if (robstride_send_reset(&cfg, &frame) != PLUGIN_OK)
+				return false;
+			if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
+				return false;
+			HAL_Delay(10);
+			can_rx_drain(bus);
+		}
+
 		if (do_run_mode) {
 			if (robstride_set_run_mode(&cfg, RS02_RUN_MODE_MOVE, &frame) != PLUGIN_OK)
 				return false;
@@ -928,6 +938,9 @@ bool robstride_probe_id(can_bus_id_t bus,
 		if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
 			return false;
 	}
+
+	if (probe_kind == RS02_PROBE_FULL && listen_ms < 200u)
+		listen_ms = 200u;
 
 	for (uint16_t attempt = 0; attempt < listen_ms; attempt++) {
 		robstride_poll_listen(bus);
