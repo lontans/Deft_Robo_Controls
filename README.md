@@ -20,6 +20,7 @@ STM32G474 firmware for the Deft controls board: fixed-rate plant loop (500 Hz), 
 | [docs/bringup.md](docs/bringup.md) | Flash, motor map, laptop USB teleop, Damiao CH3 |
 | [docs/known-issues.md](docs/known-issues.md) | Open gaps — **Damiao CAN RX**, cal NOISE, etc. |
 | [docs/ch4-mcp2518-bringup-postmortem.md](docs/ch4-mcp2518-bringup-postmortem.md) | CH4 MCP2518 SPI-CAN bringup bugs and fixes |
+| [docs/free_rtos-bringup.md](docs/free_rtos-bringup.md) | FreeRTOS migration, regressions, verification, Damiao via `controls_pcb_host` |
 
 Extended Damiao bench notes (local, gitignored): `docs/damiao-bringup.md`.
 

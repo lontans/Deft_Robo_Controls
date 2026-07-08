@@ -36,7 +36,7 @@ Rebuild and flash from STM32CubeIDE (Debug).
 - Activity LEDs: PC7 (CH1), PC6 (CH2), PB15 (CH3)
 - **CH4–CH6:** MCP2518FD SPI-CAN — see [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md)
 
-On boot, `control_loop_init()` starts TIM6 @ 500 Hz. RobStride motors are woken by host bench probes (`--recovery`, calibrate preamble, or plant teleop with prior probe).
+On boot, `control_loop_start()` in `main()` arms TIM6 @ 500 Hz (before the FreeRTOS scheduler). RobStride motors are woken by host bench probes (`--recovery`, calibrate preamble, or plant teleop with prior probe). See [free_rtos-bringup.md](free_rtos-bringup.md) for RTOS task layout and verification.
 
 ### Damiao CH3 (in progress — Jul 2026)
 

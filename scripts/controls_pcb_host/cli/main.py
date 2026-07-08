@@ -94,6 +94,12 @@ def cmd_probe(args: argparse.Namespace) -> int:
             proto = args.protocol or "robstride"
 
         if proto == "damiao":
+            if args.enable and args.hold_ms > 0:
+                ok = damiao.enable_and_hold(
+                    session, bus, motor_id, hold_ms=args.hold_ms,
+                    listen_ms=args.listen_ms,
+                )
+                return 0 if ok else 1
             damiao.probe(
                 session,
                 bus,
@@ -101,8 +107,6 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 enable=args.enable,
                 listen_ms=args.listen_ms,
             )
-            if args.enable and args.hold_ms > 0:
-                damiao.enable_and_hold(session, bus, motor_id, hold_ms=args.hold_ms)
         else:
             robstride.probe_id(session, bus, motor_id)
     return 0
@@ -196,9 +200,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Deft controls PCB — unified host bring-up over USB CDC (562 B images)",
     )
     ap.add_argument("--port", help="USB CDC port (e.g. COM5)")
-    sub = ap.add_subparsers(dest="command", required=True)
+    ap.add_argument(
+        "--list-ports",
+        action="store_true",
+        help="List serial ports (STM32 USB CDC hint) and exit",
+    )
+    sub = ap.add_subparsers(dest="command", required=False)
 
     sub.add_parser("ports", help="List serial ports").set_defaults(func=cmd_ports)
+    sub.add_parser("list-ports", help="Alias for ports").set_defaults(func=cmd_ports)
 
     p = sub.add_parser("link-test", help="Send plant frame and wait for feedback")
     p.set_defaults(func=cmd_link_test)
@@ -276,6 +286,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ensure_scripts_path()
     ap = build_parser()
     args = ap.parse_args(argv)
+    if args.list_ports:
+        list_serial_ports()
+        return 0
+    if args.command is None:
+        ap.print_help()
+        return 2
     return int(args.func(args))
 
 

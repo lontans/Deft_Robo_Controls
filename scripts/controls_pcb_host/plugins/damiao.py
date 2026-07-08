@@ -13,6 +13,7 @@ from ..feedback import (
     probe_kind_matches,
 )
 from ..protocol.diag_pdu import (
+    DM_MASTER_ANY,
     DM_PROBE_CLEAR_FAULT,
     DM_PROBE_ENABLE,
     DM_PROBE_ID_SWEEP,
@@ -97,7 +98,7 @@ def send_probe(
         probe_kind,
         seq,
         bus=bus,
-        master_id=master_id,
+        master_id=DM_MASTER_ANY,
         listen_ms=listen_ms,
         param_rid=param_rid,
         end_id=end_id,
@@ -179,6 +180,38 @@ def probe(
             session.dm_session_end(bus)
 
 
+def _verify_enabled(
+    session: PcbSession,
+    bus: int,
+    motor_id: int,
+    *,
+    listen_ms: int = 40,
+    timeout_s: float = 2.0,
+    slot: int = 2,
+) -> bool:
+    """MIT feedback after enable — ERR nibble 1 means motor latched enabled."""
+    resp = send_probe(
+        session,
+        motor_id,
+        DM_PROBE_MIT,
+        bus=bus,
+        listen_ms=listen_ms,
+        timeout_s=timeout_s,
+        slot=slot,
+    )
+    if resp is not None and (resp.get("err", 0) & 0xF) == 1:
+        return True
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        frame = session.reader.pop()
+        if frame is not None:
+            act_fb = parse_dm_from_actuator(frame, motor_id, slot=slot)
+            if act_fb is not None and (act_fb.get("err", 0) & 0xF) == 1:
+                return True
+        time.sleep(0.01)
+    return False
+
+
 def enable_and_hold(
     session: PcbSession,
     bus: int,
@@ -193,21 +226,18 @@ def enable_and_hold(
         session.dm_session_begin(bus)
         try:
             send_probe(session, motor_id, DM_PROBE_CLEAR_FAULT, bus=bus, listen_ms=listen_ms)
-            resp = send_probe(session, motor_id, DM_PROBE_ENABLE, bus=bus, listen_ms=listen_ms)
-            if resp is None or (resp.get("err", 0) & 0xF) != 1:
-                act = None
-                deadline = time.monotonic() + 2.0
-                while time.monotonic() < deadline:
-                    frame = session.reader.pop()
-                    if frame is not None:
-                        act_fb = parse_dm_from_actuator(frame, motor_id, slot=slot)
-                        if act_fb is not None:
-                            act = act_fb
-                            break
-                    time.sleep(0.01)
-                if act is None or (act.get("err", 0) & 0xF) != 1:
-                    print("Enable verify failed (ERR nibble != 1).")
-                    return False
+            send_probe(session, motor_id, DM_PROBE_ENABLE, bus=bus, listen_ms=listen_ms)
+            verify_listen = clamp_listen_ms(max(listen_ms, 40))
+            if not _verify_enabled(
+                session,
+                bus,
+                motor_id,
+                listen_ms=verify_listen,
+                timeout_s=probe_timeout_s(DM_PROBE_MIT, verify_listen),
+                slot=slot,
+            ):
+                print("Enable verify failed (ERR nibble != 1).")
+                return False
             print("OK: motor reports enabled (ERR=0x1).")
             print(f"MIT hold {hold_ms} ms — start teleop before TIMEOUT expires.")
             deadline = time.monotonic() + hold_ms / 1000.0

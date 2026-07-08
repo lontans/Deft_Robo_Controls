@@ -20,6 +20,32 @@ typedef struct {
 
 static spi_can_rx_ring_t rx_rings[CAN_MCP2518_COUNT];
 static spi_can_tx_queue_t tx_queues[CAN_MCP2518_COUNT];
+static bool              g_mcp2518_hw_ready;
+static uint8_t             g_mcp2518_rail_next;
+
+static void spi_can_router_hw_step(void)
+{
+	if (g_mcp2518_hw_ready)
+		return;
+
+	if (g_mcp2518_rail_next == 0u) {
+		spi_can_port_init();
+		spi_can_port_irq_init();
+	}
+
+	if (g_mcp2518_rail_next < CAN_MCP2518_COUNT) {
+		(void)mcp2518_reinit_rail((can_bus_id_t)(CAN_BUS_CH4 + g_mcp2518_rail_next));
+		g_mcp2518_rail_next++;
+		return;
+	}
+
+	g_mcp2518_hw_ready = true;
+}
+
+bool spi_can_router_hw_ready(void)
+{
+	return g_mcp2518_hw_ready;
+}
 
 static can_bus_id_t spi_rail_to_bus(uint8_t rail)
 {
@@ -47,6 +73,9 @@ static can_status_t spi_backend_send(can_bus_id_t bus, const can_frame_t *frame)
 	if (!spi_can_bus_valid(bus) || frame == NULL)
 		return CAN_ERR_PARAM;
 
+	if (!g_mcp2518_hw_ready)
+		return CAN_ERR_BUSY;
+
 	if (!mcp2518_send(bus, frame))
 		return CAN_ERR_HAL;
 
@@ -63,7 +92,8 @@ void spi_can_router_init(void)
 		tx_queues[r].tail = 0;
 	}
 
-	(void)mcp2518_init_all();
+	g_mcp2518_hw_ready = false;
+	g_mcp2518_rail_next = 0u;
 }
 
 can_status_t spi_can_router_tx_enqueue(can_bus_id_t bus, const can_frame_t *frame)
@@ -182,6 +212,7 @@ void spi_can_router_poll_bus_rx(can_bus_id_t bus)
 	if (!spi_can_bus_valid(bus))
 		return;
 
+	spi_can_router_hw_step();
 	spi_poll_rx_one(bus);
 }
 
@@ -190,11 +221,13 @@ void spi_can_router_poll_bus(can_bus_id_t bus)
 	if (!spi_can_bus_valid(bus))
 		return;
 
+	spi_can_router_hw_step();
 	spi_poll_one(bus);
 }
 
 void spi_can_router_poll(void)
 {
+	spi_can_router_hw_step();
 	for (uint8_t r = 0; r < CAN_MCP2518_COUNT; r++)
 		spi_poll_one(spi_rail_to_bus(r));
 }

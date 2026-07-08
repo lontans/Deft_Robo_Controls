@@ -12,9 +12,11 @@ typedef enum {
 	CAN_ERR_FULL,
 	CAN_ERR_EMPTY,
 	CAN_ERR_HAL,
+	CAN_ERR_BUSY, /* per-bus mutex contended; caller should skip and retry next tick */
 } can_status_t;
 
 void can_router_init(void);
+bool can_router_is_ready(void);
 void can_router_poll(void);
 void can_router_poll_bus(can_bus_id_t bus);
 void can_router_poll_bus_rx(can_bus_id_t bus);

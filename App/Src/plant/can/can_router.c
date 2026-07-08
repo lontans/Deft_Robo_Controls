@@ -6,6 +6,46 @@
 
 #include "fdcan.h"
 #include "main.h"
+#include "app.h"
+
+#if USE_FREERTOS_SCHEDULER
+#include "FreeRTOS.h"
+#include "semphr.h"
+#endif
+
+/* CH1-3 (FDCAN1/2/3) are independent peripherals, so each bus gets its own
+ * mutex rather than one global lock -- ControlTask and HostLinkTask can now
+ * genuinely touch tx_queues[]/rx_rings[] concurrently (previously safe only
+ * because there was a single caller). Short bounded wait: these sections are
+ * a few instructions (ring index + struct copy), so any legitimate holder
+ * releases almost immediately -- this is not a "skip the bus" style lock. */
+#define CAN_MUTEX_WAIT_TICKS pdMS_TO_TICKS(1)
+
+#if USE_FREERTOS_SCHEDULER
+static SemaphoreHandle_t bus_mutex[CAN_FDCAN_COUNT];
+#endif
+
+static bool can_bus_lock(can_bus_id_t bus)
+{
+#if USE_FREERTOS_SCHEDULER
+	if (bus >= CAN_FDCAN_COUNT || bus_mutex[bus] == NULL)
+		return true;
+	return xSemaphoreTake(bus_mutex[bus], CAN_MUTEX_WAIT_TICKS) == pdTRUE;
+#else
+	(void)bus;
+	return true;
+#endif
+}
+
+static void can_bus_unlock(can_bus_id_t bus)
+{
+#if USE_FREERTOS_SCHEDULER
+	if (bus < CAN_FDCAN_COUNT && bus_mutex[bus] != NULL)
+		xSemaphoreGive(bus_mutex[bus]);
+#else
+	(void)bus;
+#endif
+}
 
 /* CANx_ACT activity LEDs (active-high idle ON; blink on TX/RX). */
 #define CAN1_ACT_PORT  GPIOC
@@ -172,13 +212,27 @@ static uint8_t dlc_from_hal(uint32_t hal_dlc)
 	return (n > CAN_MAX_DATA_LEN) ? CAN_MAX_DATA_LEN : (uint8_t)n;
 }
 
+static bool g_can_router_ready;
+
+bool can_router_is_ready(void)
+{
+	return g_can_router_ready;
+}
+
 void can_router_init(void)
 {
+	if (g_can_router_ready)
+		return;
+
 	for (int i = 0; i < CAN_FDCAN_COUNT; i++) {
 		rx_rings[i].head = 0;
 		rx_rings[i].tail = 0;
 		tx_queues[i].head = 0;
 		tx_queues[i].tail = 0;
+#if USE_FREERTOS_SCHEDULER
+		if (bus_mutex[i] == NULL)
+			bus_mutex[i] = xSemaphoreCreateMutex();
+#endif
 	}
 
 	for (uint8_t i = 0; i < CAN_BACKEND_COUNT; i++) {
@@ -193,6 +247,7 @@ void can_router_init(void)
 	fdcan_bus_start(&hfdcan2, FDCAN_FILTER_STD_ALL);
 
 	spi_can_router_init();
+	g_can_router_ready = true;
 }
 
 can_status_t can_tx_enqueue(can_bus_id_t bus, const can_frame_t *frame)
@@ -203,12 +258,20 @@ can_status_t can_tx_enqueue(can_bus_id_t bus, const can_frame_t *frame)
 	if (bus >= CAN_FDCAN_COUNT || frame == NULL)
 		return CAN_ERR_PARAM;
 
-	if (((tx_queues[bus].head + 1) % CAN_QUEUE_DEPTH) == tx_queues[bus].tail)
-		return CAN_ERR_FULL;
+	if (!can_bus_lock(bus))
+		return CAN_ERR_BUSY;
 
-	tx_queues[bus].buf[tx_queues[bus].head] = *frame;
-	tx_queues[bus].head = (tx_queues[bus].head + 1) % CAN_QUEUE_DEPTH;
-	return CAN_OK;
+	can_status_t status = CAN_OK;
+
+	if (((tx_queues[bus].head + 1) % CAN_QUEUE_DEPTH) == tx_queues[bus].tail) {
+		status = CAN_ERR_FULL;
+	} else {
+		tx_queues[bus].buf[tx_queues[bus].head] = *frame;
+		tx_queues[bus].head = (tx_queues[bus].head + 1) % CAN_QUEUE_DEPTH;
+	}
+
+	can_bus_unlock(bus);
+	return status;
 }
 
 static can_status_t fdcan_backend_send(can_bus_id_t bus, const can_frame_t *frame)
@@ -280,15 +343,21 @@ can_status_t can_tx_flush(can_bus_id_t bus)
 	if (bus >= CAN_FDCAN_COUNT)
 		return CAN_ERR_PARAM;
 
-	if (tx_queues[bus].head == tx_queues[bus].tail)
-		return CAN_ERR_EMPTY;
+	if (!can_bus_lock(bus))
+		return CAN_ERR_BUSY;
 
-	can_status_t status = fdcan_backend_send(bus, &tx_queues[bus].buf[tx_queues[bus].tail]);
-	if (status != CAN_OK)
-		return status;
+	can_status_t status;
 
-	tx_queues[bus].tail = (tx_queues[bus].tail + 1) % CAN_QUEUE_DEPTH;
-	return CAN_OK;
+	if (tx_queues[bus].head == tx_queues[bus].tail) {
+		status = CAN_ERR_EMPTY;
+	} else {
+		status = fdcan_backend_send(bus, &tx_queues[bus].buf[tx_queues[bus].tail]);
+		if (status == CAN_OK)
+			tx_queues[bus].tail = (tx_queues[bus].tail + 1) % CAN_QUEUE_DEPTH;
+	}
+
+	can_bus_unlock(bus);
+	return status;
 }
 
 void can_rx_drain(can_bus_id_t bus)
@@ -316,12 +385,21 @@ can_status_t can_rx_pop(can_bus_id_t bus, can_frame_t *frame)
 	if (bus >= CAN_FDCAN_COUNT || frame == NULL)
 		return CAN_ERR_PARAM;
 
-	if (rx_rings[bus].head == rx_rings[bus].tail)
-		return CAN_ERR_EMPTY;
+	if (!can_bus_lock(bus))
+		return CAN_ERR_BUSY;
 
-	*frame = rx_rings[bus].buf[rx_rings[bus].tail];
-	rx_rings[bus].tail = (rx_rings[bus].tail + 1) % CAN_QUEUE_DEPTH;
-	return CAN_OK;
+	can_status_t status;
+
+	if (rx_rings[bus].head == rx_rings[bus].tail) {
+		status = CAN_ERR_EMPTY;
+	} else {
+		*frame = rx_rings[bus].buf[rx_rings[bus].tail];
+		rx_rings[bus].tail = (rx_rings[bus].tail + 1) % CAN_QUEUE_DEPTH;
+		status = CAN_OK;
+	}
+
+	can_bus_unlock(bus);
+	return status;
 }
 
 bool can_rx_available(can_bus_id_t bus)
@@ -347,6 +425,9 @@ static void fdcan_poll_rx_one(can_bus_id_t bus)
 {
 	can_frame_t temp;
 
+	if (!can_bus_lock(bus))
+		return; /* try again next poll rather than block the caller's task */
+
 	while (fdcan_backend_recv(bus, &temp) == CAN_OK) {
 		if ((rx_rings[bus].head + 1) % CAN_QUEUE_DEPTH == rx_rings[bus].tail)
 			rx_rings[bus].tail = (rx_rings[bus].tail + 1) % CAN_QUEUE_DEPTH;
@@ -354,6 +435,8 @@ static void fdcan_poll_rx_one(can_bus_id_t bus)
 		rx_rings[bus].buf[rx_rings[bus].head] = temp;
 		rx_rings[bus].head = (rx_rings[bus].head + 1) % CAN_QUEUE_DEPTH;
 	}
+
+	can_bus_unlock(bus);
 }
 
 static void fdcan_poll_one(can_bus_id_t bus)

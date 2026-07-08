@@ -146,10 +146,25 @@ class PcbSession:
 
     def link_test(self, timeout_s: float = 2.0) -> bool:
         with self.rx_pump():
+            # Firmware may stream feedback before any command (bare-metal superloop).
+            time.sleep(0.15)
+            frame = self.wait_feedback(0.5)
+            if frame is not None:
+                hdr = parse_feedback_header(frame)
+                if hdr is not None:
+                    print(
+                        f"OK (unsolicited)  tick={hdr['tick']}  mcu_state={hdr['mcu_state']}  "
+                        f"ack_seq={hdr['last_cmd_seq']}"
+                    )
+                    return True
+
             self.send_plant()
             frame = self.wait_feedback(timeout_s)
             if frame is None:
-                print("No 562 B feedback within timeout.")
+                print(
+                    f"No 562 B feedback within timeout "
+                    f"(rx_bytes={self.reader.total_bytes}  frames={self.reader.total_frames})."
+                )
                 return False
             hdr = parse_feedback_header(frame)
             if hdr is None:

@@ -10,6 +10,14 @@
 #include "host/host_link.h"
 #include "host/host_uart_bridge.h"
 #include "plant/plugin_schema/plugin_table.h"
+#include "main.h"
+
+/* PC1: slow toggle while superloop runs (after main.c drops it LOW post-app_init). */
+#define APP_RUN_HEARTBEAT_PORT GPIOC
+#define APP_RUN_HEARTBEAT_PIN  GPIO_PIN_1
+#define APP_RUN_HEARTBEAT_MS   500u
+
+static uint32_t s_app_run_heartbeat_ms;
 
 void app_init(void)
 {
@@ -21,7 +29,6 @@ void app_init(void)
 
 	dynamixel_bus_init();
 
-	can_router_init();
 	host_link_init();
 	host_uart_bridge_init();
 
@@ -30,11 +37,25 @@ void app_init(void)
 
 void app_run(void)
 {
+	uint32_t now = HAL_GetTick();
+
 	host_link_begin_loop();
 	host_link_poll_rx();
-	plant_diag_service();
-	control_loop_service();
-	led_service();
+	/* TX before any blocking CAN/SPI work so host link stays alive during bring-up. */
 	host_link_poll_tx();
+
+	if (!can_router_is_ready())
+		can_router_init();
+
+#if !USE_FREERTOS_SCHEDULER
+	control_loop_service();
+#endif
+	plant_diag_service();
+	led_service();
 	plant_diag_can_router_poll();
+
+	if (now - s_app_run_heartbeat_ms >= APP_RUN_HEARTBEAT_MS) {
+		s_app_run_heartbeat_ms = now;
+		HAL_GPIO_TogglePin(APP_RUN_HEARTBEAT_PORT, APP_RUN_HEARTBEAT_PIN);
+	}
 }

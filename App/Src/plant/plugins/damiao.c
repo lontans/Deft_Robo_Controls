@@ -556,6 +556,25 @@ static bool damiao_probe_is_one_shot_tx_kind(uint8_t kind)
 	return damiao_probe_is_maintenance_kind(kind) || kind == DM_PROBE_MIT;
 }
 
+static bool damiao_probe_send_mit_zero(can_bus_id_t bus,
+                                       uint8_t motor_id,
+                                       can_frame_t *tx_out)
+{
+	actuator_config_t local = {
+		.bus = bus,
+		.protocol = PROTO_DAMIAO,
+		.motor_id = motor_id,
+		.master_id = DM_MASTER_ID_AUTO,
+		.enabled = true,
+	};
+	static const actuator_desire_t desire_zero = {0};
+
+	if (tx_out == NULL)
+		return false;
+
+	return damiao_pack_tx(&local, &desire_zero, tx_out) == PLUGIN_OK;
+}
+
 static bool damiao_probe_listen_window(can_bus_id_t bus,
                                        const can_frame_t *tx,
                                        uint8_t tx_burst,
@@ -568,6 +587,9 @@ static bool damiao_probe_listen_window(can_bus_id_t bus,
                                        uint16_t listen_ms,
                                        damiao_probe_result_t *out)
 {
+	can_frame_t mit_tx;
+	bool mit_ready = false;
+
 	for (uint16_t attempt = 0; attempt < listen_ms; attempt++) {
 		if (damiao_probe_is_one_shot_tx_kind(active_kind)) {
 			if (attempt == 0u) {
@@ -576,6 +598,18 @@ static bool damiao_probe_listen_window(can_bus_id_t bus,
 						out->tx_frames_sent++;
 				}
 				can_router_poll_bus(bus);
+			} else if (active_kind == DM_PROBE_ENABLE &&
+			           (attempt == 1u || (attempt % 4u) == 0u)) {
+				if (!mit_ready &&
+				    damiao_probe_send_mit_zero(bus, motor_id, &mit_tx))
+					mit_ready = true;
+				if (mit_ready) {
+					if (can_tx_enqueue(bus, &mit_tx) == CAN_OK) {
+						if (out->tx_frames_sent < 255u)
+							out->tx_frames_sent++;
+					}
+					can_router_poll_bus(bus);
+				}
 			}
 		} else if (attempt == 0u || (attempt % 4u) == 0u) {
 			for (uint8_t b = 0; b < tx_burst; b++) {
@@ -599,8 +633,11 @@ static bool damiao_probe_listen_window(can_bus_id_t bus,
 					return true;
 			}
 			if (damiao_try_parse_feedback(&rx, motor_id, master_id_filter,
-			                              promiscuous, out))
+			                              promiscuous, out)) {
+				if (active_kind == DM_PROBE_ENABLE && out->err != 1u)
+					continue;
 				return true;
+			}
 		}
 
 		plant_diag_yield_usb();
@@ -640,9 +677,16 @@ bool damiao_probe_id(can_bus_id_t bus,
 	out->probe_kind = probe_kind;
 	out->param_rid = param_rid;
 
+	/* Host master_id 0 = AUTO/unset on bench — accept feedback on any Master ID. */
+	if (master_id_filter == 0u)
+		master_id_filter = DM_MASTER_ID_ANY;
+
 	/* Param reads reply on Master ID — always listen promiscuously. */
 	if (damiao_probe_is_param_kind(probe_kind))
 		master_id_filter = DM_MASTER_ID_ANY;
+
+if (probe_kind == DM_PROBE_ENABLE && listen_ms < 40u)
+		listen_ms = 40u;
 
 	if (probe_kind == DM_PROBE_REG_SCAN) {
 		uint16_t reg_listen = (listen_ms < 20u) ? 20u : listen_ms;

@@ -8,6 +8,7 @@
 /* MCP2518 SPI-CAN rails (schematic CH4–CH6). Separate from FDCAN can_router loop. */
 
 void spi_can_router_init(void);
+bool spi_can_router_hw_ready(void);
 void spi_can_router_poll(void);
 void spi_can_router_poll_bus(can_bus_id_t bus);
 void spi_can_router_poll_bus_rx(can_bus_id_t bus);

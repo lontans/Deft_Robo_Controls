@@ -127,4 +127,8 @@ def describe_open_port(port: str) -> None:
 
 
 def open_serial(port: str, baud: int = DEFAULT_BAUD) -> serial.Serial:
-    return serial.Serial(port, baud, timeout=0.05)
+    ser = serial.Serial(port, baud, timeout=0.05)
+    # STM32 USB CDC: allow host to assert DTR (some drivers gate OUT until set).
+    ser.dtr = True
+    ser.rts = False
+    return ser

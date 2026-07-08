@@ -6,7 +6,7 @@
 #include "plant/plant_diag.h"
 #include "plant/plant_command.h"
 #include "host/host_link.h"
-#include "main.h"
+#include "plant/plant_crit.h"
 #include <string.h>
 
 #define ACTUATOR_HOST_STALE_MS 500u
@@ -34,21 +34,21 @@ void actuator_command_mount(const host_command_image_t *cmd)
 	if (cmd == NULL)
 		return;
 
-	__disable_irq();
+	plant_crit_enter();
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
 		actuator_desire_stage[i] = cmd->actuator_commands[i];
 	actuator_desire_pending = true;
-	__enable_irq();
+	plant_crit_exit();
 }
 
 void actuator_desire_clear(void)
 {
-	__disable_irq();
+	plant_crit_enter();
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
 		memset(&actuator_desire_live[i], 0, sizeof(actuator_desire_t));
 	memset(actuator_desire_stage, 0, sizeof(actuator_desire_stage));
 	actuator_desire_pending = false;
-	__enable_irq();
+	plant_crit_exit();
 }
 
 void plant_recovery_all(void)
@@ -79,13 +79,13 @@ void plant_recovery_all(void)
 
 void actuator_apply_desire(void)
 {
-	__disable_irq();
+	plant_crit_enter();
 	if (actuator_desire_pending) {
 		for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
 			actuator_desire_live[i] = actuator_desire_stage[i];
 		actuator_desire_pending = false;
 	}
-	__enable_irq();
+	plant_crit_exit();
 
 	if (plant_diag_skip_actuator_can())
 		return;
@@ -139,10 +139,10 @@ void actuator_apply_desire(void)
 
 void actuator_capture_state(void)
 {
-	__disable_irq();
+	plant_crit_enter();
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
 		actuator_state_stage[i] = actuator_state_live[i];
-	__enable_irq();
+	plant_crit_exit();
 }
 
 void actuator_feedback_snapshot(host_actuator_feedback_t *dst, uint8_t count)
@@ -152,10 +152,10 @@ void actuator_feedback_snapshot(host_actuator_feedback_t *dst, uint8_t count)
 
 	uint8_t n = (count < ACTUATOR_COUNT) ? count : ACTUATOR_COUNT;
 
-	__disable_irq();
+	plant_crit_enter();
 	for (uint8_t i = 0; i < n; i++)
 		dst[i] = actuator_state_stage[i];
-	__enable_irq();
+	plant_crit_exit();
 
 	for (uint8_t i = n; i < count; i++)
 		memset(&dst[i], 0, sizeof(dst[i]));

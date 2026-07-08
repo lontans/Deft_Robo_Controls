@@ -1,0 +1,488 @@
+RTOS BRINGUP REGRESSION — HANDOFF TO CURSOR (ROUND 6 — HOST LINK RESTORED)
+==========================================================================
+Date: 2026-07-07 (continued)
+
+ROUND 6 (CURSOR) — root cause for rx_bytes=0 + fix; USB/DM path verified:
+  Symptom: PC2 solid (USB enum), PC3 ~1 Hz (TIM6), but host saw rx_bytes=0 /
+  frames=0 on link-test and damiao_scan --link-test. Heartbeat + enum proved
+  MCU alive; host protocol dead.
+
+  Root cause: app_init() blocked in can_router_init() → mcp2518_init_all() for
+  seconds before while(1) app_run() could run host_link_poll_tx(). USB came up
+  during MX_USB_Device_Init() in main(), but the superloop never sent 562 B
+  feedback.
+
+  Fixes (uncommitted working tree):
+    1. Removed can_router_init() from app_init(); lazy-init on first app_run()
+       after host_link_poll_tx().
+    2. Split MCP2518 bring-up: FDCAN init is fast; SPI rails init one rail per
+       spi_can_router_hw_step() poll so the superloop never blocks on full
+       mcp2518_init_all().
+    3. plant_crit.h: __disable_irq() critical sections in actuator/servo when
+       USE_FREERTOS_SCHEDULER==0 (not taskENTER_CRITICAL without scheduler).
+    4. PC1 slow toggle (~0.5 Hz) in app_run() = superloop alive (after main
+       drops PC1 LOW post-app_init).
+
+  USER-CONFIRMED AFTER REFLASH (same hardware, COM5):
+    python scripts/damiao_scan.py --port COM5 --link-test
+      → 25 unsolicited frames/s, DM firmware marker D1, DIAG ping acks,
+        DM session begin OK (probe_kind=254 found=True)
+    python scripts/controls_pcb_host.py --port COM5 link-test
+      → OK (unsolicited) tick=2863 mcu_state=2
+
+  OPEN: enable verify on slot-2 Damiao
+    python scripts/controls_pcb_host.py --port COM5 probe --slot 2 --enable --hold-ms 3000
+      → FOUND enable probe but "Enable verify failed (ERR nibble != 1)" (err=0).
+    Not an RTOS regression per se: enable probe returned on first MIT feedback
+    with ERR=0 (disabled). Motor reports ERR=1 only after enable + MIT stream
+    (same as damiao_scan.py verify path). Round 6 also patched:
+      - Firmware: ENABLE probe sends follow-up MIT zeros; keeps listening until
+        ERR=1; host master_id 0 → accept any Master ID (bench AUTO).
+      - Host: send_probe uses DM_MASTER_ANY; enable_and_hold verifies via MIT
+        probe (not enable response err nibble); probe --enable --hold-ms no
+        longer double-runs enable.
+
+  LED reference (round 6):
+    PC1 HIGH → past MX_USB_Device_Init; LOW → past app_init; then ~0.5 Hz =
+      app_run() spinning
+    PC2 solid = CDC_Init_FS (USB enumerated)
+    PC3 ~1 Hz = TIM6 control_loop_tick
+    CAN CH1–6 solid = can_router_init() done (FDCAN; MCP2518 may still step in)
+
+  Next after reflash: re-run probe --slot 2 --enable --hold-ms 3000; expect
+  ERR=0x1 and MIT hold. Then re-enable USE_FREERTOS_SCHEDULER=1 and fix task
+  bootstrap separately (host link now proven on bare-metal superloop).
+
+ROUND 5 (CURSOR) — root cause + fix for solid HB + Code 43:
+  RTOS did NOT inherently break pre-scheduler paths. CubeMX/FreeRTOS migration
+  changed two things that 14eb426 did not have:
+    (1) NVIC priorities for TIM6 + USB_LP dropped 0 -> 6 so USB could no
+        longer preempt the long blocking MCP2518 SPI path in app_init() while
+        Windows was reading descriptors (Code 43 + connect chime).
+    (2) control_loop_tick() was wired to vTaskNotifyGiveFromISR(), which
+        forced TIM6 to priority 6+ and pulled FreeRTOS into the ISR even
+        though the heartbeat is just a GPIO toggle.
+  Fix: restore 14eb426 control_loop (ISR sets pending flag + toggles PC3,
+  no FreeRTOS in ISR), ControlTask calls control_loop_service(), TIM6 and
+  USB_LP NVIC priority back to 0 in tim.c / usbd_conf.c.
+
+ROUND 4 (CURSOR) — on top of Section 0 below:
+  1. Restored exact 14eb426 init order: MX_USB_Device_Init() now runs BEFORE
+     app_init() again (was reversed in round 3). MCP2518 blocking no longer
+     precedes USB start.
+  2. HAL_SuspendTick() before osKernelStart(); HAL_ResumeTick() in
+     StartDefaultTask (ST TIM7-HAL + FreeRTOS pattern).
+  3. PC1 milestone LED: HIGH after USB init returns, LOW after app_init
+     returns. Stuck HIGH = hung in app_init; stuck LOW + no COM = hung after
+     app_init (FREERTOS/USB post-init).
+  4. control_loop_tick(): removed xTaskGetSchedulerState() from TIM6 ISR
+     (not ISR-safe); g_control_notify_enabled set true only from ControlTask
+     entry after scheduler is running.
+
+This section is a delta on top of everything below it (Cursor's "ROUND 2"
+handoff, still intact for history/reference). Read this section first.
+
+
+================================================================================
+0. WHAT CHANGED THIS ROUND (CLAUDE)
+================================================================================
+
+Two changes, both reasoned from first principles, not from more ST-doc
+reading:
+
+1. App/Inc/host/uart4_mode.h
+   UART4_MODE: UART4_MODE_DAMIAO_BRIDGE -> UART4_MODE_TELEM
+
+   Context: UART4_MODE_DAMIAO_BRIDGE was added in the very last commit before
+   RTOS work started (14eb426, "damiao dmj4310 enable working"). It
+   reconfigures UART4 to 921600-8N1 and arms a self-re-arming 1-byte
+   interrupt-driven RX (HAL_UART_Receive_IT) from host_uart_bridge_init(),
+   called unconditionally from app_init(). This has been active on every
+   boot since before RTOS work began, regardless of whether the physical
+   Damiao debug UART is actually connected on the bench right now. If it
+   isn't, a floating RX line at that baud can pick up noise as spurious
+   start bits and fire continuously at NVIC priority 6 -- more urgent than
+   SVCall/PendSV (priority 15), which FreeRTOS's one-time first-task handoff
+   depends on. Flipped back to TELEM (inert unless HOST_TRANSPORT_UART is
+   also set) to remove this variable while debugging the scheduler.
+
+2. Decoupled USB init and the heartbeat/TIM6 start from the scheduler
+   entirely, moving both back into main() unconditionally, matching the
+   pre-RTOS baseline (14eb426) ordering exactly:
+
+   Core/Src/main.c:
+     MX_TIM6_Init();
+     control_loop_start();      // moved here, was inside ControlTask
+     ...
+     app_init();
+     MX_USB_Device_Init();      // moved here, was inside StartDefaultTask
+     ...
+     MX_FREERTOS_Init();
+     osKernelStart();
+
+   Core/Src/app_freertos.c:
+     ControlTask and StartDefaultTask no longer call control_loop_start()/
+     MX_USB_Device_Init() themselves -- those already ran before either task
+     exists.
+
+   App/Src/plant/control_loop.c:
+     control_loop_tick() (TIM6 ISR) now guards the vTaskNotifyGiveFromISR/
+     portYIELD_FROM_ISR call with BOTH g_control_task_handle != NULL AND
+     xTaskGetSchedulerState() == taskSCHEDULER_RUNNING -- same pattern
+     already used in stm32g4xx_it.c's SysTick_Handler. Necessary because
+     TIM6 now starts long before the scheduler exists; without this guard
+     there's a narrow window (after MX_FREERTOS_Init() sets the task handle,
+     before osKernelStart() actually runs the first task) where a tick
+     could call portYIELD_FROM_ISR before the scheduler has bootstrapped.
+
+   Rationale (for whoever picks this up next): nothing about FreeRTOS
+   requires USB init or the heartbeat to live inside a task body. That
+   coupling was a convention (matching ST's own StartDefaultTask examples),
+   not a requirement. The only thing that actually needs scheduler
+   preemption is the per-tick actuator/servo work in ControlTask and the
+   host-link polling in HostLinkTask (so a blocking diagnostic probe can't
+   stall actuator control) -- USB enumeration and the heartbeat blink have
+   no inherent dependency on the scheduler ever successfully starting.
+   Decoupling them means a scheduler-bootstrap failure no longer takes down
+   USB/heartbeat with it, which also makes the next symptom much more
+   informative than it would have been otherwise.
+
+
+================================================================================
+1. RESULT AFTER REFLASH (USER-CONFIRMED)
+================================================================================
+
+  PC3 (heartbeat):  SOLID ON. Not toggling.
+  PC2 (USB enum):   OFF. No COM port, no Code 43, no connect sound reported.
+
+Change from the immediately preceding state (both LEDs fully dark): PC3 now
+reaches its SET state, which only happens inside control_loop_start() --
+meaning main() now provably executes at least as far as MX_TIM6_Init() +
+control_loop_start(), i.e. past the boot pulses and into the peripheral
+init sequence. That is genuine forward progress and is NOT nothing.
+
+Do not over-read this as confirming the UART4 fix specifically -- multiple
+things changed at once this round (UART4 mode AND the init-ordering
+decoupling). It's possible either change alone would have produced this
+same result, or that both were needed. Not yet isolated. If you want to
+isolate it, the fastest way is to flip UART4_MODE back to
+UART4_MODE_DAMIAO_BRIDGE with the init-ordering change still in place, and
+see if the symptom regresses -- or vice versa.
+
+
+================================================================================
+2. WHAT THIS DOES AND DOES NOT RULE OUT
+================================================================================
+
+RULED OUT (fairly high confidence):
+  - "USB coupled to scheduler bootstrap" as the sole/primary explanation.
+    MX_USB_Device_Init() now runs in main(), before MX_FREERTOS_Init() or
+    osKernelStart() exist at all -- in the exact same execution context as
+    the working pre-RTOS baseline. It still doesn't enumerate. Whatever is
+    wrong with USB is not simply "it's stuck inside a task that never
+    runs" anymore, because it isn't in a task anymore.
+
+NOT RULED OUT -- genuinely open, listed without ranking to avoid
+pigeonholing before there's real evidence:
+
+  (a) A hang or crash still happens somewhere between control_loop_start()
+      and MX_USB_Device_Init() -- i.e. inside app_init(). CAN bus start,
+      MCP2518 SPI/EXTI init, mutex creation, host_link_init all happen here.
+      TIM6 fires via hardware interrupt independent of what main() is doing,
+      AS LONG AS interrupts stay globally enabled -- so if app_init() were
+      merely slow (blocking on retries), PC3 should still be toggling by
+      now. That it's fully solid suggests either interrupts got globally
+      masked at some point, or not enough wall-clock time has passed yet.
+      UNCONFIRMED: how long was the board powered before this was checked?
+      500ms is one heartbeat half-period; if it was checked within under a
+      second of power-up this may just be "hasn't ticked yet," not "will
+      never tick."
+
+  (b) A hang or crash between app_init() returning and MX_USB_Device_Init()
+      actually completing (i.e. inside MX_USB_Device_Init() itself, or the
+      HAL/USBD stack it calls into).
+
+  (c) A configASSERT trip somewhere in MX_FREERTOS_Init() / osKernelStart().
+      configASSERT is currently: `taskDISABLE_INTERRUPTS(); for(;;);` -- a
+      totally silent infinite loop with interrupts masked and NO LED
+      activity of any kind (not Error_Handler's blink, not HardFault's
+      blink -- literally nothing). This would explain PC3 freezing at
+      whatever state it was last in (SET, matching what's observed) and
+      TIM6 going silent (interrupts masked), simultaneously. This is
+      consistent with the data but NOT confirmed -- there is no direct
+      evidence it's an assert specifically versus (a) or (b) above just
+      not having had enough time, or some other silent loop.
+
+  (d) Something MCP2518-EXTI-related (priority 6, enabled during
+      app_init(), same general shape of concern as the UART4 issue but not
+      yet checked with the same scrutiny -- edge-triggered so a genuine
+      storm is less likely than UART4's case was, but not ruled out).
+
+  (e) Plain hardware/wiring explanation for USB specifically (cable, port,
+      connector) -- included only for completeness. Given the user's
+      correct pushback that nothing else in the environment changed except
+      firmware, this should be treated as low-probability and not
+      investigated before (a)-(d), but it costs nothing to swap the cable
+      once while debugging something else.
+
+
+================================================================================
+3. RECOMMENDED NEXT STEPS (NOT PRESCRIPTIVE -- PICK BASED ON WHAT'S FASTEST
+   WITH THE TOOLS ON HAND)
+================================================================================
+
+  1. Simplest first: power the board and wait a clear 2-3 seconds before
+     concluding PC3 "never" toggles. Rules out (a)'s "not enough time yet"
+     reading in about ten seconds of effort.
+
+  2. If a debugger is attached (this is a CubeIDE project, so it should
+     be): breakpoint at the start of app_init(), at the MX_USB_Device_Init()
+     call site in main(), at the end of MX_FREERTOS_Init(), and at
+     osKernelStart(). Whichever breakpoint is the LAST one hit tells you
+     exactly which of (a)/(b)/(c) it is, directly, no more inference needed.
+
+  3. If no debugger session is convenient: configASSERT can be made visible
+     for this bring-up without changing its semantics --
+     `#define configASSERT(x) if((x)==0){taskDISABLE_INTERRUPTS(); HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET); for(;;);}`
+     (PC1 per the LED reference table below, currently unused) turns a
+     silent assert into a distinguishable, permanent PC1-high signal. Purely
+     diagnostic, trivially reverted.
+
+  4. Once (a)/(b)/(c) is isolated to a specific function, that function
+     gets the actual fix -- no need to guess further once step 2 or 3
+     narrows it down.
+
+Do not spend more time re-reading FreeRTOS/CMSIS-RTOS source or ST
+documentation before doing one of the above. Everything checked against the
+datasheet and the actual FreeRTOS port source this session (NVIC priority
+values, SVC/PendSV/SysTick macro wiring, mutex-before-scheduler safety,
+CMSIS osThreadCreate static/dynamic branch, osKernelStart's implementation)
+came back correct. The remaining bug is very likely only visible at
+runtime now, not from more source comparison.
+
+
+================================================================================
+4. LED / PIN REFERENCE (unchanged, repeated for convenience)
+================================================================================
+
+  PC1 — bring-up milestone (round 4): HIGH = MX_USB_Device_Init() returned;
+        LOW = app_init() returned; then ~0.5 Hz toggle = app_run() alive (round 6)
+  PC2 — boot pulses (main); solid ON = CDC_Init_FS (USB enumerated)
+  PC3 — heartbeat ~1 Hz toggle from control_loop_tick (TIM6 ISR)
+  CAN CH1–6 activity LEDs — solid after can_router_init (idle high)
+
+  Pattern after boot:
+    PC2+PC3 both OFF        -> nothing past boot pulses reached, or interrupts
+                                masked before control_loop_start()
+    PC3 solid, no toggle    -> control_loop_start() ran (GPIO write only);
+                                TIM6 ISR not accumulating ticks, or not
+                                enough time elapsed, or a later silent hang
+                                masked interrupts afterward  <- CURRENT STATE
+    PC3 ~1 Hz toggle        -> TIM6 ISR genuinely running
+    PC2 solid               -> USB enum OK (CDC_Init_FS reached)
+    PC2+PC3 slow alt blink  -> Error_Handler()
+    PC2+PC3 fast alt blink  -> HardFault_Handler()
+
+
+================================================================================
+END OF ROUND 3 UPDATE — ORIGINAL ROUND 2 HANDOFF (CURSOR) FOLLOWS BELOW
+================================================================================
+
+
+RTOS BRINGUP REGRESSION — HANDOFF TO CLAUDE (UPDATED)
+======================================================
+Date: 2026-07-07
+Repo: DeftRoboticsControlsPCB (STM32G474RET6)
+Reference doc: External_Documentation/STM32/STM32 RTOS Documentation.pdf (UM1722)
+Cube package: STM32Cube FW_G4 V1.6.3
+CMSIS-RTOS: v1 (cmsis_os.c), NOT CMSIS-RTOS v2
+
+
+================================================================================
+1. WHAT WORKS vs WHAT IS BROKEN (LATEST FLASH — USER CONFIRMED)
+================================================================================
+
+WORKS (pre-scheduler, bare metal path):
+  - 3x PC2 boot flashes in main.c (GPIO + early main alive)
+  - app_init() completes: CAN activity LEDs CH1–6 go solid ON
+    (set in can_router_init() at end of app_init — NOT proof scheduler runs)
+  - MCP2518 / FDCAN init does not hang hard enough to hit Error_Handler blink
+
+BROKEN (requires scheduler + TIM6 + USB):
+  - PC3 heartbeat: NO toggle, stays OFF (latest builds)
+    Earlier build had PC3 SOLID (GPIO set in control_loop_start but TIM6 never toggled)
+  - PC2 USB enum LED: OFF (CDC_Init_FS in usbd_cdc_if.c never runs)
+  - Windows: NO connect sound, NO COM port (latest)
+    Earlier builds: connect sound + Code 43 (descriptor failed) when USB was in main before app_init
+
+INTERPRETATION:
+  The MCU runs through app_init() but osKernelStart() either:
+    (a) never hands execution to tasks, or
+    (b) tasks start but TIM6/USB never come up, or
+    (c) configASSERT / fault with IRQs disabled and no visible blink
+
+  User reports NO PC2+PC3 alternating blink after boot flashes → NOT in Error_Handler
+  loop as currently wired (would toggle both). Suggests silent hang OR scheduler
+  never reaches task bodies OR TIM6/USB init never called.
+
+
+================================================================================
+2. KNOWN-GOOD BASELINES (GIT — USE FOR COMPARISON)
+================================================================================
+
+c54ff13 "pcb enumerates, TX fires high..." — PRE-RTOS, WORKING:
+  - NO FreeRTOS
+  - main order: GPIO → clock → TIM6 → control_loop_start() → FDCAN/SPI/UART/USB → app_init()
+  - while(1) { app_run(); }
+  - control_loop_tick() sets pending flag; app_run() calls control_loop_service()
+  - USB: MX_USB_Device_Init() in main with peripherals BEFORE app_init()
+  - Heartbeat: TIM6 ISR toggles PC3 directly (no task notify)
+  - COM port worked
+
+cfecd2e "mid-migration state commit before more aggressive changes" — RTOS PHASE 0, KERNEL BOOT INTENT:
+  - FreeRTOS via CMSIS-RTOS v1
+  - main: peripherals → app_init() → MX_FREERTOS_Init() → osKernelStart()
+  - NO USB in main
+  - StartDefaultTask: MX_USB_Device_Init() first line, then while(1) app_run()
+  - Single defaultTask, osThreadDef stack 128 words (very small!)
+  - FreeRTOSConfig: xPortSysTickHandler SysTick_Handler macro ENABLED
+  - configENABLE_FPU = 0, heap 16 KB, dynamic allocation only
+  - control_loop still bare-metal style (no separate ControlTask yet)
+  - User goal was prove kernel boots without changing runtime behavior
+
+Claude Phase 2 (before Cursor debug) — SPLIT TASKS, REGRESSION:
+  - ControlTask (priority 4): TIM6 notify → actuator/servo
+  - HostLinkTask (priority 2): app_run()
+  - USB moved into MX_FREERTOS_Init or task — enumeration lost
+  - Heartbeat lost
+
+  NOTE (Claude, round 3): 14eb42643dee998e245d1fe815acfdd1ada14781 is the
+  actual last pre-RTOS commit ("damiao dmj4310 enable working, last commit
+  before implementing rtos") -- one commit before cfecd2e. Full diff against
+  it was done this round; every file's delta (main.c, stm32g4xx_it.c,
+  control_loop.c/h, tim.c/usart.c/usbd_conf.c, the .ioc) came back clean and
+  minimal, matching the standard CubeMX+FreeRTOS pattern. Worth knowing so
+  the next person doesn't redo that same comparison from scratch expecting
+  to find bloat -- there isn't any in those files specifically.
+
+
+================================================================================
+3. CURRENT CODE STATE — SUPERSEDED BY SECTION 0 ABOVE FOR main.c / app_freertos.c
+   / control_loop.c / uart4_mode.h. Everything else below (FreeRTOSConfig.h,
+   stm32g4xx_it.c, NVIC table, can_router.c/spi_can_port.c mutexes,
+   actuator.c/servo.c critical sections) is UNCHANGED this round and still
+   accurate.
+================================================================================
+
+control_loop.c:
+  - control_loop_tick() in TIM6 ISR (main.c HAL_TIM_PeriodElapsedCallback)
+  - Toggles PC3 every 250 ticks (~1 Hz at 2 ms period)
+  - vTaskNotifyGiveFromISR(g_control_task_handle) from ISR, now additionally
+    gated on xTaskGetSchedulerState() == taskSCHEDULER_RUNNING (see Section 0)
+
+FreeRTOSConfig.h:
+  - configENABLE_FPU = 1 (confirmed inert for the ARM_CM4F/GCC port -- not
+    referenced anywhere in that port's source; only matters for ARM_CM23/33)
+  - configTOTAL_HEAP_SIZE = 24 * 1024
+  - configSUPPORT_STATIC_ALLOCATION = 0 (dynamic only) -- confirmed consistent
+    with cmsis_os.c's osThreadCreate, which correctly branches to xTaskCreate
+    (not xTaskCreateStatic) when static allocation is off
+  - configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY = 5 -- CONFIRMED against
+    UM1722's own reference FreeRTOSConfig.h (Figure 4, page 13): this is
+    ST's literal example value. Not borderline. Settled, do not re-litigate.
+  - configASSERT → taskDISABLE_INTERRUPTS(); for(;;); (silent, no LED --
+    see Section 3.3 above for a diagnostic-only visible variant)
+  - vPortSVCHandler / xPortPendSVHandler macros → SVC_Handler / PendSV_Handler
+    (confirmed correct direction: this renames port.c's functions TO the
+    CMSIS names via preprocessor substitution, not the other way around)
+  - xPortSysTickHandler SysTick_Handler macro COMMENTED OUT (TIM7 HAL pattern)
+    -- correct per UM1722 page 13's explicit note ("MUST be commented when
+    used with STM32Cube firmware to prevent overwriting SysTick_Handler
+    defined within STM32Cube HAL"); our case additionally needs FreeRTOS to
+    own SysTick since HAL's tick lives on TIM7, hence the explicit guarded
+    call in stm32g4xx_it.c
+
+stm32g4xx_it.c:
+  - SVC_Handler / PendSV_Handler correctly ABSENT (removing them is UM1722's
+    explicit instruction, page 13 note, to avoid duplicate definition with
+    port.c's macro-renamed functions) -- confirmed no duplicates anywhere in
+    the project tree or the CMSIS_RTOS wrapper via grep
+  - SysTick_Handler() calls xPortSysTickHandler() only if scheduler running
+  - EXTI handlers for MCP2518 INT lines — mcp2518_isr_rx_pending() confirmed
+    to only set a flag, no blocking/RTOS calls from real ISR context
+
+NVIC (current, all three at priority 6 -- equal, not strictly TIM6 > USB/UART
+as originally designed, but all individually valid: configMAX_SYSCALL_
+INTERRUPT_PRIORITY=5 means any value >=5 is safe for FromISR calls):
+  TIM6_DAC_IRQn   6
+  UART4_IRQn      6
+  USB_LP_IRQn     6
+  EXTI (MCP2518)  6
+  TIM7_DAC_IRQn   15
+  SysTick/PendSV  15 (kernel-owned, set by port.c internally)
+
+can_router.c / spi_can_port.c:
+  - Per-bus FreeRTOS mutexes (FDCAN CH1-3 independent, one each; CH4-6 share
+    one SPI1 mutex replacing the old __disable_irq() busy-wait spinlock that
+    was a real deadlock hazard under preemption). Created in app_init(),
+    before the scheduler exists -- confirmed safe (FreeRTOS objects can be
+    created pre-scheduler-start; only blocking Takes with the scheduler not
+    running would be questionable, and none happen at creation time).
+
+actuator.c / servo.c:
+  - All critical sections (including actuator_capture_state() and
+    actuator_feedback_snapshot(), missed in an earlier pass and caught by
+    Cursor) now use taskENTER_CRITICAL()/taskEXIT_CRITICAL() consistently.
+
+
+================================================================================
+FILES MODIFIED DURING RTOS BRINGUP (CARE WITH CUBEMX REGEN)
+================================================================================
+
+  Core/Inc/FreeRTOSConfig.h
+  Core/Src/stm32g4xx_it.c
+  Core/Src/main.c
+  Core/Src/app_freertos.c
+  Core/Src/tim.c
+  Core/Src/usart.c
+  USB_Device/Target/usbd_conf.c
+  App/Src/plant/control_loop.c
+  App/Inc/plant/control_loop.h
+  App/Src/plant/can/can_router.c
+  App/Inc/plant/can/can_router.h
+  App/Src/plant/can/spi_can_port.c
+  App/Src/plant/actuator.c
+  App/Src/plant/servo.c
+  App/Src/plant/plugins/damiao.c
+  App/Inc/plant/plant_crit.h
+  App/Src/app.c
+  scripts/controls_pcb_host/plugins/damiao.py
+  scripts/controls_pcb_host/cli/main.py
+
+  NOT modified: usbd_cdc_if.c (PC2 solid on CDC_Init_FS still the enum signal)
+
+
+================================================================================
+ARCHITECTURE INTENT (STILL VALID ONCE BRINGUP WORKS)
+================================================================================
+
+  ControlTask: TIM6 ISR -> vTaskNotifyGiveFromISR -> actuator_apply_desire,
+               actuator_capture_state, servo (taskENTER_CRITICAL in plant code)
+
+  StartDefaultTask/HostLink: host_link_poll, plant_diag, led_service — app_run()
+
+  USB init and control_loop_start() (heartbeat/TIM6 arm) run unconditionally
+  from main(), BEFORE the scheduler exists -- deliberately decoupled, see
+  Section 0. Only the per-tick/per-loop WORK inside the tasks depends on the
+  scheduler; initialization does not.
+
+  Plant modules in App/Src/plant/ are largely RTOS-agnostic; breakage is in
+  init order / IRQ / scheduler glue, not actuator protocol logic.
+
+  host_link_command_is_fresh() gates 500 Hz CAN TX — no host = no CAN traffic
+  even if control loop runs.
+
+
+================================================================================
+END OF HANDOFF
+================================================================================

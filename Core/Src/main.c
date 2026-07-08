@@ -23,7 +23,6 @@
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
-#include "usb_device.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -45,6 +44,9 @@
 #define CPU_BOOT_PULSE_DELAY_LOOPS   4000000u   /* ~visible flash @ 170 MHz PLL */
 #define CPU_ACTIVITY_DELAY_LOOPS     4000000u   /* Error_Handler blink period */
 #define CPU_ACTIVITY_BOOT_PULSES     3u
+/* Bring-up milestone on PC1 (unused LED): HIGH = past USB init, LOW = past app_init. */
+#define BRINGUP_DIAG_PORT            GPIOC
+#define BRINGUP_DIAG_PIN             GPIO_PIN_1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -89,6 +91,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
 	if (htim->Instance == TIM6)
 		control_loop_tick();
+	else if (htim->Instance == TIM7)
+		HAL_IncTick();
 }
 
 /* USER CODE END 0 */
@@ -122,6 +126,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  cpu_activity_boot_pulses();
+
   MX_FDCAN1_Init();
   MX_FDCAN2_Init();
   MX_FDCAN3_Init();
@@ -130,19 +136,24 @@ int main(void)
   MX_UART5_Init();
   MX_SPI3_Init();
   MX_TIM6_Init();
+  control_loop_start();
+
+  /* Match pre-RTOS baseline (14eb426): enumerate USB before blocking app_init(). */
+  MX_USB_Device_Init();
+  HAL_GPIO_WritePin(BRINGUP_DIAG_PORT, BRINGUP_DIAG_PIN, GPIO_PIN_SET);
+
   /* USER CODE BEGIN 2 */
-
   app_init();
-
   /* USER CODE END 2 */
 
-  /* Call init function for freertos objects (in cmsis_os2.c) */
+  HAL_GPIO_WritePin(BRINGUP_DIAG_PORT, BRINGUP_DIAG_PIN, GPIO_PIN_RESET);
+
+#if USE_FREERTOS_SCHEDULER
   MX_FREERTOS_Init();
-
-  /* Start scheduler */
+  HAL_SuspendTick();
   osKernelStart();
-
-  /* We should never get here as control is now taken by the scheduler */
+  /* not reached */
+#endif
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -151,10 +162,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* Unreachable: app_run() now runs from StartDefaultTask (app_freertos.c)
-     * under the scheduler. Left empty rather than deleted so CubeMX's WHILE
-     * markers stay intact across regeneration. */
-  /* USER CODE END 3 */
+    app_run();
+    /* USER CODE END 3 */
   }
 }
 
@@ -208,27 +217,11 @@ void SystemClock_Config(void)
 
 /* USER CODE END 4 */
 
-/**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM7 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  /* USER CODE BEGIN Callback 0 */
-
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM7)
-  {
-    HAL_IncTick();
-  }
-  /* USER CODE BEGIN Callback 1 */
-
-  /* USER CODE END Callback 1 */
-}
+/* NOTE: CubeMX's own HAL_TIM_PeriodElapsedCallback (TIM7 -> HAL_IncTick) used
+ * to be generated here. Merged into the hand-written TIM6 callback above
+ * (USER CODE 0 block) since C doesn't allow two definitions of the same
+ * function -- a future full CubeMX regeneration will re-emit this block and
+ * cause the same redefinition error again; re-merge it the same way. */
 
 /**
   * @brief  This function is executed in case of error occurrence.

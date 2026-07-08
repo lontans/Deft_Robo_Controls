@@ -1,7 +1,7 @@
 #include "plant/servo.h"
 #include "plant/plant_diag.h"
 #include "host/host_link.h"
-#include "main.h"
+#include "plant/plant_crit.h"
 #include <string.h>
 
 static servo_desire_t servo_desire_stage[SERVO_COUNT];
@@ -257,7 +257,7 @@ void servo_command_mount(const host_command_image_t *cmd)
 	if (cmd == NULL)
 		return;
 
-	__disable_irq();
+	plant_crit_enter();
 	for (uint8_t i = 0; i < SERVO_COUNT; i++) {
 		if (cmd->servos[i].servo_id != 0u) {
 			servo_desire_stage[i] = cmd->servos[i];
@@ -266,7 +266,7 @@ void servo_command_mount(const host_command_image_t *cmd)
 	}
 	g_servo_host_session = any;
 	servo_desire_pending = true;
-	__enable_irq();
+	plant_crit_exit();
 }
 
 bool servo_host_session_active(void)
@@ -276,35 +276,35 @@ bool servo_host_session_active(void)
 
 void servo_desire_clear(void)
 {
-	__disable_irq();
+	plant_crit_enter();
 	for (uint8_t i = 0; i < SERVO_COUNT; i++)
 		memset(&servo_desire_live[i], 0, sizeof(servo_desire_t));
 	memset(servo_desire_stage, 0, sizeof(servo_desire_stage));
 	servo_desire_pending = false;
 	g_servo_host_session = false;
 	servo_bus_reset();
-	__enable_irq();
+	plant_crit_exit();
 }
 
 void servo_apply_desire(void)
 {
-	__disable_irq();
+	plant_crit_enter();
 	if (servo_desire_pending) {
 		for (uint8_t i = 0; i < SERVO_COUNT; i++)
 			servo_desire_live[i] = servo_desire_stage[i];
 		servo_desire_pending = false;
 	}
-	__enable_irq();
+	plant_crit_exit();
 }
 
 void servo_capture_state(void)
 {
 	servo_bus_service();
 
-	__disable_irq();
+	plant_crit_enter();
 	for (uint8_t i = 0; i < SERVO_COUNT; i++)
 		servo_state_stage[i] = servo_state_live[i];
-	__enable_irq();
+	plant_crit_exit();
 }
 
 void servo_feedback_snapshot(host_servo_feedback_t *dst, uint8_t count)
@@ -314,10 +314,10 @@ void servo_feedback_snapshot(host_servo_feedback_t *dst, uint8_t count)
 
 	uint8_t n = (count < SERVO_COUNT) ? count : SERVO_COUNT;
 
-	__disable_irq();
+	plant_crit_enter();
 	for (uint8_t i = 0; i < n; i++)
 		dst[i] = servo_state_stage[i];
-	__enable_irq();
+	plant_crit_exit();
 
 	for (uint8_t i = n; i < count; i++)
 		memset(&dst[i], 0, sizeof(dst[i]));
