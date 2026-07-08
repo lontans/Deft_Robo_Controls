@@ -76,7 +76,7 @@ def format_probe_line(resp: dict) -> str:
     return (
         f"probe_id=0x{resp['probe_id']:02X}  kind={resp.get('probe_kind')}  "
         f"found={found}  comm={resp.get('comm_mode')}  "
-        f"pos={resp.get('position', 0):+.4f}"
+        f"pos={resp.get('position', 0):+.4f}  raw={resp.get('raw_frames', 0)}"
     )
 
 
@@ -119,7 +119,9 @@ def probe_id(
     with session.rx_pump():
         session.rs2_session_begin(bus)
         try:
-            resp = send_diag(session, motor_id, kind, timeout_s, bus=bus)
+            resp = send_diag(
+                session, motor_id, kind, timeout_s, bus=bus, kp=50.0, kd=1.0
+            )
             if resp is None:
                 print(f"MISS  id=0x{motor_id:02X}  kind={kind}")
             else:

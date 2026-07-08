@@ -1,3 +1,86 @@
+RTOS BRINGUP REGRESSION — HANDOFF (ROUND 7 — FDCAN EXT RX / RS02 PROBE)
+==========================================================================
+Date: 2026-07-07 (end of bench day)
+
+ROUND 7 — RS02 probe raw=0 on CH1 and CH2; TX works, RX path broken (UNRESOLVED):
+  Symptom (user, COM5, after reflash of uncommitted working tree):
+    link-test OK (unsolicited USB feedback)
+    probe --bus 2 --id 0x70  → found=0 raw=0 kind=0
+    probe --bus 1 --id 0x76  → found=0 raw=0
+    probe --bus 2 --id 0x72/0x75 → found=0 raw=0
+    teleop --slot 1: sync/homing "ok" but fb stuck ~-0.001 while cmd moves
+      (TX path alive — motor current 0.02→0.07 A on probe; RX not updating)
+    expert rs02 / rs02_can_scan deep probe: no USB feedback (legacy path;
+      use controls_pcb_host probe until fixed)
+
+  NOT CH2/FDCAN3-specific: CH1 (FDCAN1) probe also raw=0 → global FDCAN ext-RX
+  or probe/feedback path regression, not PA8 wiring alone.
+
+  plant_config.c fix (this session — was wrong since Damiao land):
+    Git history: slot 2 was CAN_BUS_CH2 RS02 0x73 from 9e9038d through 92f0077.
+    e4f47e2 repurposed slot 2 → CAN_BUS_CH3 Damiao; CH2 dropped from 500 Hz loop.
+    User bench motor is CH2 0x70. Fixed:
+      actuator_table[1] = CH2, 0x70  (slot 1 = second table entry)
+      actuator_table[2] = CH3 Damiao 0x06 unchanged
+    Host mirror: scripts/controls_pcb_host/actuator_config.py slot 1 → bus 2, 0x70
+
+  Fixes attempted (uncommitted working tree — user reflashed these):
+    can_router.c:
+      - EXT global filter: FDCAN_REJECT + FDCAN_ACCEPT_IN_RX_FIFO0 (match Damiao STD
+        permissive path; 14eb426 had REJECT+REJECT for ext)
+      - can_router_restart_fdcan(bus) on RS2 SESSION_BEGIN
+      - can_rx_drain() calls fdcan_poll_rx_one() before ring pop
+      - can_router_init() back in app_init() (spi_can_router_init is fast now)
+    fdcan.c: ExtFiltersNbr=1 experiment REVERTED (HAL has no RxFifo0ElmtsNbr in
+      this Cube HAL; may have disturbed Message RAM — back to all zeros)
+    plant_diag.c: zero actuator_commands[] → robstride probe defaults kp=50 kd=1
+    app.c: host_link_poll_tx() before plant_diag_service()
+
+  Compare to 14eb426 (last pre-RTOS, Damiao enable OK):
+    UNCHANGED in diff: robstride.c, fdcan.c, host_link.c
+    14eb426 already had per-bus std/ext filter split (e4f47e2): CH3 STD accept-all,
+      CH1/CH2 EXT reject-non-matching. If CH2 RS02 worked at 92f0077, it was with
+      slot 2 on CH2 in plant_config + same REJECT/REJECT ext filter — so filter
+      theory alone does not explain regression without a bisect on same hardware.
+    RTOS migration (9da4dc6) changed: app_run order, lazy can_router (now reverted),
+      plant_crit, can mutex scaffolding (no-op with USE_FREERTOS_SCHEDULER=0).
+
+  USER TEST COMMANDS (resume here):
+    python scripts/controls_pcb_host.py --port COM5 link-test
+    python scripts/controls_pcb_host.py --port COM5 probe --bus 1 --id 0x76
+    python scripts/controls_pcb_host.py --port COM5 probe --bus 2 --id 0x70
+    python scripts/controls_pcb_host.py --port COM5 teleop --slot 1
+      → pass = fb tracks cmd, not frozen at -0.001
+    python scripts/damiao_scan.py --port COM5 --probe-id 0x06 --bus 3 --mit-fallback
+      → confirm CH3 std RX still OK (regression check)
+
+  NEXT SESSION (priority order):
+    1. Flash 14eb426 on SAME bench harness; probe CH1 0x76 and CH2 0x70.
+       If 14eb426 raw>0 → bisect 14eb426..HEAD. If still raw=0 → hardware/session.
+    2. Scope: CH2 PA8 RX vs CH1 PB8 during probe (TX on PA15/PB9 confirmed by
+       motor current). PC6 should blink RX+TX when raw>0.
+    3. Add probe PDU debug: FDCAN RX FIFO fill + PSR bus-off nibble when raw=0.
+    4. If ext filter is root cause: verify ACCEPT_IN_RX_FIFO0 actually in flashed
+       image (git show HEAD:can_router.c still has REJECT+REJECT — fixes are
+       uncommitted; confirm build picked up working tree).
+    5. Do not use rs02_can_scan.py deep probe until controls_pcb_host probe raw>0.
+
+  Bus / peripheral map (host --bus N = schematic CHN):
+    bus 1 → CAN_BUS_CH1 → FDCAN1 PB8/PB9  LED PC7
+    bus 2 → CAN_BUS_CH2 → FDCAN3 PA8/PA15 LED PC6
+    bus 3 → CAN_BUS_CH3 → FDCAN2 PB12/PB13 LED PB15
+
+  Current actuator_table (after slot-1 fix):
+    slot 0: CH1 RS02 0x76
+    slot 1: CH2 RS02 0x70   ← bench motor
+    slot 2: CH3 Damiao 0x06
+    slot 3–5: CH4–6 MCP RS02 0x70
+
+  Scheduler: USE_FREERTOS_SCHEDULER=0 (bare-metal superloop). Re-enable RTOS only
+  after FDCAN ext RX + host probe path verified.
+
+---------------------------------------------------------------------------
+
 RTOS BRINGUP REGRESSION — HANDOFF TO CURSOR (ROUND 6 — HOST LINK RESTORED)
 ==========================================================================
 Date: 2026-07-07 (continued)
@@ -14,7 +97,7 @@ ROUND 6 (CURSOR) — root cause for rx_bytes=0 + fix; USB/DM path verified:
 
   Fixes (uncommitted working tree):
     1. Removed can_router_init() from app_init(); lazy-init on first app_run()
-       after host_link_poll_tx().
+       after host_link_poll_tx().  [ROUND 7: can_router_init() restored in app_init]
     2. Split MCP2518 bring-up: FDCAN init is fast; SPI rails init one rail per
        spi_can_router_hw_step() poll so the superloop never blocks on full
        mcp2518_init_all().
@@ -457,7 +540,8 @@ FILES MODIFIED DURING RTOS BRINGUP (CARE WITH CUBEMX REGEN)
   App/Inc/plant/plant_crit.h
   App/Src/app.c
   scripts/controls_pcb_host/plugins/damiao.py
-  scripts/controls_pcb_host/cli/main.py
+  App/Src/plant/plant_config.c
+  scripts/controls_pcb_host/actuator_config.py
 
   NOT modified: usbd_cdc_if.c (PC2 solid on CDC_Init_FS still the enum signal)
 

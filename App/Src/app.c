@@ -29,6 +29,7 @@ void app_init(void)
 
 	dynamixel_bus_init();
 
+	can_router_init();
 	host_link_init();
 	host_uart_bridge_init();
 
@@ -43,9 +44,6 @@ void app_run(void)
 	host_link_poll_rx();
 	/* TX before any blocking CAN/SPI work so host link stays alive during bring-up. */
 	host_link_poll_tx();
-
-	if (!can_router_is_ready())
-		can_router_init();
 
 #if !USE_FREERTOS_SCHEDULER
 	control_loop_service();

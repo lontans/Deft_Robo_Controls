@@ -21,9 +21,9 @@ void plant_config_init(void)
 	};
 
 	actuator_table[1] = (actuator_config_t){
-		.bus = CAN_BUS_CH1,
+		.bus = CAN_BUS_CH2,
 		.protocol = PROTO_ROBSTRIDE,
-		.motor_id = 0x74,
+		.motor_id = 0x70,
 		.enabled = true,
 	};
 

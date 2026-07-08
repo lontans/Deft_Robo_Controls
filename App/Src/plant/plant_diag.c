@@ -699,7 +699,12 @@ static void plant_diag_queue_probe(const host_command_image_t *cmd,
 	                          ((uint32_t)cmd->pdu.data[10] << 24);
 	if (rs2_probe_kind_needs_desire(kind)) {
 		g_rs2_pending_desire = cmd->actuator_commands[0];
-		g_rs2_pending_has_desire = true;
+		const actuator_desire_t *d = &cmd->actuator_commands[0];
+		/* Host bench frames often leave actuator_commands[] zero; use robstride
+		 * probe defaults (kp=50 kd=1) instead of a no-hold zero-gain ctrl. */
+		g_rs2_pending_has_desire =
+			!(d->position == 0.0f && d->velocity == 0.0f && d->kp == 0.0f &&
+			  d->kd == 0.0f && d->torque == 0.0f);
 	} else {
 		g_rs2_pending_has_desire = false;
 	}
@@ -733,6 +738,8 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 			g_rs2_motor_id = motor_id;
 		g_rs2_can_bus = bus;
 		can_router_discard_pending_tx();
+		if (bus < CAN_BUS_CH4)
+			can_router_restart_fdcan(bus);
 		for (uint8_t b = 0; b < (uint8_t)CAN_BUS_CH4; b++)
 			can_rx_drain((can_bus_id_t)b);
 		if (bus >= CAN_BUS_CH4) {

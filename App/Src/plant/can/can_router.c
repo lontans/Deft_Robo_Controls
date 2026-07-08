@@ -147,14 +147,32 @@ static void fdcan_bus_start(FDCAN_HandleTypeDef *h, fdcan_filter_mode_t mode)
 				FDCAN_FILTER_REMOTE) != HAL_OK)
 			Error_Handler();
 	} else {
+		/* Match STD path permissiveness: with Cube ExtFiltersNbr=0 the mask
+		 * filter is inert — REJECT non-matching ext drops every RobStride frame. */
 		if (HAL_FDCAN_ConfigGlobalFilter(h,
-				FDCAN_REJECT, FDCAN_REJECT,
+				FDCAN_REJECT, FDCAN_ACCEPT_IN_RX_FIFO0,
 				FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE) != HAL_OK)
 			Error_Handler();
 	}
 
 	if (HAL_FDCAN_Start(h) != HAL_OK)
 			Error_Handler();
+}
+
+static fdcan_filter_mode_t fdcan_mode_for_bus(can_bus_id_t bus)
+{
+	return (bus == CAN_BUS_CH3) ? FDCAN_FILTER_STD_ALL : FDCAN_FILTER_EXT_ALL;
+}
+
+void can_router_restart_fdcan(can_bus_id_t bus)
+{
+	if (bus >= CAN_FDCAN_COUNT)
+		return;
+
+	FDCAN_HandleTypeDef *h = bus_handle[bus];
+
+	(void)HAL_FDCAN_Stop(h);
+	fdcan_bus_start(h, fdcan_mode_for_bus(bus));
 }
 
 static void can_led_mark_traffic(can_bus_id_t bus)
@@ -360,6 +378,8 @@ can_status_t can_tx_flush(can_bus_id_t bus)
 	return status;
 }
 
+static void fdcan_poll_rx_one(can_bus_id_t bus);
+
 void can_rx_drain(can_bus_id_t bus)
 {
 	can_frame_t junk;
@@ -372,6 +392,8 @@ void can_rx_drain(can_bus_id_t bus)
 
 	if (bus >= CAN_FDCAN_COUNT)
 		return;
+
+	fdcan_poll_rx_one(bus);
 
 	while (can_rx_pop(bus, &junk) == CAN_OK)
 		;

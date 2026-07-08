@@ -17,6 +17,7 @@ typedef enum {
 
 void can_router_init(void);
 bool can_router_is_ready(void);
+void can_router_restart_fdcan(can_bus_id_t bus);
 void can_router_poll(void);
 void can_router_poll_bus(can_bus_id_t bus);
 void can_router_poll_bus_rx(can_bus_id_t bus);
