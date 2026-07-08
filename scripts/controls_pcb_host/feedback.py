@@ -32,6 +32,16 @@ PDU_TAG_NAMES = {
     "c": "config reply",
 }
 
+PLANT_BLOCK_NAMES = {
+    0: "none",
+    1: "bench_session",
+    2: "probe_busy",
+    3: "quiet_period",
+    4: "diag_only",
+    5: "host_stale",
+    6: "servo_session",
+}
+
 
 def parse_feedback_header(frame: bytes) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
@@ -42,6 +52,7 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     sys_word, = struct.unpack_from("<I", frame, 12)
     pdu = frame[PDU_OFF : PDU_OFF + 32]
     tag = chr(pdu[0]) if 32 <= pdu[0] < 127 else f"0x{pdu[0]:02X}"
+    plant_block = (sys_word >> 25) & 0x7F
     return {
         "magic_ok": True,
         "magic_hex": f"0x{magic:08X}",
@@ -51,6 +62,8 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
         "tick": sys_word & 0xFFF,
         "mcu_state": (sys_word >> 13) & 0x7,
         "last_cmd_seq": (sys_word >> 17) & 0xFF,
+        "plant_block": plant_block & 0x7F,
+        "plant_block_name": PLANT_BLOCK_NAMES.get(plant_block & 0x7F, f"unknown({plant_block})"),
         "pdu_tag": tag,
         "pdu_tag_name": PDU_TAG_NAMES.get(tag, "unknown"),
         "pdu_head_hex": pdu[:12].hex(),
@@ -221,6 +234,7 @@ def format_status_line(hdr: dict, actuator_slots: Optional[List[dict]] = None) -
         f"tick={hdr['tick']}",
         f"mcu_state={hdr['mcu_state']}",
         f"ack_seq={hdr['last_cmd_seq']}",
+        f"plant_block={hdr.get('plant_block_name', '?')}",
         f"pdu={hdr['pdu_tag']}",
     ]
     line = "  ".join(parts)

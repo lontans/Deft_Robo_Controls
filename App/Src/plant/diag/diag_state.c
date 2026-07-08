@@ -1,0 +1,37 @@
+#include "plant/diag/diag_state.h"
+
+robstride_probe_result_t g_last_probe;
+mcp2518_smoke_result_t g_last_mcp_smoke;
+volatile bool g_rs2_session_active;
+volatile bool g_probe_in_progress;
+uint32_t g_probe_started_ms;
+uint8_t g_rs2_motor_id;
+can_bus_id_t g_rs2_can_bus;
+uint32_t g_rs2_quiet_until_ms;
+bool g_dxl_feedback_active;
+volatile bool g_dxl_probe_pending;
+uint8_t g_dxl_pending_kind;
+uint8_t g_dxl_pending_target_id;
+uint8_t g_dxl_pending_id_start;
+uint8_t g_dxl_pending_id_end;
+volatile bool g_rs2_probe_pending;
+uint8_t g_rs2_pending_kind;
+uint8_t g_rs2_pending_motor_id;
+can_bus_id_t g_rs2_pending_bus;
+actuator_desire_t g_rs2_pending_desire;
+bool g_rs2_pending_has_desire;
+uint16_t g_rs2_pending_param_index;
+uint32_t g_rs2_pending_param_raw;
+uint8_t g_rs2_clear_after_send_kind;
+damiao_probe_result_t g_last_dm_probe;
+volatile bool g_dm_feedback_active;
+uint8_t g_dm_pending_kind;
+uint8_t g_dm_pending_motor_id;
+uint8_t g_dm_pending_master_id;
+uint8_t g_dm_pending_param_rid;
+uint16_t g_dm_pending_listen_ms;
+can_bus_id_t g_dm_pending_bus;
+volatile bool g_dm_session_active;
+can_bus_id_t g_dm_can_bus;
+uint8_t g_dm_feedback_ttl;
+uint32_t g_dm_quiet_until_ms;

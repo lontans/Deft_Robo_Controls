@@ -453,6 +453,24 @@ static bool robstride_record_raw_ext(const can_frame_t *frame_in, robstride_prob
 	return true;
 }
 
+static bool robstride_try_decode_mms(const can_frame_t *frame_in,
+                                    uint8_t expect_motor_id,
+                                    uint8_t *mms_out)
+{
+	uint8_t mode, id_byte;
+	uint16_t data16;
+
+	if (frame_in == NULL || mms_out == NULL || frame_in->id_type != CAN_ID_EXT)
+		return false;
+
+	robstride_unpack_ext_id(frame_in->id, &mode, &data16, &id_byte);
+	if (((data16 & 0xFF) != expect_motor_id) && (id_byte != expect_motor_id))
+		return false;
+
+	*mms_out = (uint8_t)((data16 >> 14) & 0x3u);
+	return true;
+}
+
 static bool robstride_try_parse_feedback(const can_frame_t *frame_in,
                                          uint8_t expect_motor_id,
                                          bool promiscuous,
@@ -807,40 +825,49 @@ bool robstride_probe_id(can_bus_id_t bus,
 
 	if (cali) {
 		/* Motor must be in REST to accept comm=0x05.
-		 * param_index = listen duration in seconds (0 → 90 s default).
+		 * param_index low byte = listen seconds (0 → 90 s default).
+		 * param_index bit 15 = listen-only (no reset / no re-TX 0x05) for host chunks.
 		 * Loop exits early when mms returns to rest or running after cali. */
-		if (robstride_send_reset(&cfg, &frame) != PLUGIN_OK)
-			return false;
-		if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
-			return false;
-		HAL_Delay(500u);
-		can_rx_drain(bus);
+		bool listen_only = ((param_index & 0x8000u) != 0u);
+		bool skip_reset = ((param_index & 0x4000u) != 0u);
+		uint32_t cal_s = (uint32_t)(param_index & 0xFFu);
+		if (cal_s == 0u)
+			cal_s = 90u;
 
-		if (robstride_send_cali(&cfg, &frame) != PLUGIN_OK)
-			return false;
-		if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
-			return false;
-		HAL_Delay(5);
+		if (!listen_only) {
+			if (!skip_reset) {
+				if (robstride_send_reset(&cfg, &frame) != PLUGIN_OK)
+					return false;
+				if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
+					return false;
+				HAL_Delay(500u);
+				can_rx_drain(bus);
+			}
+
+			if (robstride_send_cali(&cfg, &frame) != PLUGIN_OK)
+				return false;
+			if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
+				return false;
+			HAL_Delay(5);
+		}
 
 		{
-			uint32_t cal_s = (param_index == 0u) ? 90u : (uint32_t)param_index;
 			uint32_t deadline = HAL_GetTick() + cal_s * 1000u;
+			uint32_t last_progress_ms = 0u;
 			bool saw_cali = false;
 			bool cal_done = false;
 			do {
 				robstride_poll_listen(bus);
 				while (can_rx_pop(bus, &frame) == CAN_OK) {
-					if (robstride_try_parse_feedback(&frame, motor_id, false, out)) {
-						out->found = true;
-						uint8_t m_tmp, ib_tmp;
-						uint16_t d16_tmp;
-						robstride_unpack_ext_id(frame.id, &m_tmp, &d16_tmp, &ib_tmp);
-						uint8_t mms = (uint8_t)((d16_tmp >> 14) & 0x3u);
+					uint8_t mms = 0u;
+					if (robstride_try_decode_mms(&frame, motor_id, &mms)) {
 						if (mms == 1u)
 							saw_cali = true;
-						/* Done after cali: rest (0) or running (2); RS01 often skips rest. */
 						if (saw_cali && (mms == 0u || mms == 2u))
 							cal_done = true;
+					}
+					if (robstride_try_parse_feedback(&frame, motor_id, false, out)) {
+						out->found = true;
 					} else if (!out->found) {
 						(void)robstride_record_raw_ext(&frame, out);
 					} else if (out->raw_frames_seen < 255u) {
@@ -849,12 +876,22 @@ bool robstride_probe_id(can_bus_id_t bus,
 				}
 				if (cal_done)
 					break;
+
+				uint32_t now = HAL_GetTick();
+				if (last_progress_ms == 0u ||
+				    (now - last_progress_ms) >= 500u) {
+					last_progress_ms = now;
+					out->probe_kind = probe_kind;
+					out->motor_id = motor_id;
+					plant_diag_probe_progress(out);
+				}
+
 				plant_diag_yield_usb();
 				HAL_Delay(1);
 			} while ((int32_t)(deadline - HAL_GetTick()) > 0);
-		}
 
-		return out->found;
+			return cal_done;
+		}
 	}
 
 	if (zero_cmd) {

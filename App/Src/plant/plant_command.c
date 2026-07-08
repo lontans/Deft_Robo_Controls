@@ -3,6 +3,7 @@
 #include "plant/servo.h"
 #include "plant/led.h"
 #include "plant/plant_diag.h"
+#include "plant/plugins/robstride.h"
 #include "host/host_uart_bridge.h"
 #include <stdbool.h>
 
@@ -12,18 +13,6 @@
  * All other probe kinds (cali, pararead, reset, session, …) must NOT mount
  * actuator desires — avoids kp=50 hold-to-zero fights during cal.
  */
-static bool probe_kind_needs_actuator_mount(uint8_t kind)
-{
-	switch (kind) {
-	case PLANT_DIAG_PROBE_FULL:
-	case PLANT_DIAG_PROBE_ENABLE_CTRL:
-	case PLANT_DIAG_PROBE_CTRL_ONLY:
-	case PLANT_DIAG_PROBE_CTRL_FAST:
-		return true;
-	default:
-		return false;
-	}
-}
 
 static uint8_t g_mcu_state_readback;
 
@@ -76,7 +65,7 @@ void plant_command_image_dispatch(const host_command_image_t *cmd)
 	if (pdu_dxl || pdu_dm || pdu_ub)
 		return;
 
-	if (pdu_rs2 && !probe_kind_needs_actuator_mount(cmd->pdu.data[4]))
+	if (pdu_rs2 && !rs02_probe_kind_mounts_desire(cmd->pdu.data[4]))
 		return;
 
 	/* Plant teleop / runtime: end DM bench session gates before mounting desires. */

@@ -9,8 +9,6 @@
 #include "plant/plant_crit.h"
 #include <string.h>
 
-#define ACTUATOR_HOST_STALE_MS 500u
-
 static actuator_desire_t actuator_desire_stage[ACTUATOR_COUNT];
 static actuator_state_t  actuator_state_stage[ACTUATOR_COUNT];
 static volatile bool     actuator_desire_pending;
@@ -87,13 +85,7 @@ void actuator_apply_desire(void)
 	}
 	plant_crit_exit();
 
-	if (plant_diag_skip_actuator_can())
-		return;
-
-	if (plant_command_mcu_state_readback() == PLANT_MCU_STATE_DIAG_ONLY)
-		return;
-
-	if (!host_link_command_is_fresh(ACTUATOR_HOST_STALE_MS))
+	if (!plant_runtime_actuator_can_apply())
 		return;
 
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {

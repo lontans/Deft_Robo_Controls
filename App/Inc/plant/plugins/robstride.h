@@ -50,6 +50,19 @@
 #define RS02_PROBE_DATA_SAVE   18u
 #define RS02_PROBE_PARAWRITE   19u
 
+static inline bool rs02_probe_kind_mounts_desire(uint8_t kind)
+{
+	switch (kind) {
+	case RS02_PROBE_FULL:
+	case RS02_PROBE_ENABLE_CTRL:
+	case RS02_PROBE_CTRL_ONLY:
+	case RS02_PROBE_CTRL_FAST:
+		return true;
+	default:
+		return false;
+	}
+}
+
 typedef struct {
 	bool found;
 	uint8_t motor_id;

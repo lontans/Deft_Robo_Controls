@@ -92,6 +92,10 @@ except ImportError:
         (5, 0x70),
         (6, 0x70),
     )
+
+from control_hub.protocol.rs02 import ExtIdInfo, decode_ext_id  # noqa: E402
+from control_hub.rs02.display import format_probe_line  # noqa: E402
+
 PLANT_ACTUATOR_MOTOR_IDS: Tuple[int, ...] = tuple(mid for _, mid in PLANT_ACTUATOR_TABLE)
 
 PROBE_FULL = 0
@@ -297,18 +301,6 @@ ACTUATOR_PROFILES: Tuple[Tuple[str, float, float, float, float], ...] = (
 )
 
 
-@dataclass
-class ExtIdInfo:
-    raw: int
-    id_byte: int
-    data16: int
-    mode: int
-    motor_id: int
-    status_byte: int
-    faults: List[str]
-    mode_status: int
-
-
 class FrameReader:
     def __init__(self) -> None:
         self._buf = bytearray()
@@ -344,34 +336,6 @@ class FrameReader:
                 break
             out.append(frame)
         return out
-
-
-def decode_ext_id(ext_id: int) -> ExtIdInfo:
-    id_byte = ext_id & 0xFF
-    data16 = (ext_id >> 8) & 0xFFFF
-    mode = (ext_id >> 24) & 0x1F
-    motor_id = data16 & 0xFF
-    status_byte = (data16 >> 8) & 0xFF
-    fault_map = (
-        (0x01, "under_voltage"),
-        (0x02, "drive_fault"),
-        (0x04, "over_temp"),
-        (0x08, "mag_encoder"),
-        (0x10, "stall_overload"),
-        (0x20, "uncalibrated"),
-    )
-    faults = [name for mask, name in fault_map if status_byte & mask]
-    mode_status = (data16 >> 14) & 0x3
-    return ExtIdInfo(
-        raw=ext_id,
-        id_byte=id_byte,
-        data16=data16,
-        mode=mode,
-        motor_id=motor_id,
-        status_byte=status_byte,
-        faults=faults,
-        mode_status=mode_status,
-    )
 
 
 def build_scan_command(motor_id: int, probe_kind: int, seq: int, bus: int = 1) -> bytes:
@@ -1578,35 +1542,6 @@ def run_proactive_off(ser: serial.Serial, target: int, args: argparse.Namespace)
         end_session(ser, reader, seq, args.timeout, bus=bus, args=args)
         stop.set()
     return 0
-
-
-def format_probe_line(label: str, motor_id: int, resp: Optional[dict]) -> str:
-    if resp is None:
-        return f"  ----  {label:<32s}  (no USB feedback — MCU busy or not running plant_diag?)"
-
-    raw_n = resp.get("raw_frames", 0)
-    if not resp["found"] and raw_n == 0:
-        return (
-            f"  ....  {label:<32s}  MCU replied: no ext-CAN RX  "
-            f"(probe_kind={resp['probe_kind']} raw={raw_n} — PC7 may still blink on TX)"
-        )
-
-    ext = decode_ext_id(resp["ext_id"])
-    disc = resp["discovered_id"] or ext.motor_id or (motor_id & 0xFF)
-    valid = disc == (motor_id & 0xFF) and resp["comm_mode"] in (0x02, 0x18)
-    fault_s = ",".join(ext.faults) if ext.faults else "none"
-    mms = ("rest", "cali", "running")[ext.mode_status] if ext.mode_status < 3 else f"mode{ext.mode_status}"
-    tag = "HIT" if resp["found"] else "SNIFF"
-    if resp["found"] and not valid:
-        tag = "NOISE"
-    data_hex = resp["can_data"].hex()
-
-    return (
-        f"  {tag}  {label:<32s}  ext=0x{resp['ext_id']:08X}  "
-        f"motor=0x{disc:02X}  comm={resp['comm_mode']}  mms={mms}  "
-        f"faults=[{fault_s}]  T={resp['temperature']:.1f}C  pos={resp['position']:+.4f}  "
-        f"data={data_hex}"
-    )
 
 
 def begin_session(

@@ -1,32 +1,18 @@
-"""Delegate interactive teleop to proven legacy runners."""
+"""Teleop and calibrate — canonical implementations in control_hub."""
 from __future__ import annotations
 
 import sys
 
-from .._bootstrap import ensure_scripts_path
 from ..actuator_config import slot_config
+from .._bootstrap import ensure_scripts_path
 
 
 def run_plant_teleop_for_slot(port: str, slot: int, *, skip_home: bool = False) -> None:
-    cfg = slot_config(slot)
     ensure_scripts_path()
-    import host_teleop_laptop_usb as teleop  # noqa: WPS433
+    from control_hub.teleop.plant import run_for_slot  # noqa: WPS433
 
-    if cfg.protocol_name == "damiao":
-        argv = [sys.argv[0], "--port", port, "--damiao-teleop"]
-    else:
-        argv = [
-            sys.argv[0],
-            "--port",
-            port,
-            "--plant-teleop",
-            "--plant-slots",
-            str(slot),
-        ]
-    if skip_home:
-        argv.append("--plant-skip-home")
-    sys.argv = argv
-    teleop.main()
+    cfg = slot_config(slot)
+    run_for_slot(port, slot, skip_home=skip_home, damiao=(cfg.protocol_name == "damiao"))
 
 
 def run_servo_teleop(port: str) -> None:
@@ -43,21 +29,17 @@ def run_calibrate(
     motor_id: int,
     *,
     cal_timeout: float | None = None,
-) -> None:
+    strict_cali: bool = False,
+) -> int:
     ensure_scripts_path()
-    import host_teleop_laptop_usb as teleop  # noqa: WPS433
+    from control_hub.protocol.rs02 import DEFAULT_CAL_LISTEN_S  # noqa: WPS433
+    from control_hub.rs02.calibrate import run_encoder_cal  # noqa: WPS433
 
-    argv = [
-        sys.argv[0],
-        "--port",
+    listen_s = cal_timeout if cal_timeout is not None else DEFAULT_CAL_LISTEN_S
+    return run_encoder_cal(
         port,
-        "--calibrate",
-        "--bus",
-        str(bus),
-        "--motor-id",
-        hex(motor_id),
-    ]
-    if cal_timeout is not None:
-        argv.extend(["--cal-timeout", str(cal_timeout)])
-    sys.argv = argv
-    teleop.main()
+        bus,
+        motor_id,
+        cal_listen_s=listen_s,
+        strict_cali=strict_cali,
+    )

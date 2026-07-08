@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import TYPE_CHECKING, Generator, Optional
 
 import serial
 
 from . import commands as cmd
-from .actuator_config import slot_config  # noqa: F401 — re-export for plugins
+from .actuator_config import Protocol, slot_config  # noqa: F401 — re-export for plugins
 from .feedback import parse_actuator_feedback, parse_feedback_header
 from .protocol import (
     PLANT_MCU_STATE_NORMAL,
@@ -17,6 +17,9 @@ from .protocol import (
     SESSION_END,
 )
 from .transport import DEFAULT_BAUD, FrameReader, SerialRxPump, describe_open_port, open_serial
+
+if TYPE_CHECKING:
+    from .actuator_config import ActuatorSlotConfig
 
 
 class PcbSession:
@@ -68,7 +71,6 @@ class PcbSession:
         return s
 
     def write_command(self, frame: bytes) -> None:
-        self.reader.drain()
         self.ser.write(frame)
         self.ser.flush()
 
@@ -102,8 +104,20 @@ class PcbSession:
         return None
 
     def poll_status(self, timeout_s: float = 0.5) -> Optional[dict]:
-        self.send_plant()
-        frame = self.wait_feedback(timeout_s)
+        for _ in range(6):
+            self.send_plant()
+            time.sleep(0.04)
+        deadline = time.monotonic() + timeout_s
+        latest: Optional[bytes] = None
+        while time.monotonic() < deadline:
+            frame = self.reader.pop()
+            while frame is not None:
+                latest = frame
+                frame = self.reader.pop()
+            if latest is not None:
+                break
+            time.sleep(0.005)
+        frame = latest
         if frame is None:
             return None
         hdr = parse_feedback_header(frame)
@@ -143,6 +157,36 @@ class PcbSession:
             pass
         self.recover()
         time.sleep(0.15)
+
+    def wake_for_plant_teleop(self, cfg: "ActuatorSlotConfig") -> None:
+        """Prep 500 Hz plant teleop without RS2 SESSION_END (that resets motors on MCU)."""
+        if cfg.protocol == Protocol.DAMIAO:
+            try:
+                self.dm_session_end(cfg.bus)
+            except Exception:
+                pass
+
+        print(
+            f"Plant teleop prep: slot{cfg.slot}  bus={cfg.bus}  "
+            f"0x{cfg.motor_id:02X}  ({cfg.protocol_name})"
+        )
+        # Neutral plant frames — firmware plant_diag_release_actuator_can() on mount.
+        for _ in range(10):
+            self.send_plant()
+            time.sleep(0.04)
+
+        hdr = self.poll_status(timeout_s=0.8)
+        if hdr is None:
+            print("  warning: no plant feedback during prep (continuing)")
+            return
+
+        slots = hdr.get("actuator_slots") or []
+        if cfg.slot < len(slots) and slots[cfg.slot] is not None:
+            pos = float(slots[cfg.slot]["position"])
+            note = ""
+            if abs(pos) > 3.0:
+                note = "  (comm 0x02 p_raw may lie post-cal — teleop will sanitize)"
+            print(f"  slot{cfg.slot} actuator_feedback pos={pos:+.4f} rad{note}")
 
     def link_test(self, timeout_s: float = 2.0) -> bool:
         with self.rx_pump():

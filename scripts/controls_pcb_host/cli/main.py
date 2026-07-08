@@ -120,9 +120,6 @@ def cmd_teleop(args: argparse.Namespace) -> int:
         run_servo_teleop(port)
         return 0
     slot = args.slot if args.slot is not None else 0
-    with PcbSession(port) as session:
-        with session.rx_pump():
-            session.wake_from_diag(slot_config(slot).bus)
     run_plant_teleop_for_slot(port, slot, skip_home=args.skip_home)
     return 0
 
@@ -138,13 +135,13 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     else:
         print("calibrate requires --slot N or --bus and --id", file=sys.stderr)
         return 2
-    run_calibrate(
+    return run_calibrate(
         _port(args),
         bus,
         motor_id,
         cal_timeout=args.timeout,
+        strict_cali=args.strict_cali,
     )
-    return 0
 
 
 def cmd_config_show(_args: argparse.Namespace) -> int:
@@ -260,9 +257,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_probe)
 
     p = sub.add_parser("teleop", help="Interactive teleop (delegates to legacy runner)")
-    p.add_argument("--slot", type=int, default=None)
+    p.add_argument("--slot", type=int, default=None, help="Actuator slot (default 0; slot 1 = CH2 0x70)")
     p.add_argument("--servo", action="store_true", help="Dynamixel neck servos")
-    p.add_argument("--skip-home", action="store_true")
+    p.add_argument(
+        "--skip-home",
+        action="store_true",
+        help="Skip auto-homing to 0 (use after calibrate or when shaft is already at zero)",
+    )
     p.set_defaults(func=cmd_teleop)
 
     p = sub.add_parser(
@@ -276,7 +277,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout",
         type=float,
         default=None,
-        help="Cali listen seconds (default 28; shaft must spin freely)",
+        help="Cali listen seconds on MCU (default 28; datasheet: one comm 0x05 window)",
+    )
+    p.add_argument(
+        "--strict-cali",
+        action="store_true",
+        help="Require mms→rest/running in readback before zero/save (old behavior)",
     )
     p.set_defaults(func=cmd_calibrate)
 

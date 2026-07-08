@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Unified entrypoint: python scripts/controls_pcb_host.py --help
-
-  python scripts/controls_pcb_host.py --list-ports
-  python scripts/controls_pcb_host.py ports
-"""
+"""Unified entrypoint (alias for control_hub.py)."""
 from __future__ import annotations
 
 import os

@@ -60,6 +60,7 @@ def send_diag(
     bus: int = 1,
 ) -> Optional[dict]:
     seq = session.next_seq()
+    session.reader.drain()
     if probe_param != 0:
         frame = cmd.build_rs2_probe_command(
             motor_id,
@@ -82,10 +83,14 @@ def send_diag(
 
 def format_probe_line(resp: dict) -> str:
     found = int(resp.get("found", 0))
+    pos = float(resp.get("position", 0))
+    pos_s = f"{pos:+.4f}"
+    if abs(pos) > 3.0 and resp.get("comm_mode") == 0x02:
+        pos_s += " (comm0x02 p_raw — pararead 0x7019 for truth)"
     return (
         f"probe_id=0x{resp['probe_id']:02X}  kind={resp.get('probe_kind')}  "
         f"found={found}  comm={resp.get('comm_mode')}  "
-        f"pos={resp.get('position', 0):+.4f}  raw={resp.get('raw_frames', 0)}"
+        f"pos={pos_s}  raw={resp.get('raw_frames', 0)}"
     )
 
 

@@ -12,7 +12,6 @@ static uint32_t              g_last_command_seq;
 static uint32_t              g_last_command_ms;
 static uint8_t               g_cmd_rx_buf[HOST_COMMAND_IMAGE_BYTES];
 static size_t                g_cmd_rx_fill;
-static bool                  g_host_cmd_dispatched;
 static host_feedback_image_t g_fb_tx_frame;
 
 static void host_link_rx_resync(void);
@@ -61,30 +60,24 @@ void host_link_init(void)
 	g_last_command_seq = 0;
 	g_last_command_ms  = 0;
 	g_cmd_rx_fill      = 0;
-	g_host_cmd_dispatched = false;
 
 	host_transport_get()->init();
 }
 
 void host_link_begin_loop(void)
 {
-	g_host_cmd_dispatched = false;
+	/* poll_rx drains the full USB RX ring each app_run iteration. */
 }
 
 void host_link_poll_rx(void)
 {
-	if (g_host_cmd_dispatched)
-		return;
-
 	const host_transport_ops_t *tp = host_transport_get();
 	uint8_t chunk[64];
 	size_t n;
 
 	while ((n = tp->read(chunk, sizeof(chunk))) > 0) {
-		for (size_t i = 0; i < n; i++) {
-			if (host_link_rx_feed_byte(chunk[i]))
-				return;
-		}
+		for (size_t i = 0; i < n; i++)
+			(void)host_link_rx_feed_byte(chunk[i]);
 	}
 }
 
@@ -129,7 +122,6 @@ static bool host_link_rx_feed_byte(uint8_t b)
 
 	g_cmd_rx_fill = 0;
 	host_command_image_dispatch(cmd);
-	g_host_cmd_dispatched = true;
 	return true;
 }
 
@@ -146,6 +138,7 @@ static void host_feedback_image_fetch(host_feedback_image_t *out)
 	out->system.control_tick_count = (uint32_t)(g_control_tick_count & 0xFFFu);
 	out->system.last_command_seq   = (uint32_t)(host_link_last_command_seq() & 0xFFu);
 	out->system.mcu_state_readback = (uint32_t)plant_command_mcu_state_readback();
+	out->system.reserved           = (uint32_t)plant_runtime_actuator_block_reason();
 
 	plant_feedback_image_fetch(out);
 }
