@@ -49,10 +49,27 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
+    from control_hub.link import heal_usb, release_bench_gates
+
     with PcbSession(_port(args)) as session:
         with session.rx_pump():
-            session.wake_from_diag(args.bus)
-        print("Recovery sent (DIAG session end + RECOVERY + NORMAL).")
+            release_bench_gates(session)
+            hdr = session.poll_status(timeout_s=1.5)
+            if hdr is not None:
+                print(
+                    f"Recovery OK  plant_block={hdr.get('plant_block_name', '?')}  "
+                    f"pdu={hdr.get('pdu_tag', '?')}  ack_seq={hdr.get('last_cmd_seq')}"
+                )
+                return 0
+            if heal_usb(session, rounds=16):
+                hdr = session.poll_status(timeout_s=1.0)
+                if hdr is not None:
+                    print(
+                        f"Recovery OK  plant_block={hdr.get('plant_block_name', '?')}  "
+                        f"pdu={hdr.get('pdu_tag', '?')}"
+                    )
+                    return 0
+            print("Recovery sent; USB feedback not confirmed — retry link-test.")
         return 0
 
 
@@ -120,7 +137,27 @@ def cmd_teleop(args: argparse.Namespace) -> int:
         run_servo_teleop(port)
         return 0
     slot = args.slot if args.slot is not None else 0
-    run_plant_teleop_for_slot(port, slot, skip_home=args.skip_home)
+    try:
+        run_plant_teleop_for_slot(
+            port,
+            slot,
+            skip_home=args.skip_home,
+            hz=args.hz,
+            kd=args.kd,
+            arrow_vel=args.arrow_vel,
+            ramp_up_s=args.ramp_up,
+            ramp_down_s=args.ramp_down,
+            kp=args.kp,
+            home_kp=args.home_kp,
+            home_slew=args.home_slew,
+        )
+    except Exception as exc:
+        from control_hub.link import PlantRuntimeError
+
+        if isinstance(exc, PlantRuntimeError):
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        raise
     return 0
 
 
@@ -229,8 +266,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="One-shot plant status snapshot")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("recover", help="End diag session and RECOVERY mount")
-    p.add_argument("--bus", type=int, default=3, help="Damiao bus for session end (default 3)")
+    p = sub.add_parser("recover", help="Clear bench gates and RECOVERY mount (before plant teleop)")
+    p.add_argument(
+        "--bus",
+        type=int,
+        default=2,
+        help="Bus used for last bench session (default 2 = CH2 RS02)",
+    )
     p.set_defaults(func=cmd_recover)
 
     p = sub.add_parser("discover", help="Scan for motor CAN ID")
@@ -256,13 +298,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_probe)
 
-    p = sub.add_parser("teleop", help="Interactive teleop (delegates to legacy runner)")
+    p = sub.add_parser("teleop", help="FDCAN plant teleop (562 B desires, no RS2 PDU)")
     p.add_argument("--slot", type=int, default=None, help="Actuator slot (default 0; slot 1 = CH2 0x70)")
     p.add_argument("--servo", action="store_true", help="Dynamixel neck servos")
     p.add_argument(
         "--skip-home",
         action="store_true",
         help="Skip auto-homing to 0 (use after calibrate or when shaft is already at zero)",
+    )
+    p.add_argument("--hz", type=float, default=None, help="Host command rate (default 40)")
+    p.add_argument("--arrow-vel", type=float, default=None, dest="arrow_vel", help="Arrow hold speed rad/s (default 5)")
+    p.add_argument("--ramp-up", type=float, default=None, dest="ramp_up", help="Velocity ramp-up time constant s (default 0.4)")
+    p.add_argument(
+        "--ramp-down",
+        type=float,
+        default=None,
+        dest="ramp_down",
+        help="Velocity coast-down time constant s (default 1.2)",
+    )
+    p.add_argument("--kd", type=float, default=None, help="D gain while moving (default 0.5)")
+    p.add_argument("--kp", type=float, default=None, help="Override slot stiffness while moving")
+    p.add_argument("--home-kp", type=float, default=None, dest="home_kp", help="Homing P gain (default 6)")
+    p.add_argument(
+        "--home-slew",
+        type=float,
+        default=None,
+        dest="home_slew",
+        help="Homing slew rad/s (default 0.18)",
     )
     p.set_defaults(func=cmd_teleop)
 

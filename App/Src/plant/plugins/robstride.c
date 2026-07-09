@@ -3,9 +3,11 @@
 #include "plant/plugin_schema/plugin_table.h"
 #include "plant/can/can_router.h"
 #include "plant/can/spi_can_router.h"
+#include "plant/can/mcp2518fd.h"
 #include "plant/plant_diag.h"
 #include "plant/actuator.h"
 #include "main.h"
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -464,6 +466,8 @@ static bool robstride_try_decode_mms(const can_frame_t *frame_in,
 		return false;
 
 	robstride_unpack_ext_id(frame_in->id, &mode, &data16, &id_byte);
+	if (mode != RS02_COMM_FEEDBACK)
+		return false;
 	if (((data16 & 0xFF) != expect_motor_id) && (id_byte != expect_motor_id))
 		return false;
 
@@ -527,7 +531,12 @@ static plugin_status_t robstride_enqueue(can_bus_id_t bus, const can_frame_t *fr
 
 static void robstride_poll_listen(can_bus_id_t bus)
 {
-	can_router_poll_bus_rx(bus);
+	if (bus >= CAN_BUS_CH4) {
+		for (uint8_t n = 0u; n < 6u; n++)
+			can_router_poll_bus(bus);
+	} else {
+		can_router_poll_bus_rx(bus);
+	}
 }
 
 static plugin_status_t robstride_probe_tx(can_bus_id_t bus, const can_frame_t *frame)
@@ -535,8 +544,14 @@ static plugin_status_t robstride_probe_tx(can_bus_id_t bus, const can_frame_t *f
 	if (frame == NULL)
 		return PLUGIN_ERR_PARAM;
 
-	if (bus >= CAN_BUS_CH4)
+	if (bus >= CAN_BUS_CH4) {
+		mcp2518_prepare_tx(bus);
+		if (spi_can_router_send_now(bus, frame))
+			return PLUGIN_OK;
+		/* One TXQ recovery attempt before giving up. */
+		mcp2518_prepare_tx(bus);
 		return spi_can_router_send_now(bus, frame) ? PLUGIN_OK : PLUGIN_ERR_UNSUPPORTED;
+	}
 
 	if (robstride_enqueue(bus, frame) != PLUGIN_OK)
 		return PLUGIN_ERR_UNSUPPORTED;
@@ -545,7 +560,9 @@ static plugin_status_t robstride_probe_tx(can_bus_id_t bus, const can_frame_t *f
 	return PLUGIN_OK;
 }
 
-static void robstride_maintain_enable(const actuator_config_t *cfg, uint32_t *last_ms)
+static void robstride_maintain_enable(const actuator_config_t *cfg,
+                                      const actuator_desire_t *desire,
+                                      uint32_t *last_ms)
 {
 	can_frame_t frame;
 	can_bus_id_t bus;
@@ -554,9 +571,13 @@ static void robstride_maintain_enable(const actuator_config_t *cfg, uint32_t *la
 	if (cfg == NULL || last_ms == NULL)
 		return;
 
+	/* MIT stream keeps run/enable during velocity teleop; periodic comm frames disturb motion. */
+	if (desire != NULL && desire->kp > 0.0f && fabsf(desire->velocity) > 0.01f)
+		return;
+
 	bus = cfg->bus;
 	now = HAL_GetTick();
-	if (*last_ms != 0u && (now - *last_ms) < 500u)
+	if (*last_ms != 0u && (now - *last_ms) < 2000u)
 		return;
 
 	*last_ms = now;
@@ -579,6 +600,59 @@ static uint8_t robstride_actuator_slot(const actuator_config_t *cfg)
 	return 0u;
 }
 
+static bool robstride_desire_idle(const actuator_desire_t *desire)
+{
+	if (desire == NULL)
+		return true;
+
+	return (desire->position == 0.0f && desire->velocity == 0.0f &&
+	        desire->kp == 0.0f && desire->kd == 0.0f && desire->torque == 0.0f);
+}
+
+static void robstride_apply_drain_rx(const actuator_config_t *cfg,
+                                     uint8_t slot,
+                                     uint8_t pararead_phase,
+                                     uint16_t last_pararead_idx,
+                                     actuator_state_t *state_out)
+{
+	can_frame_t frame;
+	can_bus_id_t bus = cfg->bus;
+
+	while (can_rx_pop(bus, &frame) == CAN_OK) {
+		if (state_out == NULL)
+			continue;
+		if (plugin_parse_rx(cfg, &frame, state_out) == PLUGIN_OK)
+			continue;
+		if (frame.id_type != CAN_ID_EXT)
+			continue;
+
+		uint8_t mode, id_byte;
+		uint16_t data16;
+
+		robstride_unpack_ext_id(frame.id, &mode, &data16, &id_byte);
+		if (mode != RS02_COMM_PARAREAD)
+			continue;
+
+		uint8_t motor_id = (uint8_t)(cfg->motor_id & 0xFF);
+		if (((data16 & 0xFF) != motor_id) && (id_byte != motor_id))
+			continue;
+
+		float val;
+		uint32_t raw = (uint32_t)frame.data[4] |
+		               ((uint32_t)frame.data[5] << 8) |
+		               ((uint32_t)frame.data[6] << 16) |
+		               ((uint32_t)frame.data[7] << 24);
+
+		memcpy(&val, &raw, sizeof(val));
+		if (last_pararead_idx == RS02_PARAM_MECH_POS)
+			state_out->position = val;
+		else if (last_pararead_idx == RS02_PARAM_MECH_VEL)
+			state_out->velocity = val;
+		(void)slot;
+		(void)pararead_phase;
+	}
+}
+
 void robstride_apply_cycle(const actuator_config_t *cfg,
                            const actuator_desire_t *desire,
                            actuator_state_t *state_out)
@@ -590,6 +664,9 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	can_frame_t frame;
 	can_bus_id_t bus;
 	uint8_t slot;
+	bool idle;
+	bool mcp;
+	uint8_t tx_burst;
 
 	if (cfg == NULL || desire == NULL || !cfg->enabled)
 		return;
@@ -599,50 +676,55 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 		slot = 0u;
 
 	bus = cfg->bus;
-	robstride_maintain_enable(cfg, &last_maintain_ms[slot]);
+	mcp = (bus >= CAN_BUS_CH4);
+	idle = robstride_desire_idle(desire);
+	/* MCP: one immediate MIT per 2 ms tick; FDCAN: triple enqueue + HW FIFO. */
+	tx_burst = mcp ? 1u : 3u;
 
-	for (uint8_t i = 0; i < 3u; i++) {
-		if (plugin_pack_tx(cfg, desire, &frame) == PLUGIN_OK)
+	can_router_poll_bus_rx(bus);
+
+	if (idle) {
+		robstride_apply_drain_rx(cfg, slot, pararead_phase[slot],
+		                         last_pararead_idx[slot], state_out);
+		if (mcp) {
+			while (spi_can_router_tx_flush(bus) == CAN_OK)
+				;
+		}
+		return;
+	}
+
+	robstride_maintain_enable(cfg, desire, &last_maintain_ms[slot]);
+
+	for (uint8_t i = 0; i < tx_burst; i++) {
+		if (plugin_pack_tx(cfg, desire, &frame) != PLUGIN_OK)
+			continue;
+		if (mcp)
+			(void)spi_can_router_send_now(bus, &frame);
+		else
 			(void)can_tx_enqueue(bus, &frame);
 	}
 
-	uint32_t now = HAL_GetTick();
-	if (last_pararead_ms[slot] == 0u || (now - last_pararead_ms[slot]) >= 50u) {
-		last_pararead_ms[slot] = now;
-		last_pararead_idx[slot] = (pararead_phase[slot] == 0u) ?
-		                          RS02_PARAM_MECH_POS : RS02_PARAM_MECH_VEL;
-		pararead_phase[slot] ^= 1u;
-		if (robstride_send_para_read(cfg, last_pararead_idx[slot], &frame) == PLUGIN_OK)
-			(void)can_tx_enqueue(bus, &frame);
+	if (mcp) {
+		while (spi_can_router_tx_flush(bus) == CAN_OK)
+			;
+	}
+
+	if (!mcp) {
+		uint32_t now = HAL_GetTick();
+
+		if (last_pararead_ms[slot] == 0u || (now - last_pararead_ms[slot]) >= 50u) {
+			last_pararead_ms[slot] = now;
+			last_pararead_idx[slot] = (pararead_phase[slot] == 0u) ?
+			                          RS02_PARAM_MECH_POS : RS02_PARAM_MECH_VEL;
+			pararead_phase[slot] ^= 1u;
+			if (robstride_send_para_read(cfg, last_pararead_idx[slot], &frame) == PLUGIN_OK)
+				(void)can_tx_enqueue(bus, &frame);
+		}
 	}
 
 	can_router_poll_bus(bus);
-
-	while (can_rx_pop(bus, &frame) == CAN_OK) {
-		if (state_out != NULL) {
-			if (plugin_parse_rx(cfg, &frame, state_out) != PLUGIN_OK &&
-			    frame.id_type == CAN_ID_EXT) {
-				uint8_t mode, id_byte;
-				uint16_t data16;
-				robstride_unpack_ext_id(frame.id, &mode, &data16, &id_byte);
-				if (mode == RS02_COMM_PARAREAD) {
-					uint8_t motor_id = (uint8_t)(cfg->motor_id & 0xFF);
-					if (((data16 & 0xFF) == motor_id) || (id_byte == motor_id)) {
-						float val;
-						uint32_t raw = (uint32_t)frame.data[4] |
-						               ((uint32_t)frame.data[5] << 8) |
-						               ((uint32_t)frame.data[6] << 16) |
-						               ((uint32_t)frame.data[7] << 24);
-						memcpy(&val, &raw, sizeof(val));
-						if (last_pararead_idx[slot] == RS02_PARAM_MECH_POS)
-							state_out->position = val;
-						else if (last_pararead_idx[slot] == RS02_PARAM_MECH_VEL)
-							state_out->velocity = val;
-					}
-				}
-			}
-		}
-	}
+	robstride_apply_drain_rx(cfg, slot, pararead_phase[slot],
+	                         last_pararead_idx[slot], state_out);
 }
 
 static void robstride_listen_rx(can_bus_id_t bus,
@@ -656,8 +738,13 @@ static void robstride_listen_rx(can_bus_id_t bus,
 	for (uint16_t attempt = 0; attempt < listen_ms; attempt++) {
 		robstride_poll_listen(bus);
 		while (can_rx_pop(bus, &frame) == CAN_OK) {
-			(void)robstride_record_raw_ext(&frame, out);
-			(void)robstride_try_parse_feedback(&frame, motor_id, promiscuous, out);
+			if (robstride_try_parse_feedback(&frame, motor_id, promiscuous, out)) {
+				continue;
+			}
+			if (!out->found)
+				(void)robstride_record_raw_ext(&frame, out);
+			else if (out->raw_frames_seen < 255u)
+				out->raw_frames_seen++;
 		}
 		plant_diag_yield_usb();
 		HAL_Delay(1);
@@ -735,7 +822,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 		if (param_index == 0u)
 			param_index = RS02_PARAM_MECH_ANGLE;
 
-		robstride_maintain_enable(&cfg, &ctrl_fast_maintain_ms);
+		robstride_maintain_enable(&cfg, NULL, &ctrl_fast_maintain_ms);
 		can_router_poll_bus(bus);
 		HAL_Delay(3);
 		can_rx_drain(bus);
@@ -794,7 +881,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 	}
 
 	if (proactive) {
-		robstride_maintain_enable(&cfg, &ctrl_fast_maintain_ms);
+		robstride_maintain_enable(&cfg, NULL, &ctrl_fast_maintain_ms);
 		can_router_poll_bus(bus);
 		HAL_Delay(3);
 
@@ -848,7 +935,14 @@ bool robstride_probe_id(can_bus_id_t bus,
 				return false;
 			if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
 				return false;
-			HAL_Delay(5);
+			if (bus >= CAN_BUS_CH4) {
+				for (uint8_t settle = 0u; settle < 12u; settle++) {
+					can_router_poll_bus(bus);
+					HAL_Delay(2);
+				}
+			} else {
+				HAL_Delay(5);
+			}
 		}
 
 		{
@@ -856,18 +950,29 @@ bool robstride_probe_id(can_bus_id_t bus,
 			uint32_t last_progress_ms = 0u;
 			bool saw_cali = false;
 			bool cal_done = false;
+			bool had_spin = false;
+			uint32_t spin_settled_ms = 0u;
+			uint32_t saw_cali_at_ms = 0u;
+			uint32_t fb_static_ms = 0u;
+			uint32_t last_ext_id = 0u;
+			uint8_t last_data[8] = {0};
 			do {
 				robstride_poll_listen(bus);
 				while (can_rx_pop(bus, &frame) == CAN_OK) {
 					uint8_t mms = 0u;
 					if (robstride_try_decode_mms(&frame, motor_id, &mms)) {
-						if (mms == 1u)
+						if (mms == 1u) {
 							saw_cali = true;
+							if (saw_cali_at_ms == 0u)
+								saw_cali_at_ms = HAL_GetTick();
+						}
 						if (saw_cali && (mms == 0u || mms == 2u))
 							cal_done = true;
 					}
 					if (robstride_try_parse_feedback(&frame, motor_id, false, out)) {
 						out->found = true;
+						if (saw_cali && fabsf(out->velocity) > 0.06f)
+							had_spin = true;
 					} else if (!out->found) {
 						(void)robstride_record_raw_ext(&frame, out);
 					} else if (out->raw_frames_seen < 255u) {
@@ -876,6 +981,35 @@ bool robstride_probe_id(can_bus_id_t bus,
 				}
 				if (cal_done)
 					break;
+
+				if (saw_cali && had_spin && out->found) {
+					if (fabsf(out->velocity) < 0.20f) {
+						if (spin_settled_ms == 0u)
+							spin_settled_ms = HAL_GetTick();
+						else if ((HAL_GetTick() - spin_settled_ms) >= 2000u &&
+						         saw_cali_at_ms != 0u &&
+						         (HAL_GetTick() - saw_cali_at_ms) >= 8000u)
+							cal_done = true;
+					} else {
+						spin_settled_ms = 0u;
+					}
+				}
+
+				/* Static comm0x02 repeats during cal — require min spin window first. */
+				if (saw_cali && out->found && saw_cali_at_ms != 0u &&
+				    (HAL_GetTick() - saw_cali_at_ms) >= 15000u &&
+				    out->raw_frames_seen >= 8u) {
+					if (out->ext_id != last_ext_id ||
+					    memcmp(out->data, last_data, 8u) != 0) {
+						last_ext_id = out->ext_id;
+						memcpy(last_data, out->data, 8u);
+						fb_static_ms = 0u;
+					} else if (fb_static_ms == 0u) {
+						fb_static_ms = HAL_GetTick();
+					} else if ((HAL_GetTick() - fb_static_ms) >= 4000u) {
+						cal_done = true;
+					}
+				}
 
 				uint32_t now = HAL_GetTick();
 				if (last_progress_ms == 0u ||
@@ -908,7 +1042,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 		HAL_Delay(3);
 
 		robstride_listen_rx(bus, motor_id, false, listen_ms, out);
-		return (out->raw_frames_seen > 0u);
+		return out->found;
 	}
 
 	if (data_save) {
@@ -919,11 +1053,11 @@ bool robstride_probe_id(can_bus_id_t bus,
 		HAL_Delay(5);
 
 		robstride_listen_rx(bus, motor_id, false, listen_ms, out);
-		return (out->raw_frames_seen > 0u);
+		return out->found;
 	}
 
 	if (ctrl_fast) {
-		robstride_maintain_enable(&cfg, &ctrl_fast_maintain_ms);
+		robstride_maintain_enable(&cfg, NULL, &ctrl_fast_maintain_ms);
 		if (plugin_pack_tx(&cfg, desire, &frame) != PLUGIN_OK)
 			return false;
 		if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)

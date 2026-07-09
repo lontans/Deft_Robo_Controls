@@ -43,10 +43,13 @@ void app_run(void)
 	host_link_begin_loop();
 	host_link_poll_rx();
 	plant_diag_service();
+	plant_diag_can_router_poll();
 
 #if !USE_FREERTOS_SCHEDULER
-	/* Match pre-RTOS (14eb426): CAN apply + capture before USB feedback TX. */
+	/* One 500 Hz tick per superloop pass — avoids MCP MIT/FB bursts. */
 	control_loop_service();
+	/* Drain USB RX again after CAN work — MCP SPI must not starve command intake. */
+	host_link_poll_rx();
 #endif
 
 	led_service();

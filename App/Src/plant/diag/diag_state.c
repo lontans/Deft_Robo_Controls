@@ -4,6 +4,7 @@ robstride_probe_result_t g_last_probe;
 mcp2518_smoke_result_t g_last_mcp_smoke;
 volatile bool g_rs2_session_active;
 volatile bool g_probe_in_progress;
+volatile bool g_probe_progress_push;
 uint32_t g_probe_started_ms;
 uint8_t g_rs2_motor_id;
 can_bus_id_t g_rs2_can_bus;

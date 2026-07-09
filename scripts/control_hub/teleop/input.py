@@ -33,8 +33,8 @@ if sys.platform == "win32":
         import ctypes
 
         user32 = ctypes.windll.user32
-        left = user32.GetAsyncKeyState(0x25) & 0x8000
-        right = user32.GetAsyncKeyState(0x27) & 0x8000
+        left = bool(user32.GetAsyncKeyState(0x25) & 0x8000)
+        right = bool(user32.GetAsyncKeyState(0x27) & 0x8000)
         if left and not right:
             return -1
         if right and not left:

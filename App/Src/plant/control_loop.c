@@ -7,7 +7,8 @@
 #define HEARTBEAT_PORT GPIOC
 #define HEARTBEAT_PIN  GPIO_PIN_3
 #define HEARTBEAT_TOGGLE_EVERY 250u
-#define CONTROL_TICK_BURST_MAX 8u
+#define CONTROL_TICK_BURST_MAX 1u
+#define CONTROL_TICK_PENDING_MAX 3u
 
 volatile uint32_t g_control_tick_count = 0;
 static volatile uint8_t g_control_ticks_pending;
@@ -49,6 +50,6 @@ void control_loop_tick(void)
 	g_control_tick_count++;
 	if ((g_control_tick_count % HEARTBEAT_TOGGLE_EVERY) == 0u)
 		HAL_GPIO_TogglePin(HEARTBEAT_PORT, HEARTBEAT_PIN);
-	if (g_control_ticks_pending < 255u)
+	if (g_control_ticks_pending < CONTROL_TICK_PENDING_MAX)
 		g_control_ticks_pending++;
 }

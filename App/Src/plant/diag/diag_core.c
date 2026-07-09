@@ -47,6 +47,10 @@ void diag_finalize_probe(uint8_t kind, uint8_t motor_id, bool got)
 		g_last_probe.motor_id = motor_id;
 	} else if (kind == PLANT_DIAG_PROBE_CTRL_FAST) {
 		g_last_probe.found = got || g_last_probe.found;
+	} else if (kind == PLANT_DIAG_PROBE_CALI) {
+		if (got)
+			g_last_probe.found = true;
+		/* else keep feedback captured during listen */
 	} else {
 		g_last_probe.found = got;
 	}
@@ -119,7 +123,7 @@ void plant_diag_yield_usb(void)
 
 bool plant_diag_blocks_usb_feedback(void)
 {
-	return g_probe_in_progress;
+	return g_probe_in_progress && !g_probe_progress_push;
 }
 
 void plant_diag_probe_progress(const robstride_probe_result_t *partial)
@@ -128,9 +132,9 @@ void plant_diag_probe_progress(const robstride_probe_result_t *partial)
 		return;
 
 	g_last_probe = *partial;
-	if (g_last_probe.raw_frames_seen > 0u)
-		g_last_probe.found = true;
+	g_probe_progress_push = true;
 	(void)host_link_poll_tx_once();
+	g_probe_progress_push = false;
 }
 
 void plant_diag_service(void)
@@ -161,6 +165,13 @@ void plant_diag_release_actuator_can(void)
 	g_rs2_probe_pending = false;
 	g_probe_in_progress = false;
 	g_probe_started_ms = 0u;
+
+	/* Drop bench PDU stamps ('r'/'m'/'d') so plant runtime feedback is clean. */
+	g_dm_feedback_active = false;
+	g_dm_feedback_ttl = 0u;
+	memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
+	memset(&g_last_probe, 0, sizeof(g_last_probe));
+	g_dxl_feedback_active = false;
 }
 
 bool plant_diag_bench_session_active(void)

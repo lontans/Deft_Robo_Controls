@@ -102,7 +102,7 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 		g_last_dm_probe.motor_id = cmd->pdu.data[3];
 		g_last_dm_probe.found = true;
 		g_dm_feedback_active = true;
-		g_dm_feedback_ttl = PLANT_DM_FB_TTL_SESSION;
+		g_dm_feedback_ttl = 2u;
 		diag_flush_usb();
 		return;
 	}
@@ -117,8 +117,9 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 		g_last_dm_probe.motor_id = cmd->pdu.data[3];
 		g_last_dm_probe.found = true;
 		g_dm_feedback_active = true;
-		g_dm_feedback_ttl = PLANT_DM_FB_TTL_SESSION;
+		g_dm_feedback_ttl = 2u;
 		diag_flush_usb();
+		plant_diag_release_actuator_can();
 		return;
 	}
 
@@ -165,6 +166,9 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 
 	diag_dm_publish_actuator_state();
 	g_dm_feedback_active = true;
-	g_dm_feedback_ttl = PLANT_DM_FB_TTL_PROBE;
+	g_dm_feedback_ttl = 4u;
 	diag_flush_usb();
+	memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
+	g_dm_feedback_active = false;
+	g_dm_feedback_ttl = 0u;
 }

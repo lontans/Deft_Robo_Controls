@@ -7,6 +7,7 @@
 #include "plant/plant_command.h"
 #include "host/host_link.h"
 #include "plant/plant_crit.h"
+#include <math.h>
 #include <string.h>
 
 static actuator_desire_t actuator_desire_stage[ACTUATOR_COUNT];
@@ -47,6 +48,22 @@ void actuator_desire_clear(void)
 	memset(actuator_desire_stage, 0, sizeof(actuator_desire_stage));
 	actuator_desire_pending = false;
 	plant_crit_exit();
+}
+
+bool actuator_any_non_idle_live(void)
+{
+	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		const actuator_desire_t *d = &actuator_desire_live[i];
+
+		if (!actuator_table[i].enabled)
+			continue;
+		if (d->kp > 0.01f || d->kd > 0.01f)
+			return true;
+		if (fabsf(d->velocity) > 0.01f || fabsf(d->torque) > 0.01f)
+			return true;
+	}
+
+	return false;
 }
 
 void plant_recovery_all(void)
@@ -90,10 +107,6 @@ void actuator_apply_desire(void)
 
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		if (!actuator_table[i].enabled)
-			continue;
-
-		/* CH4–6 are MCP2518 — driven by host RS2 probes, not the 500 Hz loop. */
-		if (actuator_table[i].bus >= CAN_BUS_CH4)
 			continue;
 
 		if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {

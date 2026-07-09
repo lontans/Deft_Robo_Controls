@@ -2,6 +2,7 @@
 #include "plant/plant_command.h"
 #include "plant/servo.h"
 #include "host/host_link.h"
+#include "plant/actuator.h"
 
 #define ACTUATOR_HOST_STALE_MS 500u
 
@@ -38,7 +39,8 @@ bool plant_runtime_actuator_can_apply(void)
 		return false;
 	}
 
-	if (!host_link_command_is_fresh(ACTUATOR_HOST_STALE_MS)) {
+	if (!host_link_command_is_fresh(ACTUATOR_HOST_STALE_MS) &&
+	    !actuator_any_non_idle_live()) {
 		s_last_block = PLANT_BLOCK_HOST_STALE;
 		return false;
 	}

@@ -7,7 +7,7 @@
 extern USBD_HandleTypeDef hUsbDeviceFS;
 extern uint8_t UserTxBufferFS[];
 
-#define USB_TRANSPORT_RX_RING_SIZE 8192u
+#define USB_TRANSPORT_RX_RING_SIZE 16384u
 
 static uint8_t           rx_ring[USB_TRANSPORT_RX_RING_SIZE];
 static volatile uint16_t rx_head;

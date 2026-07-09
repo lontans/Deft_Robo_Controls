@@ -39,3 +39,5 @@ void actuator_feedback_snapshot(host_actuator_feedback_t *dst, uint8_t count);
 
 void actuator_desire_clear(void);
 void plant_recovery_all(void);
+
+bool actuator_any_non_idle_live(void);

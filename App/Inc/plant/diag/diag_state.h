@@ -12,6 +12,7 @@ extern robstride_probe_result_t g_last_probe;
 extern mcp2518_smoke_result_t g_last_mcp_smoke;
 extern volatile bool g_rs2_session_active;
 extern volatile bool g_probe_in_progress;
+extern volatile bool g_probe_progress_push;
 extern uint32_t g_probe_started_ms;
 extern uint8_t g_rs2_motor_id;
 extern can_bus_id_t g_rs2_can_bus;

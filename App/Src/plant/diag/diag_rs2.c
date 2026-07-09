@@ -187,4 +187,8 @@ void diag_run_rs2_pending(void)
 	g_probe_in_progress = false;
 	g_probe_started_ms = 0u;
 	diag_flush_usb();
+
+	/* Drop stale bench PDU so plant runtime feedback is not stuck on tag 'r'. */
+	if (kind != PLANT_DIAG_SESSION_BEGIN && kind != PLANT_DIAG_SESSION_END)
+		memset(&g_last_probe, 0, sizeof(g_last_probe));
 }

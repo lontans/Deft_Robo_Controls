@@ -20,6 +20,10 @@ def format_probe_line(label: str, motor_id: int, resp: Optional[dict]) -> str:
     ext = decode_ext_id(resp["ext_id"])
     disc = resp.get("discovered_id") or ext.motor_id or (motor_id & 0xFF)
     valid = disc == (motor_id & 0xFF) and resp["comm_mode"] in (0x02, 0x11, 0x12, 0x18)
+    if resp["found"] and resp.get("ext_id"):
+        ext = decode_ext_id(resp["ext_id"])
+        if ext.mode != resp["comm_mode"]:
+            valid = False
     fault_s = ",".join(ext.faults) if ext.faults else "none"
     mms = mms_label(ext.mode_status)
     tag = "HIT" if resp["found"] else "SNIFF"

@@ -6,16 +6,16 @@ from typing import Tuple
 from controls_pcb_host.protocol.can_bus import MAX_CAN_BUS
 
 HZ = 40.0
-KD = 0.5
-ARROW_VEL = 5.0
-RAMP_UP_S = 0.4
-RAMP_DOWN_S = 1.2
-SLOT_KP: Tuple[float, ...] = (12.0, 8.0, 8.0, 8.0, 8.0, 8.0)
+KD = 0.45
+ARROW_VEL = 3.5
+RAMP_UP_S = 0.12
+RAMP_DOWN_S = 0.35
+VEL_STOP = 0.05
+SLOT_KP: Tuple[float, ...] = (10.0, 8.0, 8.0, 8.0, 8.0, 8.0)
 
 HOME_TARGET = 0.0
-HOME_SLEW_RAD_S = 0.20
+HOME_SLEW_RAD_S = 0.18
 HOME_KP = 6.0
-POS_STEP = 0.02
 HOME_POS_TOL = 0.05
 HOME_VEL_TOL = 0.15
 HOME_DWELL_S = 0.6

@@ -24,10 +24,10 @@ from controls_pcb_host.protocol import (
     PROBE_RESET,
     PROBE_ZERO,
 )
-from controls_pcb_host.protocol.can_bus import can_bus_label, print_can_bus_note, probe_target_label
+from controls_pcb_host.protocol.can_bus import can_bus_label, is_mcp_bus, print_can_bus_note, probe_target_label
 from controls_pcb_host.session import PcbSession
 
-from ..link import heal_usb, release_stuck
+from ..link import heal_usb, rs2_bench
 from ..protocol.rs02 import (
     CALI_SKIP_RESET,
     DEFAULT_CAL_LISTEN_S,
@@ -47,6 +47,7 @@ from .probe import (
     pararead,
     parawrite,
     probe,
+    probe_cali,
     probe_response_valid,
 )
 
@@ -56,7 +57,35 @@ VERIFY_READS = (
     ("run_mode (0x7005)", PARAM_RUN_MODE),
 )
 
-CAL_SETTLE_S = 2.0
+CAL_SETTLE_S = 1.0
+_CAL_PROGRESS_INTERVAL_S = 2.0
+
+# RS02 comm 0x02 velocity field (rad/s) — matches RS02_V_MIN/MAX in firmware.
+_V_MIN = -44.0
+_V_MAX = 44.0
+
+
+def _comm02_velocity_rad_s(can_data: bytes) -> float:
+    if len(can_data) < 4:
+        return 0.0
+    v_raw = (can_data[2] << 8) | can_data[3]
+    return _V_MIN + (v_raw / 65535.0) * (_V_MAX - _V_MIN)
+
+
+def _cali_progress_line(motor_id: int, parsed: dict, saw_cali: bool) -> None:
+    if not parsed.get("ext_id"):
+        return
+    ext = decode_ext_id(parsed["ext_id"])
+    if ext.mode != 0x02 or ext.motor_id != (motor_id & 0xFF):
+        return
+    flag = " *" if saw_cali else ""
+    can_data = bytes(parsed.get("can_data") or b"")
+    vel = _comm02_velocity_rad_s(can_data)
+    raw_n = int(parsed.get("raw_frames", 0))
+    print(
+        f"  ... cali listen  mms={mms_label(ext.mode_status)}{flag}  "
+        f"vel={vel:+.2f} rad/s  raw={raw_n}  data={can_data.hex()}"
+    )
 
 
 def run_encoder_cal(
@@ -91,8 +120,7 @@ def run_encoder_cal(
                 print("ERROR: no USB feedback — power-cycle board and retry.")
                 return 1
 
-            session.rs2_session_begin(bus)
-            try:
+            with rs2_bench(session, bus):
                 return _cal_body(
                     session,
                     bus,
@@ -102,15 +130,6 @@ def run_encoder_cal(
                     skip_iq_test,
                     strict_cali,
                 )
-            finally:
-                release_stuck(session)
-                try:
-                    session.rs2_session_end(bus)
-                except Exception:
-                    pass
-                session.recover()
-                heal_usb(session)
-                time.sleep(0.35)
 
 
 def _ensure_rest_before_cali(
@@ -176,18 +195,33 @@ def _cal_body(
             print(f"  VBUS={vbus:.1f} V (in range)")
         print()
 
-    listen_param = (int(cal_listen_s) & 0xFF) | CALI_SKIP_RESET
+    listen_param = int(cal_listen_s) & 0xFF
+    if is_mcp_bus(bus):
+        print("  MCP: firmware reset+drain immediately before comm 0x05 (after iq_test gap).")
+        time.sleep(0.25)
+    else:
+        listen_param |= CALI_SKIP_RESET
     print(
         f"--- motor_cali comm 0x05 (one {cal_listen_s:.0f}s passive listen — shaft must spin) ---"
     )
+    last_progress = 0.0
+
+    def on_progress(parsed: dict, saw: bool) -> None:
+        nonlocal last_progress
+        now = time.monotonic()
+        if now - last_progress >= _CAL_PROGRESS_INTERVAL_S:
+            last_progress = now
+            _cali_progress_line(motor_id, parsed, saw)
+
     try:
-        resp = probe(
+        resp, saw_cali = probe_cali(
             session,
             motor_id,
-            PROBE_CALI,
-            usb_wait_s,
+            cal_listen_s,
             bus=bus,
+            usb_wait_s=usb_wait_s,
             probe_param=listen_param,
+            on_progress=on_progress,
         )
     except KeyboardInterrupt:
         print("\n  cali aborted (Ctrl+C)")
@@ -195,15 +229,13 @@ def _cal_body(
 
     print(format_probe_line("motor_cali", motor_id, resp))
 
-    cal_ok = resp is not None and cali_finished(resp, motor_id)
-    saw_cali = False
+    cal_ok = resp is not None and cali_finished(resp, motor_id, saw_cali=saw_cali)
     if resp and resp.get("ext_id") and probe_response_valid(resp, motor_id):
         ext = decode_ext_id(resp["ext_id"])
-        saw_cali = ext.mode_status == 1 or cal_ok
         if ext.mode_status == 1 and not cal_ok:
             print(
-                f"  final readback mms={mms_label(ext.mode_status)} after {cal_listen_s:.0f}s listen "
-                f"(motor may have finished — passive listen often misses mms→rest)."
+                f"  final readback mms={mms_label(ext.mode_status)} after listen "
+                f"(MCU may exit early when spin settles; zero/save still valid if saw_cali)."
             )
     elif resp and resp.get("ext_id"):
         ext = decode_ext_id(resp["ext_id"])
@@ -212,6 +244,13 @@ def _cal_body(
 
     if not saw_cali:
         print("  motor never entered mms=cali — 0x05 did not start encoder cal.")
+        if resp is None:
+            print(
+                "  (no cali USB progress — reflash MCU with probe-progress TX fix, "
+                "then retry; listen may still have run on-device.)"
+            )
+        if is_mcp_bus(bus):
+            print("  MCP: confirm CH4 ACT LED blinks on 0x05 TX; try higher bus voltage if marginal.")
         print("  Check: shaft free, bus/ID, motor at rest, firmware PROBE_CALI (kind 16).")
         return 1
 
@@ -221,7 +260,7 @@ def _cal_body(
             print("  Power-cycle motor if shaft still spinning; retry when at rest.")
             return 1
         print(
-            f"  proceeding to zero/save ({CAL_SETTLE_S:.0f}s settle, no further cal probes) — "
+            f"  proceeding to zero/save ({CAL_SETTLE_S:.0f}s settle, then comm 0x06/0x16 ~10s) — "
             "mms=cali was seen during listen."
         )
         time.sleep(CAL_SETTLE_S)
@@ -233,6 +272,9 @@ def _cal_body(
     print("--- motor_zero comm 0x06 ---")
     resp = probe(session, motor_id, PROBE_ZERO, 4.0, bus=bus)
     print(format_probe_line("motor_zero", motor_id, resp))
+    if resp is not None and not probe_response_valid(resp, motor_id):
+        print("  SKIP data_save — motor_zero reply was bus noise (wrong id / comm).")
+        return 1
     print()
 
     print("--- data_save comm 0x16 ---")

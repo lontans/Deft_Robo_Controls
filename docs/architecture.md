@@ -49,6 +49,8 @@ Canonical package: **`scripts/control_hub/`** (entry: `python scripts/control_hu
 
 `controls_pcb_host.py` and `control_hub.py` are equivalent entrypoints. Legacy scripts (`host_teleop_laptop_usb.py`, `rs02_can_scan.py`) remain for expert `--bench-cmds` / MCP smoke; new work goes through `control_hub`.
 
+See [fdcan-plant-teleop.md](fdcan-plant-teleop.md) for FDCAN RS02 teleop workflow and tuning flags.
+
 ## Dual host paths (firmware)
 
 | Path | Trigger | MCU behavior | Host |

@@ -57,7 +57,7 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 		return;
 	}
 
-	if (g_probe_in_progress)
+	if (g_probe_in_progress && !g_probe_progress_push)
 		return;
 
 	if (g_last_probe.probe_kind == 0u && g_last_probe.motor_id == 0u &&
@@ -111,26 +111,22 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 		if (g_rs2_can_bus >= CAN_BUS_CH4)
 			rail = (uint8_t)(g_rs2_can_bus - CAN_BUS_CH4);
 
+		/* RS2 bench on MCP: keep probe ext_id/can_data/discovered_id intact.
+		 * MCP smoke fields live only in pdu[29..31] (and [27..28] above). */
 		if (g_rs2_can_bus >= CAN_BUS_CH4) {
-			mcp2518_smoke_result_t smoke;
+			uint8_t tx_ok = 0u;
+			uint8_t tx_fail = 0u;
+			uint8_t tx_nack = 0u;
+			uint8_t tec = 0u;
+			uint8_t rec = 0u;
 
-			mcp2518_refresh_smoke_diag(g_rs2_can_bus, &smoke);
-			pdu->data[6] = smoke.tec_before;
-			pdu->data[7] = smoke.bdiag1_b1;
-			pdu->data[8] = smoke.tx_fifo_sta;
-			pdu->data[9] = smoke.tx_fifo_con;
-			pdu->data[10] = smoke.c1con_b2;
-			pdu->data[11] = smoke.osc_b1;
-			pdu->data[12] = smoke.osc_b0;
-			pdu->data[13] = smoke.nbt_tseg1;
-			pdu->data[14] = smoke.bdiag1_b0;
-			pdu->data[15] = smoke.nbt_brp;
-			pdu->data[24] = smoke.tx_nack;
-			pdu->data[29] = smoke.tx_ok;
-			pdu->data[30] = smoke.tx_fail;
-			pdu->data[31] = smoke.tec;
-			pdu->data[17] = smoke.rec;
-			pdu->data[18] = smoke.ext_loopback_ok;
+			mcp2518_get_tx_stats(rail, &tx_ok, &tx_fail, &tx_nack);
+			mcp2518_rail_trec(rail, &tec, &rec);
+			(void)tx_nack;
+			(void)rec;
+			pdu->data[29] = tx_ok;
+			pdu->data[30] = tx_fail;
+			pdu->data[31] = tec;
 		} else {
 			uint8_t tx_ok = 0u;
 			uint8_t tx_fail = 0u;

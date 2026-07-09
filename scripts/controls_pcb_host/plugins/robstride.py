@@ -16,7 +16,7 @@ from ..protocol import (
     SESSION_BEGIN,
     SESSION_END,
 )
-from ..protocol.can_bus import can_bus_label, print_can_bus_note
+from ..protocol.can_bus import can_bus_label, is_mcp_bus, print_can_bus_note
 from ..session import PcbSession
 from ..transport import FrameReader
 
@@ -132,17 +132,21 @@ def probe_id(
 ) -> Optional[dict]:
     """Bench probe: reset then enable-only by default (matches discover hit path).
 
+    MCP (CH4–6): skip pre-reset (discover path); longer listen timeout for SPI-CAN.
     Use kind=PROBE_FULL for run_mode+enable+ctrl init (--full on CLI).
     """
+    mcp = is_mcp_bus(bus)
+    enable_tmo = max(timeout_s, 1.0) if mcp else timeout_s
     with session.rx_pump():
         session.rs2_session_begin(bus)
         try:
-            send_diag(session, motor_id, PROBE_RESET, 0.45, bus=bus)
+            if not mcp:
+                send_diag(session, motor_id, PROBE_RESET, 0.45, bus=bus)
             kw: dict = {}
             if kind in (PROBE_FULL, PROBE_ENABLE_CTRL, PROBE_CTRL_ONLY):
                 kw = dict(kp=50.0, kd=1.0)
             resp = send_diag(
-                session, motor_id, kind, timeout_s, bus=bus, **kw
+                session, motor_id, kind, enable_tmo, bus=bus, **kw
             )
             if resp is None:
                 print(f"MISS  id=0x{motor_id:02X}  kind={kind}")

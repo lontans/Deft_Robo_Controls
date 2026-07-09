@@ -7,6 +7,11 @@ from .diag_pdu import RS2_COMM_NAMES
 from .schema import MAX_CAN_BUS, MIN_CAN_BUS
 
 MCP_CAN_BUSES: FrozenSet[int] = frozenset({4, 5, 6})
+FDCAN_BUSES: FrozenSet[int] = frozenset({1, 2, 3})
+"""CH1–CH2: RS02 plant runtime at 500 Hz (FDCAN). CH3 is FDCAN but Damiao in default table."""
+FDCAN_RS02_PLANT_BUSES: FrozenSet[int] = frozenset({1, 2})
+MCP_RS02_PLANT_BUSES: FrozenSet[int] = frozenset({4, 5, 6})
+RS02_PLANT_BUSES: FrozenSet[int] = FDCAN_RS02_PLANT_BUSES | MCP_RS02_PLANT_BUSES
 
 _CAN_PINS: Dict[int, str] = {
     1: "PB8/9 FDCAN1",
@@ -25,6 +30,22 @@ _ACTIVITY_LED: Dict[int, str] = {
     5: "PB2",
     6: "PC5",
 }
+
+
+def is_mcp_bus(bus: int) -> bool:
+    return normalize_can_bus(bus) in MCP_CAN_BUSES
+
+
+def is_fdcan_rs02_plant_bus(bus: int) -> bool:
+    return normalize_can_bus(bus) in FDCAN_RS02_PLANT_BUSES
+
+
+def is_mcp_rs02_plant_bus(bus: int) -> bool:
+    return normalize_can_bus(bus) in MCP_RS02_PLANT_BUSES
+
+
+def is_rs02_plant_bus(bus: int) -> bool:
+    return normalize_can_bus(bus) in RS02_PLANT_BUSES
 
 
 def normalize_can_bus(bus: int) -> int:
