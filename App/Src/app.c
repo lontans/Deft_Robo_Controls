@@ -9,6 +9,8 @@
 #include "plant/can/can_router.h"
 #include "host/host_link.h"
 #include "host/host_uart_bridge.h"
+#include "plant/control_loop.h"
+#include "plant/plant_timing.h"
 #include "plant/plugin_schema/plugin_table.h"
 #include "main.h"
 
@@ -40,18 +42,17 @@ void app_run(void)
 {
 	uint32_t now = HAL_GetTick();
 
+	plant_timing_lap_begin();
+	plant_timing_note_pending_at_lap(control_loop_pending_get());
+
 	host_link_begin_loop();
 	host_link_poll_rx();
 	plant_diag_service();
-	plant_diag_can_router_poll();
 
 #if !USE_FREERTOS_SCHEDULER
-	/* Drain pending plant ticks — non-blocking MCP TX keeps this fast. */
-	for (uint8_t i = 0; i < 4u; i++) {
-		control_loop_service();
-		host_link_poll_rx();
-		plant_diag_can_router_poll();
-	}
+	/* One service call drains up to CONTROL_TICK_BURST_MAX ticks (see 5df1f04).
+	 * Avoid 6× can_router_poll() per lap — that was added for MCP and regressed FDCAN. */
+	control_loop_service();
 #endif
 
 	led_service();
@@ -61,6 +62,8 @@ void app_run(void)
 #endif
 
 	plant_diag_can_router_poll();
+
+	plant_timing_lap_end();
 
 	if (now - s_app_run_heartbeat_ms >= APP_RUN_HEARTBEAT_MS) {
 		s_app_run_heartbeat_ms = now;

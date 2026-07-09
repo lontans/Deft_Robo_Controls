@@ -43,6 +43,20 @@ PLANT_BLOCK_NAMES = {
 }
 
 
+def parse_svd_plant_timing(pdu: bytes) -> Optional[dict]:
+    """Bytes 23..28 in SVD PDU — superloop timing from firmware plant_timing.c."""
+    if len(pdu) < 29 or pdu[:3] != b"SVD":
+        return None
+    lap_ms = pdu[23] | (pdu[24] << 8)
+    lap_max_ms = pdu[27] | (pdu[28] << 8)
+    return {
+        "lap_ms": lap_ms,
+        "lap_max_ms": lap_max_ms,
+        "ticks_svc": pdu[25],
+        "ticks_pending": pdu[26],
+    }
+
+
 def parse_feedback_header(frame: bytes) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
@@ -53,7 +67,8 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     pdu = frame[PDU_OFF : PDU_OFF + 32]
     tag = chr(pdu[0]) if 32 <= pdu[0] < 127 else f"0x{pdu[0]:02X}"
     plant_block = (sys_word >> 25) & 0x7F
-    return {
+    timing = parse_svd_plant_timing(pdu)
+    out = {
         "magic_ok": True,
         "magic_hex": f"0x{magic:08X}",
         "layout_version": layout_version,
@@ -68,6 +83,9 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
         "pdu_tag_name": PDU_TAG_NAMES.get(tag, "unknown"),
         "pdu_head_hex": pdu[:12].hex(),
     }
+    if timing is not None:
+        out.update(timing)
+    return out
 
 
 def parse_actuator_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:

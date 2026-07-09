@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import math
-import sys
 import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -31,10 +30,19 @@ from .input import (
     poll_vertical_arrow_pressed,
 )
 
-_live_len = 0
 _link_ack: Optional[int] = None
 _link_block: str = "?"
 _link_tx_seq: Optional[int] = None
+_link_lap_ms: Optional[int] = None
+_link_lap_max_ms: Optional[int] = None
+_link_ticks_svc: Optional[int] = None
+_link_ticks_pending: Optional[int] = None
+_link_fb_seq: Optional[int] = None
+_link_mcu_tick: Optional[int] = None
+_link_ack_at: Optional[float] = None
+_link_fb_at: Optional[float] = None
+_link_last_ack: Optional[int] = None
+_link_last_fb_pos: Optional[float] = None
 _latched_dir = 0
 _dir_release_at = 0.0
 
@@ -59,20 +67,84 @@ def _poll_motion_dir() -> int:
     return 0
 
 
-def _live(text: str) -> None:
-    global _live_len
-    line = text.replace("\n", " ")[:150]
-    pad = max(0, _live_len - len(line))
-    sys.stdout.write("\r" + line + " " * pad + "\x1b[K")
-    sys.stdout.flush()
-    _live_len = len(line)
+def _debug_log(*lines: str) -> None:
+    for line in lines:
+        print(line, flush=True)
 
 
 def _notice(text: str) -> None:
-    global _live_len
-    sys.stdout.write("\n" + text + "\n")
-    sys.stdout.flush()
-    _live_len = 0
+    print(text, flush=True)
+
+
+def _link_debug_line() -> str:
+    parts = [
+        f"tx={_link_tx_seq if _link_tx_seq is not None else '?'}",
+        f"ack={_link_ack if _link_ack is not None else '?'}",
+        f"block={_link_block}",
+    ]
+    if _link_lap_ms is not None:
+        parts.append(f"lap={_link_lap_ms}ms")
+    if _link_lap_max_ms is not None:
+        parts.append(f"lap_max={_link_lap_max_ms}ms")
+    if _link_ticks_svc is not None:
+        parts.append(f"ptick={_link_ticks_svc}")
+    if _link_ticks_pending is not None:
+        parts.append(f"pend={_link_ticks_pending}")
+    if _link_fb_seq is not None:
+        parts.append(f"fb_seq={_link_fb_seq}")
+    if _link_mcu_tick is not None:
+        parts.append(f"mcu_tick={_link_mcu_tick}")
+    if _link_ack_at is not None:
+        parts.append(f"ack_age={int((time.monotonic() - _link_ack_at) * 1000)}ms")
+    if _link_fb_at is not None:
+        parts.append(f"fb_age={int((time.monotonic() - _link_fb_at) * 1000)}ms")
+    return "link: " + "  ".join(parts)
+
+
+def _slot_debug_line(
+    st: SlotState,
+    *,
+    active: bool,
+    extremity: bool,
+    motion_dir: int = 0,
+) -> str:
+    mark = "*" if active else " "
+    bus = can_bus_label(st.bus)
+    if extremity:
+        tgt_s = f"{st.goto_target:+.1f}" if st.goto_target is not None else "idle"
+        return (
+            f"  {mark}slot{st.slot} {bus} 0x{st.motor_id:02X}  "
+            f"tgt={tgt_s}  v={st.cmd_velocity:+.2f}  kp={st.kp:.0f}  "
+            f"cmd={st.cmd_position:+.4f}  fb={st.fb_position:+.4f}  "
+            f"v_fb={st.fb_velocity:+.3f}  fault={st.fb_fault}"
+        )
+    lead = st.cmd_position - st.fb_position
+    return (
+        f"  {mark}slot{st.slot} {bus} 0x{st.motor_id:02X}  "
+        f"dir={motion_dir:+d}  rate={st.slew_rate:+.2f}  kp={st.kp:.0f}  "
+        f"cmd={st.cmd_position:+.4f}  fb={st.fb_position:+.4f}  "
+        f"lead={lead:+.3f}  v_fb={st.fb_velocity:+.3f}  fault={st.fb_fault}"
+    )
+
+
+def _emit_teleop_debug(
+    *,
+    active_bus: int,
+    slots: List[SlotState],
+    target_ids: set,
+    extremity: bool,
+    motion_dir: int = 0,
+) -> None:
+    ts = time.strftime("%H:%M:%S") + f".{int((time.time() % 1) * 1000):03d}"
+    _debug_log(
+        f"--- teleop {ts}  {_bus_label(active_bus)} ---",
+        _link_debug_line(),
+        *[
+            _slot_debug_line(st, active=id(st) in target_ids, extremity=extremity, motion_dir=motion_dir)
+            for st in slots
+        ],
+        "",
+    )
 
 
 @dataclass
@@ -107,8 +179,14 @@ def _sanitize_pos(pos: float, fallback: float) -> float:
 
 def _apply_fb(st: SlotState, fb: dict, *, sync_cmd: bool) -> None:
     pos = _sanitize_pos(float(fb["position"]), st.fb_position)
+    vel = float(fb["velocity"])
+    # Ignore glitch samples (e.g. v≈±25 after a hard MIT jolt) so teleop does not
+    # keep commanding against a frozen/faulted readback.
+    if abs(vel) > D.FB_VEL_ABS_MAX and st.feedback_synced:
+        st.fb_fault = int(fb.get("fault", 0))
+        return
     st.fb_position = pos
-    st.fb_velocity = fb["velocity"]
+    st.fb_velocity = vel
     st.fb_fault = int(fb.get("fault", 0))
     if sync_cmd or not st.feedback_synced:
         st.cmd_position = pos
@@ -116,7 +194,9 @@ def _apply_fb(st: SlotState, fb: dict, *, sync_cmd: bool) -> None:
 
 
 def _poll_fb(session: PcbSession, slots: List[SlotState]) -> None:
-    global _link_ack, _link_block
+    global _link_ack, _link_block, _link_lap_ms, _link_lap_max_ms
+    global _link_ticks_svc, _link_ticks_pending, _link_fb_seq, _link_mcu_tick
+    global _link_ack_at, _link_fb_at, _link_last_ack, _link_last_fb_pos
     latest: Optional[bytes] = None
     frame = session.reader.pop()
     while frame is not None:
@@ -126,11 +206,30 @@ def _poll_fb(session: PcbSession, slots: List[SlotState]) -> None:
         return
     hdr = parse_feedback_header(latest)
     if hdr is not None:
-        _link_ack = int(hdr["last_cmd_seq"])
+        now = time.monotonic()
+        ack = int(hdr["last_cmd_seq"])
+        if _link_last_ack != ack:
+            _link_last_ack = ack
+            _link_ack_at = now
+        _link_ack = ack
         _link_block = str(hdr.get("plant_block_name", "?"))
+        lap = hdr.get("lap_ms")
+        _link_lap_ms = int(lap) if lap is not None else None
+        lap_max = hdr.get("lap_max_ms")
+        _link_lap_max_ms = int(lap_max) if lap_max is not None else None
+        ticks = hdr.get("ticks_svc")
+        _link_ticks_svc = int(ticks) if ticks is not None else None
+        pend = hdr.get("ticks_pending")
+        _link_ticks_pending = int(pend) if pend is not None else None
+        _link_fb_seq = int(hdr["fb_seq"])
+        _link_mcu_tick = int(hdr["tick"])
     for st in slots:
         fb = parse_actuator_feedback(latest, slot=st.slot)
         if fb is not None:
+            # Any fresh sample for this slot resets fb_age — not only when
+            # position moves (flat rest / lagged MCP otherwise looks "stale").
+            _link_last_fb_pos = float(fb["position"])
+            _link_fb_at = time.monotonic()
             _apply_fb(st, fb, sync_cmd=not st.feedback_synced)
 
 
@@ -141,7 +240,12 @@ def _send_slots(session: PcbSession, slots: List[SlotState], kd: float) -> None:
         eff_kd = st.kd if (st.kd != 0.0 or st.kp == 0.0) else kd
         # RS02 plant teleop: position slew + kp only (matches homing/extremity; MCU interpolates p).
         mit_v = 0.0
-        slot_commands[st.slot] = (st.cmd_position, mit_v, st.kp, eff_kd, 0.0)
+        pos = st.cmd_position
+        # At exact home, keep the active slot non-blank so MCP firmware still RX-polls
+        # (blank MCP slots are skipped entirely — no SPI TX/RX).
+        if abs(pos) < D.HOME_POS_EPS:
+            pos = D.HOME_POS_EPS
+        slot_commands[st.slot] = (pos, mit_v, st.kp, eff_kd, 0.0)
     _link_tx_seq = session.seq
     session.send_plant(slot_commands)
 
@@ -178,11 +282,32 @@ def _sync_feedback(
     dt = 1.0 / hz
     rounds = max(12, int(seconds * hz))
     for _ in range(rounds):
-        session.send_plant()
+        # Keep MCP slots non-blank so firmware RX-polls SPI-CAN during sync.
+        slot_commands = {}
+        for st in slots:
+            pos = st.cmd_position if abs(st.cmd_position) >= D.HOME_POS_EPS else D.HOME_POS_EPS
+            slot_commands[st.slot] = (pos, 0.0, 0.0, 0.0, 0.0)
+        session.send_plant(slot_commands)
         time.sleep(dt)
         _poll_fb(session, slots)
         if all(st.feedback_synced for st in slots):
+            # MCP: all-zero feedback is the default image, not a live motor.
+            if any(is_mcp_bus(st.bus) for st in slots):
+                if all(
+                    abs(st.fb_position) < 1e-4 and abs(st.fb_velocity) < 1e-4
+                    for st in slots
+                    if is_mcp_bus(st.bus)
+                ):
+                    continue
             return True
+    if any(is_mcp_bus(st.bus) for st in slots):
+        live = any(
+            st.feedback_synced
+            and (abs(st.fb_position) >= 1e-4 or abs(st.fb_velocity) >= 1e-4)
+            for st in slots
+            if is_mcp_bus(st.bus)
+        )
+        return live
     return any(st.feedback_synced for st in slots)
 
 
@@ -296,6 +421,16 @@ def _home(
         st.last_drive_dir = 0
         st.kd = 0.0 if (idle_kp if home_on_fb else 0.0) == 0.0 else kd
         st.kp = idle_kp if home_on_fb else 0.0
+    if home_on_fb and not all(
+        abs(st.fb_position - D.HOME_TARGET) <= D.HOME_POS_TOL
+        for st in active
+    ):
+        pos_s = ", ".join(f"{st.fb_position:+.4f}" for st in active)
+        print(
+            f"WARNING: homing timed out with fb still at {pos_s} rad "
+            "(motor did not track cmd — check bus TX / recover / reflash)."
+        )
+        return True
     print("Homing complete — arrow keys enabled.\n")
     return False
 
@@ -326,15 +461,23 @@ def _shutdown(
     time.sleep(0.15)
 
 
-def _advance_cmd_lead_from_fb(st: SlotState, *, dt: float, max_lead: float) -> None:
-    """Advance position target as lead from fb (capped) — flip-feel stays smooth, no runaway cmd."""
+def _advance_cmd_slew(st: SlotState, *, dt: float, max_lead: float) -> None:
+    """Integrate cmd from previous cmd; freeze if lead vs fb would widen past max_lead.
+
+    Do NOT rebase cmd onto fb each tick — MCP (and any lagged plant) can deliver
+    stale/backward fb samples; rebasing causes visible position snaps.
+    """
     if not st.feedback_synced or abs(st.slew_rate) < 1e-6:
         return
-    lead = st.cmd_position - st.fb_position
-    lead += st.slew_rate * dt
+    proposed = st.cmd_position + st.slew_rate * dt
+    proposed = max(D.P_MIN, min(D.P_MAX, proposed))
+    lead = proposed - st.fb_position
     if abs(lead) > max_lead:
-        lead = math.copysign(max_lead, lead)
-    st.cmd_position = max(D.P_MIN, min(D.P_MAX, st.fb_position + lead))
+        cur_lead = st.cmd_position - st.fb_position
+        # Only block advances that widen the gap; never teleport onto fb.
+        if abs(lead) > abs(cur_lead) + 1e-9:
+            return
+    st.cmd_position = proposed
 
 
 class _TeleopTrace:
@@ -451,7 +594,10 @@ def _update_slot_motion(
     drive_dir = motion_dir if (active and motion_dir != 0) else 0
 
     if drive_dir != 0 and drive_dir != st.last_drive_dir:
-        _anchor_cmd_from_fb(st)
+        # Re-anchor only when starting from rest. Mid-cruise direction flips keep
+        # cmd continuous so a lagged fb sample cannot yank the target.
+        if st.last_drive_dir == 0:
+            _anchor_cmd_from_fb(st)
         st.slew_rate = 0.0
 
     if active and motion_dir != 0:
@@ -475,10 +621,22 @@ def _update_slot_motion(
         st.kp = st.kd = 0.0
         return
 
+    # Gate on MCU ack freshness only. Position-flat fb_age is normal at rest and
+    # also happens when MCP synced on zeros before the first MIT reply.
+    ack_stale = (
+        _link_ack_at is None or (time.monotonic() - _link_ack_at) > D.ACK_STALE_S
+    )
+    if ack_stale:
+        st.slew_rate = 0.0
+        st.cmd_velocity = 0.0
+        st.kp = 0.0
+        st.kd = 0.0
+        return
+
     arrow_active = active and motion_dir != 0
     moving = abs(st.slew_rate) >= vel_stop
     if moving:
-        _advance_cmd_lead_from_fb(st, dt=dt, max_lead=D.MAX_CMD_LEAD)
+        _advance_cmd_slew(st, dt=dt, max_lead=D.MAX_CMD_LEAD)
 
     if arrow_active or moving:
         st.kp = st.max_kp
@@ -490,7 +648,10 @@ def _update_slot_motion(
     else:
         st.kp = 0.0
         st.kd = 0.0
-        _anchor_cmd_from_fb(st)
+        # Soft catch-up only when nearly stopped and close — avoid hard snap onto
+        # a lagged MCP fb sample at the end of a coast.
+        if abs(st.cmd_position - st.fb_position) <= D.MAX_CMD_LEAD:
+            _anchor_cmd_from_fb(st)
 
 
 def _arm_goto_extreme(slots: List[SlotState], target: float) -> None:
@@ -614,6 +775,7 @@ def run_plant_extremity_teleop(
                     return
 
             fb_line = 0
+            print("Debug: scrolling status every ~250 ms (copy/paste friendly).\n")
             try:
                 while True:
                     quit_req = False
@@ -673,24 +835,13 @@ def run_plant_extremity_teleop(
 
                     fb_line += 1
                     if fb_line % max(1, int(hz / 4)) == 0:
-                        parts = [
-                            _bus_label(active_bus),
-                            f"tx={_link_tx_seq if _link_tx_seq is not None else '?'}",
-                            f"ack={_link_ack if _link_ack is not None else '?'}",
-                            f"block={_link_block}",
-                        ]
                         target_ids = {id(st) for st in motion_targets}
-                        for st in rs02:
-                            mark = "*" if id(st) in target_ids else " "
-                            if st.goto_target is not None:
-                                tgt_s = f"{st.goto_target:+.1f}"
-                            else:
-                                tgt_s = "idle"
-                            parts.append(
-                                f"{mark}{st.slot}:{tgt_s} v={st.cmd_velocity:+.1f} kp={st.kp:.0f} "
-                                f"cmd={st.cmd_position:+.3f} fb={st.fb_position:+.3f}"
-                            )
-                        _live("  ".join(parts))
+                        _emit_teleop_debug(
+                            active_bus=active_bus,
+                            slots=rs02,
+                            target_ids=target_ids,
+                            extremity=True,
+                        )
                     time.sleep(dt)
             except KeyboardInterrupt:
                 print("\nStopping...")
@@ -830,6 +981,7 @@ def run_plant_teleop(
             vel_stop = D.VEL_STOP
             trace = _TeleopTrace(debug_trace) if debug_trace else None
             trace_slot = slot_states[0].slot if len(slot_states) == 1 else None
+            print("Debug: scrolling status every ~250 ms (copy/paste friendly).\n")
             try:
                 while True:
                     quit_req = False
@@ -905,21 +1057,13 @@ def run_plant_teleop(
 
                     fb_line += 1
                     if fb_line % max(1, int(hz / 4)) == 0:
-                        parts = [
-                            _bus_label(active_bus),
-                            f"tx={_link_tx_seq if _link_tx_seq is not None else '?'}",
-                            f"ack={_link_ack if _link_ack is not None else '?'}",
-                            f"block={_link_block}",
-                        ]
-                        for st in slot_states:
-                            mark = "*" if id(st) in target_ids else " "
-                            lead = st.cmd_position - st.fb_position
-                            parts.append(
-                                f"{mark}{st.slot}:rate={st.slew_rate:+.1f} kp={st.kp:.0f} "
-                                f"cmd={st.cmd_position:+.3f} fb={st.fb_position:+.3f} "
-                                f"lead={lead:+.2f}"
-                            )
-                        _live("  ".join(parts))
+                        _emit_teleop_debug(
+                            active_bus=active_bus,
+                            slots=slot_states,
+                            target_ids=target_ids,
+                            extremity=False,
+                            motion_dir=motion_dir,
+                        )
                     time.sleep(dt)
             except KeyboardInterrupt:
                 print("\nStopping...")
@@ -996,5 +1140,7 @@ def run_for_slot(
             slot_kp=kp_tuple,
             home_kp=home_kp,
             home_slew=home_slew,
+            recovery_on_exit=True,
+            home_on_fb=True,
             debug_trace=debug_trace,
         )

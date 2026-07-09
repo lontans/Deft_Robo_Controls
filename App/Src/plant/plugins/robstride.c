@@ -567,24 +567,36 @@ static void robstride_maintain_enable(const actuator_config_t *cfg,
 	can_frame_t frame;
 	can_bus_id_t bus;
 	uint32_t now;
+	bool mcp;
 
 	if (cfg == NULL || last_ms == NULL)
 		return;
 
-	/* MIT stream keeps run/enable during velocity teleop; periodic comm frames disturb motion. */
-	if (desire != NULL && desire->kp > 0.0f && fabsf(desire->velocity) > 0.01f)
+	/* First entry (last_ms==0) must always arm run/enable — even with kp>0 —
+	 * otherwise post-recover plant teleop never enables the drive.
+	 * After that, MIT (kp>0) keeps enable; skip periodic re-arm. */
+	if (desire != NULL && desire->kp > 0.01f && *last_ms != 0u)
 		return;
 
 	bus = cfg->bus;
+	mcp = (bus >= CAN_BUS_CH4);
 	now = HAL_GetTick();
 	if (*last_ms != 0u && (now - *last_ms) < 2000u)
 		return;
 
 	*last_ms = now;
-	if (robstride_set_run_mode(cfg, RS02_RUN_MODE_MOVE, &frame) == PLUGIN_OK)
-		(void)can_tx_enqueue(bus, &frame);
-	if (robstride_send_enable(cfg, &frame) == PLUGIN_OK)
-		(void)can_tx_enqueue(bus, &frame);
+	if (robstride_set_run_mode(cfg, RS02_RUN_MODE_MOVE, &frame) == PLUGIN_OK) {
+		if (mcp)
+			(void)robstride_probe_tx(bus, &frame);
+		else
+			(void)can_tx_enqueue(bus, &frame);
+	}
+	if (robstride_send_enable(cfg, &frame) == PLUGIN_OK) {
+		if (mcp)
+			(void)robstride_probe_tx(bus, &frame);
+		else
+			(void)can_tx_enqueue(bus, &frame);
+	}
 }
 
 static uint8_t robstride_actuator_slot(const actuator_config_t *cfg)
@@ -605,8 +617,17 @@ static bool robstride_desire_idle(const actuator_desire_t *desire)
 	if (desire == NULL)
 		return true;
 
-	return (desire->position == 0.0f && desire->velocity == 0.0f &&
-	        desire->kp == 0.0f && desire->kd == 0.0f && desire->torque == 0.0f);
+	/* kp=0 at rest with anchored position is still idle — do not require p==0. */
+	if (desire->kp > 0.01f || desire->kd > 0.01f)
+		return false;
+	if (fabsf(desire->velocity) > 0.01f || fabsf(desire->torque) > 0.01f)
+		return false;
+	return true;
+}
+
+static bool robstride_desire_blank(const actuator_desire_t *desire)
+{
+	return robstride_desire_idle(desire) && desire->position == 0.0f;
 }
 
 static void robstride_apply_drain_rx(const actuator_config_t *cfg,
@@ -752,19 +773,42 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	bus = cfg->bus;
 	mcp = (bus >= CAN_BUS_CH4);
 	idle = robstride_desire_idle(desire);
-	robstride_interp_desire(slot, desire, &work);
+
+	/* Idle MCP slots (kp=0 on CH4–6) must not SPI-flush every plant tick — that
+	 * was added for MCP teleop and slowed the whole superloop including FDCAN. */
+	if (mcp && robstride_desire_blank(desire))
+		return;
+
+	/* Host position interp is for slow MCP USB/SPI only. FDCAN at 500 Hz
+	 * must use the host desire directly (5df1f04) — extrapolating across
+	 * stalled laps produced the teleop jolt (cmd flip / lead blowout). */
+	if (mcp)
+		robstride_interp_desire(slot, desire, &work);
+	else
+		work = *desire;
 	/* MCP: 1 immediate MIT per 500 Hz tick (even spacing); FDCAN: 3× enqueue + HW FIFO. */
 	tx_burst = mcp ? 1u : 3u;
 
-	can_router_poll_bus_rx(bus);
-
 	if (idle) {
+		/* Next non-idle entry must re-arm run/enable (e.g. after recover). */
+		last_maintain_ms[slot] = 0u;
+		if (!mcp) {
+			uint32_t now = HAL_GetTick();
+
+			if (last_pararead_ms[slot] == 0u ||
+			    (now - last_pararead_ms[slot]) >= 50u) {
+				last_pararead_ms[slot] = now;
+				last_pararead_idx[slot] = (pararead_phase[slot] == 0u) ?
+				                          RS02_PARAM_MECH_POS : RS02_PARAM_MECH_VEL;
+				pararead_phase[slot] ^= 1u;
+				if (robstride_send_para_read(cfg, last_pararead_idx[slot],
+				                             &frame) == PLUGIN_OK)
+					(void)can_tx_enqueue(bus, &frame);
+			}
+		}
+		can_router_poll_bus_rx(bus);
 		robstride_apply_drain_rx(cfg, slot, pararead_phase[slot],
 		                         last_pararead_idx[slot], state_out);
-		if (mcp) {
-			while (spi_can_router_tx_flush(bus) == CAN_OK)
-				;
-		}
 		return;
 	}
 
@@ -777,7 +821,14 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	}
 
 	if (mcp) {
-		(void)spi_can_router_tx_flush(bus);
+		/* Non-blocking plant MIT — probe_tx/send waits up to 50 ms and with
+		 * CONTROL_TICK_BURST_MAX=8 that pegs lap≈320 ms / pend=255. Enable
+		 * still uses probe_tx once in maintain_enable. */
+		mcp2518_prepare_tx(bus);
+		for (uint8_t n = 0; n < 2u; n++) {
+			if (spi_can_router_tx_flush(bus) != CAN_OK)
+				break;
+		}
 	}
 
 	if (!mcp) {

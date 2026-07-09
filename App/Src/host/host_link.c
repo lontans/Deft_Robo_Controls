@@ -72,14 +72,12 @@ void host_link_begin_loop(void)
 void host_link_poll_rx(void)
 {
 	const host_transport_ops_t *tp = host_transport_get();
-	uint8_t chunk[256];
+	uint8_t chunk[64];
 	size_t n;
 
-	for (uint8_t pass = 0; pass < 4u; pass++) {
-		while ((n = tp->read(chunk, sizeof(chunk))) > 0) {
-			for (size_t i = 0; i < n; i++)
-				(void)host_link_rx_feed_byte(chunk[i]);
-		}
+	while ((n = tp->read(chunk, sizeof(chunk))) > 0) {
+		for (size_t i = 0; i < n; i++)
+			(void)host_link_rx_feed_byte(chunk[i]);
 	}
 }
 
@@ -148,7 +146,7 @@ static void host_feedback_image_fetch(host_feedback_image_t *out)
 
 void host_link_poll_tx(void)
 {
-	for (uint8_t i = 0; i < 2u; i++) {
+	for (uint8_t i = 0; i < 8u; i++) {
 		if (host_link_poll_tx_once())
 			return;
 	}

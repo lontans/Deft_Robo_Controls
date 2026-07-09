@@ -2,6 +2,24 @@
 
 RobStride CH1 bench is functional for plant teleop and per-bus RS2 calibrate/discover. **Damiao CH3 discovery is blocked** on CAN RX (see below). Other items are open gaps or operational quirks.
 
+## High priority — RS02 plant teleop chunking + CH2 cali (Jul 2026)
+
+### Grouped motion on FDCAN CH2 and MCP CH4 (regression)
+
+| | |
+|---|---|
+| **Symptom** | Plant teleop moves in ~0.2–0.4 s lumps; `fb` jumps ~0.35 rad; `lead` pins at ±0.35. **CH2 used to be smooth** before MCP teleop commits. |
+| **Telemetry** | `pend=6`, `lap≈205ms` (CH2) / `368ms` (CH4), `block=none`. See `docs/bringup.md` §7. |
+| **Regression** | Git `d9ce9e6` / `c700c78` after known-good `5df1f04`. Partial revert **did not fix** (Jul 2026). |
+| **Handoff** | [handoff-plant-superloop-regression.md](handoff-plant-superloop-regression.md) |
+
+### CH2 cali (`--bus 2`) no shaft spin after teleop
+
+| | |
+|---|---|
+| **Symptom** | `calibrate --bus 2 --id 0x70`: prep OK, `0x05` issued, no `... cali listen` lines, no spin. |
+| **Note** | Distinct from chunking path (bench PDU). CH4 MCP cali on same motor ID worked earlier. See `docs/bringup.md` §8. |
+
 ## High priority — Damiao CH3 (Jul 2026)
 
 ### CAN TX OK, motor RX silent (`rx_raw=0`)

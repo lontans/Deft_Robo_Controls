@@ -1,5 +1,6 @@
 #include "plant/servo.h"
 #include "plant/plant_diag.h"
+#include "plant/plant_timing.h"
 #include "host/host_link.h"
 #include "plant/plant_crit.h"
 #include <string.h>
@@ -196,6 +197,12 @@ static void servo_bus_service(void)
 	if (plant_diag_skip_servo_bus())
 		return;
 
+	/* Plant teleop does not mount servo commands. Unsolicited DXL unicast
+	 * read/write waits DXL_RX_TIMEOUT_MS (~50 ms) when no servo answers —
+	 * that alone pegs app_run lap≈52 ms and starves the 500 Hz plant. */
+	if (!g_servo_host_session)
+		return;
+
 	switch (g_step) {
 	case SERVO_ST_TORQUE:
 		if (g_torque_done) {
@@ -362,4 +369,5 @@ void servo_diag_feedback_fill(host_pdu_feedback_t *pdu)
 	pdu->data[20] = (uint8_t)((d0 >> 8) & 0xFF);
 	pdu->data[21] = (uint8_t)(d1 & 0xFF);
 	pdu->data[22] = (uint8_t)((d1 >> 8) & 0xFF);
+	plant_timing_svd_fill(pdu);
 }

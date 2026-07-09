@@ -107,8 +107,17 @@ void spi_can_router_init(void)
 		tx_queues[r].tail = 0;
 	}
 
+	/* Eager init all MCP rails at boot. Lazy one-rail-per-poll never finished
+	 * once end-of-lap stopped calling spi_can_router_poll() — plant MCP TX
+	 * then hit !initialized and silently dropped every frame. */
 	g_mcp2518_hw_ready = false;
 	g_mcp2518_rail_next = 0u;
+	spi_can_port_init();
+	spi_can_port_irq_init();
+	for (uint8_t r = 0; r < CAN_MCP2518_COUNT; r++)
+		(void)mcp2518_reinit_rail((can_bus_id_t)(CAN_BUS_CH4 + r));
+	g_mcp2518_rail_next = CAN_MCP2518_COUNT;
+	g_mcp2518_hw_ready = true;
 }
 
 can_status_t spi_can_router_tx_enqueue(can_bus_id_t bus, const can_frame_t *frame)

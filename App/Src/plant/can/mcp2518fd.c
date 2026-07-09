@@ -1197,27 +1197,16 @@ bool mcp2518_try_send(can_bus_id_t bus, const can_frame_t *frame)
 	mcp_txq_clear_atif(d);
 	mcp_txq_force_ready(d);
 
-	for (int attempt = 0; attempt < 8; attempt++) {
-		if (mcp_txq_has_space(d))
-			break;
-		mcp_txq_force_ready(d);
-		if (attempt == 7)
-			return false;
-	}
+	if (!mcp_txq_has_space(d))
+		return false;
 
 	if (!mcp_hw_txq_load(d, frame))
 		return false;
 
-	mcp_txq_done_t done = { 0 };
-	if (!mcp_txq_wait_done(d, 3u, tec_before, &done)) {
-		mcp_txq_release_after_tx(d);
-		return false;
-	}
-
+	/* Fire-and-forget for plant 500 Hz — do not spin on TXQEIF (that was
+	 * pegging lap≈320 ms with CONTROL_TICK_BURST_MAX). Probes use mcp2518_send. */
 	if (d->tx_ok < 0xFFu)
 		d->tx_ok++;
-
-	mcp_note_tx_result(d, tec_before);
 	can_router_mark_traffic(bus);
 	return true;
 }

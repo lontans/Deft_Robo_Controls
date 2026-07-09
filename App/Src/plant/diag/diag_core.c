@@ -104,8 +104,12 @@ void plant_diag_can_router_poll(void)
 		can_router_poll_bus(g_dm_can_bus);
 	else if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
 		can_router_poll_bus(g_rs2_can_bus);
-	else
-		can_router_poll();
+	else {
+		/* Plant path already polls commanded buses. End-of-lap: FDCAN only —
+		 * full can_router_poll() walks all MCP SPI rails every lap. */
+		for (can_bus_id_t bus = 0; bus < CAN_FDCAN_COUNT; bus++)
+			can_router_poll_bus(bus);
+	}
 }
 
 void plant_diag_yield_usb(void)

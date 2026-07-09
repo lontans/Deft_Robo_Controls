@@ -92,7 +92,9 @@ python scripts/control_hub.py --port COM5 teleop --slot 3   # CH4 MCP, default 0
 
 Bench cal still uses `calibrate --bus 4`. Run `recover` before teleop. Watch PC14 (CH4 ACT) for CAN traffic.
 
-If motion is choppy, SPI queue may be saturated at 500 Hz — try one MCP slot at a time first.
+If motion is choppy on **MCP CH4–6**, check `lap`/`pend` in teleop debug — FDCAN CH1–2 should match pre–`d9ce9e6` behavior after burst/superloop restore.
+
+**Regression note:** commits `d9ce9e6` / `c700c78` (MCP teleop) lowered `CONTROL_TICK_BURST_MAX` 8→1, capped pending ticks, and added 6× `can_router_poll()` per `app_run()` lap — slowed **all** buses including FDCAN. A Jul 2026 partial revert **did not restore** smooth CH2 teleop. See `docs/bringup.md` §7 and [handoff-plant-superloop-regression.md](handoff-plant-superloop-regression.md).
 
 
 - [architecture.md](architecture.md) — dual host paths

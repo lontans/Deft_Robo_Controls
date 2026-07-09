@@ -29,7 +29,6 @@ from controls_pcb_host.session import PcbSession
 
 from ..link import heal_usb, rs2_bench
 from ..protocol.rs02 import (
-    CALI_SKIP_RESET,
     DEFAULT_CAL_LISTEN_S,
     PARAM_BUS_VOLT,
     PARAM_IQ_TEST,
@@ -196,14 +195,15 @@ def _cal_body(
         print()
 
     listen_param = int(cal_listen_s) & 0xFF
+    print(
+        f"--- motor_cali comm 0x05 (one {cal_listen_s:.0f}s passive listen — shaft must spin) ---"
+    )
     if is_mcp_bus(bus):
         print("  MCP: firmware reset+drain immediately before comm 0x05 (after iq_test gap).")
         time.sleep(0.25)
     else:
-        listen_param |= CALI_SKIP_RESET
-    print(
-        f"--- motor_cali comm 0x05 (one {cal_listen_s:.0f}s passive listen — shaft must spin) ---"
-    )
+        print("  FDCAN: reset+settle before comm 0x05 (required after MIT teleop).")
+        time.sleep(0.25)
     last_progress = 0.0
 
     def on_progress(parsed: dict, saw: bool) -> None:

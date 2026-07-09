@@ -171,7 +171,99 @@ This script targets the original single-slot position-step teleop; for multi-mot
 | Damiao `tx>0` `rx_raw=0` | Missing motor-end 120 Ω termination; 24 V; see [known-issues.md](known-issues.md) |
 | Garbage / no apply | USB port mismatch, or RX desync (magic hunt in `host_link`) |
 
-## 7. Size check (optional)
+## 7. Plant teleop cadence (FDCAN + MCP) — **resolved Jul 2026**
+
+Regression after commits **`d9ce9e6`** / **`c700c78`** (last known-good CH2: **`5df1f04`**). Restoring `CONTROL_TICK_BURST_MAX=8` and a single `control_loop_service()` per lap was **necessary but not sufficient** — several independent bugs stacked on top of the MCP superloop work.
+
+### Symptom (failing builds)
+
+- `cmd` updates smoothly but `fb` jumps in lumps; motion feels stepped.
+- Telemetry: `pend` pegged, `lap` **~50–370 ms**, `ptick` ≪ burst max, `lead` often pinned at **±0.35 rad**.
+- MCP slot 3: no CH4 LED during teleop, `kp=0` while arrow held, homing completes on `cmd` but `fb` unchanged.
+
+### Root causes (fix-focused)
+
+| Layer | Cause | Fix |
+|-------|--------|-----|
+| **Superloop** | `d9ce9e6`/`c700c78`: burst 1, 4× service loop, all 6 slots + full `can_router_poll()` every tick | Restore burst **8**, single `control_loop_service()`; scope polls to commanded buses; skip blank MCP slots |
+| **Dynamixel** | `servo_bus_service()` ran every plant burst with no servo host session → UART RX **~50 ms** timeout → `lap≈52 ms`, `pend=255` on **all** plant teleop (including CH2) | Skip DXL bus unless `g_servo_host_session` |
+| **MCP init** | Lazy MCP rail init (one rail per `spi_can_router_hw_step`) never finished once end-of-lap stopped walking all SPI rails | **Eager** `mcp2518_reinit_rail()` for CH4–6 in `spi_can_router_init()` |
+| **MCP plant TX** | `enqueue` + `try_send` with 3 ms TXQ wait × burst 8 → `lap≈327 ms`; blocking `probe_tx` (50 ms) same problem | Plant MIT: `enqueue` + `prepare_tx` + **fire-and-forget** `mcp2518_try_send` (load TXQ, no wait). Probes/recovery still use blocking `send_now` |
+| **MCP enable** | `maintain_enable` skipped when `kp>0`; post-recover motor never armed for MIT teleop | Always run enable on **first** non-idle entry (`last_maintain_ms==0`), then skip while `kp>0` |
+| **Recovery LEDs** | `recover` runs `plant_recovery_all()` on **all** enabled RS02 slots (CH1–3 FDCAN + CH4–6 MCP), not only `--bus N` | Expected: CH1–2 blink on any recover; MCP reset uses `send_now` so CH4 blinks when rail is init’d |
+| **Host teleop** | `FB_STALE` gate treated flat `fb` as dead → `kp=0` with arrow held; blank MCP desire skipped firmware SPI | Gate on **ack** age only; active slot sends `HOME_POS_EPS` so MCP is non-blank |
+| **Host cmd slew** | `cmd = fb + lead` each tick rebased onto lagged `fb` → visible snaps | Integrate `cmd` from previous `cmd`; clamp lead widening only |
+| **`fb_age` metric** | Host only reset timer when position moved **>1e-4 rad** — flat rest looked “stale” during motion | Reset `fb_age` on **any** fresh actuator sample for the slot |
+
+**Discrepancy note:** Early traces showed `lap≈52 ms` with `pend=255` and were attributed to CAN/MCP polling alone. Profiling showed **`lap` matched `DXL_RX_TIMEOUT_MS` (50)** — Dynamixel was the dominant cost until the servo skip. After that, CH2 reached `lap≈0–1 ms`. MCP then failed for different reasons (init, host gating, blocking TX), not superloop burst settings.
+
+### Good telemetry (post-fix, reflash required)
+
+| Bus | `lap` | `pend` | `fb_age` (motion) | Notes |
+|-----|-------|--------|-------------------|-------|
+| CH2 FDCAN slot 1 | 0–1 ms | 0 | 0 ms | Smooth `cmd`/`fb` tracking |
+| CH4 MCP slot 3 | 0–1 ms | 0–1 | 0 ms | CH4 ACT LED blinks during arrow hold |
+
+At rest, `fb_age` may climb while `fb` is flat — that means position has not changed, not that USB feedback stopped.
+
+### Bringup check
+
+```powershell
+python scripts/control_hub.py --port COM5 recover --bus 2
+python scripts/control_hub.py --port COM5 teleop --slot 1   # CH2 FDCAN
+
+python scripts/control_hub.py --port COM5 recover --bus 4
+python scripts/control_hub.py --port COM5 teleop --slot 3   # CH4 MCP
+```
+
+Optional trace:
+
+```powershell
+python scripts/control_hub.py --port COM5 teleop --slot 3 --debug-trace teleop_trace.csv
+```
+
+### Key files (firmware + host)
+
+| Area | Files |
+|------|--------|
+| Superloop | `App/Src/app.c`, `App/Src/plant/control_loop.c` |
+| Actuator scope | `App/Src/plant/actuator.c` |
+| RS02 apply | `App/Src/plant/plugins/robstride.c` |
+| MCP SPI | `App/Src/plant/can/spi_can_router.c`, `App/Src/plant/can/mcp2518fd.c` |
+| Servo skip | `App/Src/plant/servo.c` |
+| Host teleop | `scripts/control_hub/teleop/plant.py`, `scripts/control_hub/teleop/defaults.py` |
+
+### Distinguish from key-input glitches
+
+- `dir` briefly `0` while arrow held → host latch (`RELEASE_CONFIRM_S` in `teleop/input.py`). Separate from plant cadence.
+
+**Historical handoff:** [handoff-plant-superloop-regression.md](handoff-plant-superloop-regression.md) (superseded for bringup status).
+
+## 8. CH2 cali after teleop — **resolved Jul 2026**
+
+### Symptom (was)
+
+After plant teleop on CH2, `calibrate --bus 2 --id 0x70` showed prep HIT but no `... cali listen` lines and no shaft spin. CH4 MCP cali on the same motor ID had worked earlier.
+
+### Cause
+
+FDCAN cali path set **`CALI_SKIP_RESET`** so firmware skipped the pre-`0x05` reset that MCP gets. After MIT teleop the drive often needs that reset immediately before `comm 0x05`.
+
+### Fix
+
+`scripts/control_hub/rs02/calibrate.py`: FDCAN uses the same **250 ms settle** and firmware reset before `0x05` as MCP (removed `CALI_SKIP_RESET` for FDCAN). RS02 teleop exit runs **`recovery_on_exit`** to clear bench state.
+
+### Bringup check
+
+```powershell
+python scripts/control_hub.py --port COM5 recover --bus 2
+python scripts/control_hub.py --port COM5 teleop --slot 1
+python scripts/controls_pcb_host.py --port COM5 calibrate --bus 2 --id 0x70
+```
+
+Expect `... cali listen` lines and shaft spin. If cali fails cold (no teleop), check harness/termination — not this handoff path.
+
+## 9. Size check (optional)
 
 After build:
 

@@ -1,6 +1,7 @@
 #include "plant/actuator.h"
 #include "plant/plugin_schema/plugin_table.h"
 #include "plant/can/can_router.h"
+#include "plant/can/spi_can_router.h"
 #include "plant/plugins/robstride.h"
 #include "plant/plugins/damiao.h"
 #include "plant/plant_diag.h"
@@ -75,7 +76,13 @@ void plant_recovery_all(void)
 			continue;
 
 		if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
-			if (robstride_send_reset(&actuator_table[i], &frame) == PLUGIN_OK)
+			if (robstride_send_reset(&actuator_table[i], &frame) != PLUGIN_OK)
+				continue;
+			/* MCP: blocking send_now (probe path). Enqueue+try_flush often
+			 * drops before rail TX completes — only FDCAN LEDs blinked. */
+			if (actuator_table[i].bus >= CAN_BUS_CH4)
+				(void)spi_can_router_send_now(actuator_table[i].bus, &frame);
+			else
 				(void)can_tx_enqueue(actuator_table[i].bus, &frame);
 			continue;
 		}
@@ -92,8 +99,24 @@ void plant_recovery_all(void)
 	actuator_desire_clear();
 }
 
+static bool actuator_desire_is_idle(const actuator_desire_t *d)
+{
+	if (d->kp > 0.01f || d->kd > 0.01f)
+		return false;
+	if (fabsf(d->velocity) > 0.01f || fabsf(d->torque) > 0.01f)
+		return false;
+	return true;
+}
+
+static bool actuator_desire_is_blank(const actuator_desire_t *d)
+{
+	return actuator_desire_is_idle(d) && d->position == 0.0f;
+}
+
 void actuator_apply_desire(void)
 {
+	uint32_t poll_buses = 0u;
+
 	plant_crit_enter();
 	if (actuator_desire_pending) {
 		for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
@@ -109,30 +132,62 @@ void actuator_apply_desire(void)
 	if (!plant_runtime_actuator_can_apply())
 		return;
 
+	uint32_t commanded_buses = 0u;
+
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		const actuator_desire_t *d = &actuator_desire_live[i];
+
+		if (!actuator_table[i].enabled)
+			continue;
+		if (!actuator_desire_is_blank(d))
+			commanded_buses |= (1u << (unsigned)actuator_table[i].bus);
+	}
+
+	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		const actuator_desire_t *desire;
+		can_bus_id_t bus;
+
 		if (!actuator_table[i].enabled)
 			continue;
 
+		desire = &actuator_desire_live[i];
+		bus = actuator_table[i].bus;
+
+		/* Uncommanded MCP slots: skip SPI entirely (5df1f04 never ran CH4–6 here). */
+		if (bus >= CAN_BUS_CH4 && actuator_desire_is_blank(desire))
+			continue;
+
+		/* Blank FDCAN on a bus with no commanded slot — skip unless all-idle sync. */
+		if (bus < CAN_BUS_CH4 && actuator_desire_is_blank(desire) &&
+		    commanded_buses != 0u &&
+		    (commanded_buses & (1u << (unsigned)bus)) == 0u)
+			continue;
+
+		poll_buses |= (1u << (unsigned)bus);
+
 		if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
-			robstride_apply_cycle(&actuator_table[i],
-			                      &actuator_desire_live[i],
+			robstride_apply_cycle(&actuator_table[i], desire,
 			                      &actuator_state_live[i]);
 			continue;
 		}
 
 		if (actuator_table[i].protocol == PROTO_DAMIAO) {
-			damiao_apply_cycle(&actuator_table[i],
-			                   &actuator_desire_live[i],
+			if (actuator_desire_is_idle(desire))
+				continue;
+			damiao_apply_cycle(&actuator_table[i], desire,
 			                   &actuator_state_live[i]);
 			continue;
 		}
 
 		can_frame_t tx;
-		if (plugin_pack_tx(&actuator_table[i], &actuator_desire_live[i], &tx) == PLUGIN_OK)
-			(void)can_tx_enqueue(actuator_table[i].bus, &tx);
+		if (plugin_pack_tx(&actuator_table[i], desire, &tx) == PLUGIN_OK)
+			(void)can_tx_enqueue(bus, &tx);
 	}
 
-	can_router_poll();
+	for (can_bus_id_t bus = 0; bus < CAN_BACKEND_COUNT; bus++) {
+		if ((poll_buses & (1u << (unsigned)bus)) != 0u)
+			can_router_poll_bus(bus);
+	}
 
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		if (actuator_table[i].protocol == PROTO_ROBSTRIDE)

@@ -24,6 +24,13 @@ HOME_TIMEOUT_S = 120.0
 P_MIN, P_MAX = -12.57, 12.57
 SYNC_POS_MAX = 3.0
 MAX_CMD_LEAD = 0.35
+# Soft-stop only when MCU stops acking (USB/link dead) — not when position is flat.
+# Flat fb at rest (or MCP synced on zeros) must not block arrow motion.
+ACK_STALE_S = 0.50
+# Reject absurd velocity samples (decode glitch / motor fault dump).
+FB_VEL_ABS_MAX = 20.0
+# Keep active teleop slot non-blank at home so MCP idle path still RX-polls SPI-CAN.
+HOME_POS_EPS = 1e-6
 # Brief GetAsyncKeyState dropouts while a key is held — keep cruise until release is confirmed.
 CRUISE_DIR_HOLD_S = 0.15  # legacy alias; prefer RELEASE_CONFIRM_S
 RELEASE_CONFIRM_S = 0.30
