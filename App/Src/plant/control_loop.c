@@ -8,7 +8,7 @@
 #define HEARTBEAT_PIN  GPIO_PIN_3
 #define HEARTBEAT_TOGGLE_EVERY 250u
 #define CONTROL_TICK_BURST_MAX 1u
-#define CONTROL_TICK_PENDING_MAX 3u
+#define CONTROL_TICK_PENDING_MAX 6u
 
 volatile uint32_t g_control_tick_count = 0;
 static volatile uint8_t g_control_ticks_pending;

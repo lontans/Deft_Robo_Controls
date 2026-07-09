@@ -46,10 +46,12 @@ void app_run(void)
 	plant_diag_can_router_poll();
 
 #if !USE_FREERTOS_SCHEDULER
-	/* One 500 Hz tick per superloop pass — avoids MCP MIT/FB bursts. */
-	control_loop_service();
-	/* Drain USB RX again after CAN work — MCP SPI must not starve command intake. */
-	host_link_poll_rx();
+	/* Drain pending plant ticks — non-blocking MCP TX keeps this fast. */
+	for (uint8_t i = 0; i < 4u; i++) {
+		control_loop_service();
+		host_link_poll_rx();
+		plant_diag_can_router_poll();
+	}
 #endif
 
 	led_service();

@@ -83,6 +83,21 @@ static can_status_t spi_backend_send(can_bus_id_t bus, const can_frame_t *frame)
 	return CAN_OK;
 }
 
+static can_status_t spi_backend_send_try(can_bus_id_t bus, const can_frame_t *frame)
+{
+	if (!spi_can_bus_valid(bus) || frame == NULL)
+		return CAN_ERR_PARAM;
+
+	if (!g_mcp2518_hw_ready)
+		return CAN_ERR_BUSY;
+
+	if (!mcp2518_try_send(bus, frame))
+		return CAN_ERR_BUSY;
+
+	can_router_mark_traffic(bus);
+	return CAN_OK;
+}
+
 void spi_can_router_init(void)
 {
 	for (uint8_t r = 0; r < CAN_MCP2518_COUNT; r++) {
@@ -121,10 +136,15 @@ can_status_t spi_can_router_tx_flush(can_bus_id_t bus)
 	if (tx_queues[rail].head == tx_queues[rail].tail)
 		return CAN_ERR_EMPTY;
 
-	can_status_t status = spi_backend_send(bus, &tx_queues[rail].buf[tx_queues[rail].tail]);
+	can_status_t status = spi_backend_send_try(bus, &tx_queues[rail].buf[tx_queues[rail].tail]);
+	if (status == CAN_ERR_BUSY)
+		return CAN_ERR_BUSY;
+
 	if (status != CAN_OK) {
 		mcp2518_prepare_tx(bus);
-		status = spi_backend_send(bus, &tx_queues[rail].buf[tx_queues[rail].tail]);
+		status = spi_backend_send_try(bus, &tx_queues[rail].buf[tx_queues[rail].tail]);
+		if (status == CAN_ERR_BUSY)
+			return CAN_ERR_BUSY;
 	}
 
 	if (status != CAN_OK) {
@@ -199,12 +219,16 @@ static void spi_poll_rx_one(can_bus_id_t bus)
 	}
 }
 
+#define SPI_POLL_TX_MAX 4u
+
 static void spi_poll_one(can_bus_id_t bus)
 {
 	spi_poll_rx_one(bus);
 
-	while (spi_can_router_tx_flush(bus) == CAN_OK)
-		;
+	for (uint8_t n = 0; n < SPI_POLL_TX_MAX; n++) {
+		if (spi_can_router_tx_flush(bus) != CAN_OK)
+			break;
+	}
 }
 
 void spi_can_router_poll_bus_rx(can_bus_id_t bus)

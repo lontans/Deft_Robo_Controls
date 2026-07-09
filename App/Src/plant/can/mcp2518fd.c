@@ -1177,6 +1177,51 @@ bool mcp2518_send(can_bus_id_t bus, const can_frame_t *frame)
 	return false;
 }
 
+bool mcp2518_try_send(can_bus_id_t bus, const can_frame_t *frame)
+{
+	if (bus < CAN_BUS_CH4 || frame == NULL || frame->dlc > CAN_MAX_DATA_LEN)
+		return false;
+
+	uint8_t rail = (uint8_t)(bus - CAN_BUS_CH4);
+	mcp2518_dev_t *d = &g_dev[rail];
+
+	if (!d->initialized)
+		return false;
+
+	uint8_t tec_before = 0u;
+
+	mcp_read_trec(d, &tec_before, NULL);
+	if (tec_before >= 128u)
+		(void)mcp_recover_bus_off(d);
+
+	mcp_txq_clear_atif(d);
+	mcp_txq_force_ready(d);
+
+	for (int attempt = 0; attempt < 8; attempt++) {
+		if (mcp_txq_has_space(d))
+			break;
+		mcp_txq_force_ready(d);
+		if (attempt == 7)
+			return false;
+	}
+
+	if (!mcp_hw_txq_load(d, frame))
+		return false;
+
+	mcp_txq_done_t done = { 0 };
+	if (!mcp_txq_wait_done(d, 3u, tec_before, &done)) {
+		mcp_txq_release_after_tx(d);
+		return false;
+	}
+
+	if (d->tx_ok < 0xFFu)
+		d->tx_ok++;
+
+	mcp_note_tx_result(d, tec_before);
+	can_router_mark_traffic(bus);
+	return true;
+}
+
 bool mcp2518_recv(can_bus_id_t bus, can_frame_t *frame)
 {
 	if (bus < CAN_BUS_CH4 || frame == NULL)

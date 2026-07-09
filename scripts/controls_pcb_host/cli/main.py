@@ -17,7 +17,12 @@ from ..feedback import format_status_line
 from ..plugins import damiao, dynamixel, led, robstride, uart_bridge
 from ..protocol import PROBE_ENABLE_ONLY, PROBE_FULL
 from ..session import PcbSession
-from ..teleop import run_calibrate, run_plant_teleop_for_slot, run_servo_teleop
+from ..teleop import (
+    run_calibrate,
+    run_plant_extremity_teleop_for_slot,
+    run_plant_teleop_for_slot,
+    run_servo_teleop,
+)
 from ..transport import auto_pick_port, list_serial_ports
 
 
@@ -138,19 +143,33 @@ def cmd_teleop(args: argparse.Namespace) -> int:
         return 0
     slot = args.slot if args.slot is not None else 0
     try:
-        run_plant_teleop_for_slot(
-            port,
-            slot,
-            skip_home=args.skip_home,
-            hz=args.hz,
-            kd=args.kd,
-            arrow_vel=args.arrow_vel,
-            ramp_up_s=args.ramp_up,
-            ramp_down_s=args.ramp_down,
-            kp=args.kp,
-            home_kp=args.home_kp,
-            home_slew=args.home_slew,
-        )
+        if args.extremity:
+            run_plant_extremity_teleop_for_slot(
+                port,
+                slot,
+                skip_home=args.skip_home,
+                hz=args.hz,
+                kd=args.kd,
+                slew_rate=args.arrow_vel if args.arrow_vel is not None else None,
+                kp=args.kp,
+                home_kp=args.home_kp,
+                home_slew=args.home_slew,
+            )
+        else:
+            run_plant_teleop_for_slot(
+                port,
+                slot,
+                skip_home=args.skip_home,
+                hz=args.hz,
+                kd=args.kd,
+                arrow_vel=args.arrow_vel,
+                ramp_up_s=args.ramp_up,
+                ramp_down_s=args.ramp_down,
+                kp=args.kp,
+                home_kp=args.home_kp,
+                home_slew=args.home_slew,
+                debug_trace=args.debug_trace,
+            )
     except Exception as exc:
         from control_hub.link import PlantRuntimeError
 
@@ -302,6 +321,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--slot", type=int, default=None, help="Actuator slot (default 0; slot 1 = CH2 0x70)")
     p.add_argument("--servo", action="store_true", help="Dynamixel neck servos")
     p.add_argument(
+        "--extremity",
+        action="store_true",
+        help="RS02: press Up/Down once to go to ±position limit at --arrow-vel rad/s",
+    )
+    p.add_argument(
         "--skip-home",
         action="store_true",
         help="Skip auto-homing to 0 (use after calibrate or when shaft is already at zero)",
@@ -325,6 +349,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         dest="home_slew",
         help="Homing slew rad/s (default 0.18)",
+    )
+    p.add_argument(
+        "--debug-trace",
+        type=str,
+        default=None,
+        dest="debug_trace",
+        help="Write per-frame CSV (t, dir, rate, cmd, fb, lead, d_fb, block, tx, ack)",
     )
     p.set_defaults(func=cmd_teleop)
 

@@ -7,6 +7,35 @@ from ..actuator_config import slot_config
 from .._bootstrap import ensure_scripts_path
 
 
+def run_plant_extremity_teleop_for_slot(
+    port: str,
+    slot: int,
+    *,
+    skip_home: bool = False,
+    hz: float | None = None,
+    kd: float | None = None,
+    slew_rate: float | None = None,
+    kp: float | None = None,
+    home_kp: float | None = None,
+    home_slew: float | None = None,
+) -> None:
+    ensure_scripts_path()
+    from control_hub.teleop import defaults as D  # noqa: WPS433
+    from control_hub.teleop.plant import run_extremity_for_slot  # noqa: WPS433
+
+    run_extremity_for_slot(
+        port,
+        slot,
+        skip_home=skip_home,
+        hz=hz if hz is not None else D.EXTREMITY_HZ,
+        kd=kd if kd is not None else D.KD,
+        slew_rate=slew_rate if slew_rate is not None else D.EXTREMITY_SLEW_RAD_S,
+        kp=kp,
+        home_kp=home_kp if home_kp is not None else D.HOME_KP,
+        home_slew=home_slew if home_slew is not None else D.HOME_SLEW_RAD_S,
+    )
+
+
 def run_plant_teleop_for_slot(
     port: str,
     slot: int,
@@ -20,6 +49,7 @@ def run_plant_teleop_for_slot(
     kp: float | None = None,
     home_kp: float | None = None,
     home_slew: float | None = None,
+    debug_trace: str | None = None,
 ) -> None:
     ensure_scripts_path()
     from control_hub.teleop import defaults as D  # noqa: WPS433
@@ -39,6 +69,7 @@ def run_plant_teleop_for_slot(
         kp=kp,
         home_kp=home_kp if home_kp is not None else D.HOME_KP,
         home_slew=home_slew if home_slew is not None else D.HOME_SLEW_RAD_S,
+        debug_trace=debug_trace,
     )
 
 

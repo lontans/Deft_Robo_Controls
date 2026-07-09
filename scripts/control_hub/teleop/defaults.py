@@ -24,6 +24,14 @@ HOME_TIMEOUT_S = 120.0
 P_MIN, P_MAX = -12.57, 12.57
 SYNC_POS_MAX = 3.0
 MAX_CMD_LEAD = 0.35
+# Brief GetAsyncKeyState dropouts while a key is held — keep cruise until release is confirmed.
+CRUISE_DIR_HOLD_S = 0.15  # legacy alias; prefer RELEASE_CONFIRM_S
+RELEASE_CONFIRM_S = 0.30
+
+# Up/down: press once to slew toward ±P_MAX (mirrors homing; MCU interpolates @ 500 Hz).
+EXTREMITY_HZ = 40.0
+EXTREMITY_SLEW_RAD_S = 0.35
+EXTREMITY_POS_TOL = 0.05
 
 BUS_KEYS: Tuple[str, ...] = tuple(str(i) for i in range(MAX_CAN_BUS + 1))
 

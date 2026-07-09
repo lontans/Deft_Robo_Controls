@@ -97,6 +97,7 @@ uint8_t mcp2518_rail_opmod(uint8_t rail);
 void mcp2518_get_init_diag(uint8_t rail, mcp2518_init_diag_t *out);
 void mcp2518_isr_rx_pending(uint8_t rail);
 bool mcp2518_send(can_bus_id_t bus, const can_frame_t *frame);
+bool mcp2518_try_send(can_bus_id_t bus, const can_frame_t *frame);
 bool mcp2518_recv(can_bus_id_t bus, can_frame_t *frame);
 void mcp2518_drain_rx(can_bus_id_t bus);
 void mcp2518_poll_rx(can_bus_id_t bus);

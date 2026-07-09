@@ -653,6 +653,79 @@ static void robstride_apply_drain_rx(const actuator_config_t *cfg,
 	}
 }
 
+#define RS02_HOST_INTERP_MAX_MS 200u
+
+typedef struct {
+	float    p_prev;
+	float    p_curr;
+	uint32_t t_prev_ms;
+	uint32_t t_curr_ms;
+	bool     valid;
+} rs02_host_interp_t;
+
+static rs02_host_interp_t s_host_interp[ACTUATOR_COUNT];
+
+void robstride_host_desire_updated(uint8_t slot, const actuator_desire_t *desire)
+{
+	if (slot >= ACTUATOR_COUNT || desire == NULL)
+		return;
+
+	uint32_t now = HAL_GetTick();
+	rs02_host_interp_t *h = &s_host_interp[slot];
+
+	if (h->valid) {
+		h->p_prev = h->p_curr;
+		h->t_prev_ms = h->t_curr_ms;
+	} else {
+		h->p_prev = desire->position;
+		h->t_prev_ms = now;
+		h->valid = true;
+	}
+
+	h->p_curr = desire->position;
+	h->t_curr_ms = now;
+}
+
+static void robstride_interp_desire(uint8_t slot,
+                                    const actuator_desire_t *in,
+                                    actuator_desire_t *out)
+{
+	const rs02_host_interp_t *h;
+	uint32_t span_ms;
+	uint32_t since_ms;
+	float span_s;
+	float v_impl;
+	float p;
+
+	*out = *in;
+
+	if (slot >= ACTUATOR_COUNT || in == NULL || out == NULL)
+		return;
+
+	h = &s_host_interp[slot];
+	if (!h->valid)
+		return;
+
+	span_ms = h->t_curr_ms - h->t_prev_ms;
+	if (span_ms == 0u || span_ms > RS02_HOST_INTERP_MAX_MS)
+		return;
+
+	since_ms = HAL_GetTick() - h->t_curr_ms;
+	span_s = (float)span_ms * 0.001f;
+	v_impl = (h->p_curr - h->p_prev) / span_s;
+
+	p = h->p_curr + v_impl * ((float)since_ms * 0.001f);
+	if (p > RS02_P_MAX)
+		p = RS02_P_MAX;
+	else if (p < RS02_P_MIN)
+		p = RS02_P_MIN;
+
+	out->position = p;
+	/* Homing / position slew: host sends v=0; match implied slew at 500 Hz. */
+	if (fabsf(in->velocity) < 0.01f)
+		out->velocity = v_impl;
+}
+
 void robstride_apply_cycle(const actuator_config_t *cfg,
                            const actuator_desire_t *desire,
                            actuator_state_t *state_out)
@@ -667,6 +740,7 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	bool idle;
 	bool mcp;
 	uint8_t tx_burst;
+	actuator_desire_t work;
 
 	if (cfg == NULL || desire == NULL || !cfg->enabled)
 		return;
@@ -678,7 +752,8 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	bus = cfg->bus;
 	mcp = (bus >= CAN_BUS_CH4);
 	idle = robstride_desire_idle(desire);
-	/* MCP: one immediate MIT per 2 ms tick; FDCAN: triple enqueue + HW FIFO. */
+	robstride_interp_desire(slot, desire, &work);
+	/* MCP: 1 immediate MIT per 500 Hz tick (even spacing); FDCAN: 3× enqueue + HW FIFO. */
 	tx_burst = mcp ? 1u : 3u;
 
 	can_router_poll_bus_rx(bus);
@@ -696,17 +771,13 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	robstride_maintain_enable(cfg, desire, &last_maintain_ms[slot]);
 
 	for (uint8_t i = 0; i < tx_burst; i++) {
-		if (plugin_pack_tx(cfg, desire, &frame) != PLUGIN_OK)
+		if (plugin_pack_tx(cfg, &work, &frame) != PLUGIN_OK)
 			continue;
-		if (mcp)
-			(void)spi_can_router_send_now(bus, &frame);
-		else
-			(void)can_tx_enqueue(bus, &frame);
+		(void)can_tx_enqueue(bus, &frame);
 	}
 
 	if (mcp) {
-		while (spi_can_router_tx_flush(bus) == CAN_OK)
-			;
+		(void)spi_can_router_tx_flush(bus);
 	}
 
 	if (!mcp) {

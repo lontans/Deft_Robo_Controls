@@ -96,8 +96,12 @@ void actuator_apply_desire(void)
 {
 	plant_crit_enter();
 	if (actuator_desire_pending) {
-		for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
+		for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 			actuator_desire_live[i] = actuator_desire_stage[i];
+			if (actuator_table[i].enabled &&
+			    actuator_table[i].protocol == PROTO_ROBSTRIDE)
+				robstride_host_desire_updated(i, &actuator_desire_live[i]);
+		}
 		actuator_desire_pending = false;
 	}
 	plant_crit_exit();
