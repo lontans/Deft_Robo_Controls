@@ -21,6 +21,7 @@ from ..link import (
     ensure_plant_runtime,
     heal_usb,
     release_stuck,
+    warmup_plant_actuators,
 )
 from . import defaults as D
 from .input import (
@@ -161,6 +162,7 @@ class SlotState:
     fb_velocity: float = 0.0
     fb_fault: int = 0
     feedback_synced: bool = False
+    fb_live: bool = False  # MCP: set once non-trivial pos/vel seen (zeros = no CAN RX)
     last_drive_dir: int = 0
     goto_target: Optional[float] = None
     slew_rate: float = 0.0  # internal ramp (rad/s); MIT wire uses v=0 like homing/extremity
@@ -177,6 +179,10 @@ def _sanitize_pos(pos: float, fallback: float) -> float:
     return 0.0
 
 
+def _mcp_sample_live(pos: float, vel: float) -> bool:
+    return abs(pos) >= 1e-4 or abs(vel) >= 1e-4
+
+
 def _apply_fb(st: SlotState, fb: dict, *, sync_cmd: bool) -> None:
     pos = _sanitize_pos(float(fb["position"]), st.fb_position)
     vel = float(fb["velocity"])
@@ -188,6 +194,12 @@ def _apply_fb(st: SlotState, fb: dict, *, sync_cmd: bool) -> None:
     st.fb_position = pos
     st.fb_velocity = vel
     st.fb_fault = int(fb.get("fault", 0))
+    if is_mcp_bus(st.bus):
+        if _mcp_sample_live(pos, vel):
+            st.fb_live = True
+        elif not st.fb_live:
+            # All-zero MCP slot = firmware got no CAN RX for this actuator_table ID.
+            return
     if sync_cmd or not st.feedback_synced:
         st.cmd_position = pos
         st.feedback_synced = True
@@ -266,9 +278,28 @@ def _make_slots(slot_indices: List[int], slot_kp: Tuple[float, ...]) -> List[Slo
     out: List[SlotState] = []
     for i in slot_indices:
         cfg = slot_config(i)
-        kp = slot_kp[i] if i < len(slot_kp) else slot_kp[-1]
+        kp = slot_kp[i] if i < len(slot_kp) else (slot_kp[-1] if slot_kp else 6.0)
         out.append(SlotState(slot=i, bus=cfg.bus, motor_id=cfg.motor_id, max_kp=kp))
     return out
+
+
+def _resync_from_feedback(
+    session: PcbSession,
+    slots: List[SlotState],
+    kd: float,
+    hz: float,
+) -> None:
+    """Re-anchor cmd from fb while keeping teleop slots non-blank (MCP needs HOME_POS_EPS)."""
+    dt = 1.0 / hz
+    for st in slots:
+        st.slew_rate = 0.0
+        st.cmd_velocity = 0.0
+        st.last_drive_dir = 0
+        _anchor_cmd_from_fb(st)
+    for _ in range(int(hz * 0.5)):
+        _send_slots(session, slots, kd)
+        _poll_fb(session, slots)
+        time.sleep(dt)
 
 
 def _sync_feedback(
@@ -291,24 +322,17 @@ def _sync_feedback(
         time.sleep(dt)
         _poll_fb(session, slots)
         if all(st.feedback_synced for st in slots):
-            # MCP: all-zero feedback is the default image, not a live motor.
-            if any(is_mcp_bus(st.bus) for st in slots):
-                if all(
-                    abs(st.fb_position) < 1e-4 and abs(st.fb_velocity) < 1e-4
-                    for st in slots
-                    if is_mcp_bus(st.bus)
-                ):
-                    continue
             return True
-    if any(is_mcp_bus(st.bus) for st in slots):
-        live = any(
-            st.feedback_synced
-            and (abs(st.fb_position) >= 1e-4 or abs(st.fb_velocity) >= 1e-4)
-            for st in slots
-            if is_mcp_bus(st.bus)
-        )
-        return live
-    return any(st.feedback_synced for st in slots)
+    return all(st.feedback_synced for st in slots)
+
+
+def _dead_mcp_slots(slots: List[SlotState]) -> List[SlotState]:
+    """MCP slots with no live CAN feedback — usually motor_id mismatch vs plant_config.c."""
+    return [
+        st
+        for st in slots
+        if is_mcp_bus(st.bus) and not st.fb_live
+    ]
 
 
 def _wake(session: PcbSession, slots: List[SlotState], kd: float, hz: float) -> None:
@@ -802,7 +826,7 @@ def run_plant_extremity_teleop(
                                 st.goto_target = None
                                 _anchor_cmd_from_fb(st)
                             for _ in range(int(hz * 0.5)):
-                                session.send_plant()
+                                _send_slots(session, slot_states, kd)
                                 time.sleep(dt)
                                 _poll_fb(session, slot_states)
                             _notice("re-synced from feedback")
@@ -907,14 +931,21 @@ def run_plant_teleop(
     skip_home: bool = False,
     home_kp: float = D.HOME_KP,
     home_slew: float = D.HOME_SLEW_RAD_S,
-    recovery_on_exit: bool = False,
+    recovery_on_exit: bool = True,
     teleop_title: str = "Plant teleop",
     show_dm_fault: bool = False,
-    home_on_fb: bool = False,
+    home_on_fb: Optional[bool] = None,
     idle_kp: float = 0.0,
     debug_trace: Optional[str] = None,
+    skip_warmup: bool = False,
 ) -> None:
     slot_states = _make_slots(slots, slot_kp)
+    for slot in slots:
+        cfg = slot_config(slot)
+        if cfg.protocol_name == "robstride":
+            assert_plant_teleop_slot(slot, cfg.bus, cfg.protocol_name)
+    if home_on_fb is None:
+        home_on_fb = any(is_mcp_bus(st.bus) for st in slot_states)
     active_bus = 0
     dt = 1.0 / hz
 
@@ -930,6 +961,10 @@ def run_plant_teleop(
             except PlantRuntimeError as exc:
                 print(f"ERROR: {exc}")
                 return
+
+            if not skip_warmup:
+                warmup_plant_actuators(session, slots)
+                print()
 
             for st in slot_states:
                 if is_mcp_bus(st.bus):
@@ -959,6 +994,19 @@ def run_plant_teleop(
                 for st in slot_states:
                     if st.feedback_synced:
                         print(f"  synced {st.label()}  pos={st.cmd_position:+.4f} rad")
+            dead = _dead_mcp_slots(slot_states)
+            if dead:
+                print()
+                print("  WARNING: MCP slot(s) have fb=0 (no CAN RX on plant path):")
+                for st in dead:
+                    print(f"    {st.label()} — discover OK but teleop dead?")
+                print(
+                    "  Check plant_config.c motor_id matches discover per bus, then reflash MCU."
+                )
+                print(
+                    "  Host: python scripts/control_hub.py config show  "
+                    "(must match firmware; config set is RAM-only per run)"
+                )
             print()
 
             _wake(session, slot_states, kd, hz)
@@ -1003,15 +1051,7 @@ def run_plant_teleop(
                                 _notice(_bus_label(active_bus))
                         elif key == "r":
                             session.reader.drain()
-                            for st in slot_states:
-                                st.slew_rate = 0.0
-                                st.cmd_velocity = 0.0
-                                st.last_drive_dir = 0
-                                _anchor_cmd_from_fb(st)
-                            for _ in range(int(hz * 0.5)):
-                                session.send_plant()
-                                time.sleep(dt)
-                                _poll_fb(session, slot_states)
+                            _resync_from_feedback(session, slot_states, kd, hz)
                             _notice("re-synced from feedback")
                         elif key in ("left", "l"):
                             motion_dir = -1

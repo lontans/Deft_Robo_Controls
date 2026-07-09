@@ -155,3 +155,26 @@ def probe_id(
             return resp
         finally:
             session.rs2_session_end(bus)
+
+
+def enable_for_plant(
+    session: PcbSession,
+    bus: int,
+    motor_id: int,
+    *,
+    timeout_s: Optional[float] = None,
+) -> bool:
+    """RS2 enable-only on one bus — caller must hold session.rx_pump().
+
+    Used at plant teleop start so motors are armed after recover/exit-reset
+  without a manual ``probe`` per branch. Does not print on success.
+    """
+    mcp = is_mcp_bus(bus)
+    tmo = timeout_s if timeout_s is not None else (1.0 if mcp else 0.55)
+    session.rs2_session_begin(bus)
+    try:
+        resp = send_diag(session, motor_id & 0xFF, PROBE_ENABLE_ONLY, tmo, bus=bus)
+        return resp is not None and bool(resp.get("found"))
+    finally:
+        session.rs2_session_end(bus)
+        time.sleep(0.08 if mcp else 0.04)

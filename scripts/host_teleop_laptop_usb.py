@@ -143,20 +143,22 @@ DEFAULT_RAMP_UP_S = 0.06
 DEFAULT_KP = 50.0
 DEFAULT_KD = 1.0
 DEFAULT_HZ = 40.0
-# --plant-teleop defaults (gentle; RS01 slots use lower kp than RS02 slot 0)
-PLANT_DEFAULT_KP = 10.0
-PLANT_DEFAULT_KD = 0.5
-PLANT_DEFAULT_ARROW_VEL = 3.5
-PLANT_DEFAULT_RAMP_UP_S = 0.12
-PLANT_DEFAULT_RAMP_DOWN_S = 0.35
-PLANT_SLOT_KP: Tuple[float, ...] = (12.0, 8.0, 8.0, 8.0)
-PLANT_HOME_TARGET = 0.0
-PLANT_HOME_SLEW_RAD_S = 0.18
-PLANT_HOME_KP = 6.0
-PLANT_HOME_POS_TOL = 0.05
-PLANT_HOME_VEL_TOL = 0.15
-PLANT_HOME_DWELL_S = 0.6
-PLANT_HOME_TIMEOUT_S = 120.0
+# --plant-teleop defaults — mirror control_hub.teleop.defaults (gentle bench).
+from control_hub.teleop import defaults as _PLANT_D
+
+PLANT_DEFAULT_KP = _PLANT_D.SLOT_KP[0]
+PLANT_DEFAULT_KD = _PLANT_D.KD
+PLANT_DEFAULT_ARROW_VEL = _PLANT_D.ARROW_VEL
+PLANT_DEFAULT_RAMP_UP_S = _PLANT_D.RAMP_UP_S
+PLANT_DEFAULT_RAMP_DOWN_S = _PLANT_D.RAMP_DOWN_S
+PLANT_SLOT_KP: Tuple[float, ...] = _PLANT_D.SLOT_KP
+PLANT_HOME_TARGET = _PLANT_D.HOME_TARGET
+PLANT_HOME_SLEW_RAD_S = _PLANT_D.HOME_SLEW_RAD_S
+PLANT_HOME_KP = _PLANT_D.HOME_KP
+PLANT_HOME_POS_TOL = _PLANT_D.HOME_POS_TOL
+PLANT_HOME_VEL_TOL = _PLANT_D.HOME_VEL_TOL
+PLANT_HOME_DWELL_S = _PLANT_D.HOME_DWELL_S
+PLANT_HOME_TIMEOUT_S = _PLANT_D.HOME_TIMEOUT_S
 # Launch sequence: slots 0–3 = CH1 0x76/0x74, CH3 Damiao 0x06, CH4 0x70
 LAUNCH_ORDER_SLOTS: Tuple[int, ...] = (0, 1, 2, 3)
 LAUNCH_START_CW = -5.0
@@ -1889,14 +1891,14 @@ def _delegate_plant_teleop(
         )
         return
 
-    slot_kp = PLANT_SLOT_KP
+    slot_kp = D.SLOT_KP
     if args.plant_kp is not None:
-        slot_kp = tuple(args.plant_kp for _ in range(4))
+        slot_kp = tuple(args.plant_kp for _ in range(len(D.SLOT_KP)))
     run_plant_teleop(
         port,
         plant_slots,
         hz=args.hz,
-        kd=args.plant_kd,
+        kd=args.plant_kd if args.plant_kd != PLANT_DEFAULT_KD else D.KD,
         arrow_vel=args.plant_arrow_vel,
         ramp_up_s=args.plant_ramp_up,
         ramp_down_s=args.plant_ramp_down,
@@ -1904,6 +1906,8 @@ def _delegate_plant_teleop(
         skip_home=args.plant_skip_home,
         home_kp=args.plant_home_kp,
         home_slew=args.plant_home_slew,
+        recovery_on_exit=True,
+        home_on_fb=True,
     )
 
 
@@ -1942,9 +1946,9 @@ def main() -> None:
     ap.add_argument("--servo-teleop", action="store_true",
                     help="Dynamixel neck servos: L/R bottom, U/D top (see scripts/dynamixel_teleop.py)")
     ap.add_argument("--plant-slots", default="0,1,2,3",
-                    help="Slot indices for --plant-teleop (default 0,1,2,3)")
+                    help="Slot indices for --plant-teleop (MCP triple: 3,4,5 = CH4–6)")
     ap.add_argument("--plant-kp", type=float, default=None,
-                    help="Override per-slot max kp scale for --plant-teleop (default RS02=12 RS01=8)")
+                    help="Override max kp for all teleop slots (default per-slot: RS02=10 RS01=8 MCP=6)")
     ap.add_argument("--plant-arrow-vel", type=float, default=PLANT_DEFAULT_ARROW_VEL,
                     help=f"Plant teleop velocity (rad/s, default {PLANT_DEFAULT_ARROW_VEL})")
     ap.add_argument("--plant-ramp-up", type=float, default=PLANT_DEFAULT_RAMP_UP_S,

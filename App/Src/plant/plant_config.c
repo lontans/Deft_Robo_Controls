@@ -38,7 +38,7 @@ void plant_config_init(void)
 	actuator_table[3] = (actuator_config_t){
 		.bus = CAN_BUS_CH4,
 		.protocol = PROTO_ROBSTRIDE,
-		.motor_id = 0x70,
+		.motor_id = 0x73,
 		.enabled = true,
 	};
 
@@ -52,7 +52,7 @@ void plant_config_init(void)
 	actuator_table[5] = (actuator_config_t){
 		.bus = CAN_BUS_CH6,
 		.protocol = PROTO_ROBSTRIDE,
-		.motor_id = 0x70,
+		.motor_id = 0x75,
 		.enabled = true,
 	};
 

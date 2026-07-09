@@ -11,7 +11,8 @@ ARROW_VEL = 3.5
 RAMP_UP_S = 0.12
 RAMP_DOWN_S = 0.35
 VEL_STOP = 0.05
-SLOT_KP: Tuple[float, ...] = (10.0, 8.0, 8.0, 8.0, 8.0, 8.0)
+# Slot 0 RS02; 1 RS01/FDCAN; 2 Damiao; 3–5 MCP SPI-CAN (gentler kp on MCP).
+SLOT_KP: Tuple[float, ...] = (10.0, 8.0, 8.0, 6.0, 6.0, 6.0)
 
 HOME_TARGET = 0.0
 HOME_SLEW_RAD_S = 0.18

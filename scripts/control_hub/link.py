@@ -6,7 +6,8 @@ from contextlib import contextmanager
 from typing import Iterator, Optional
 
 from controls_pcb_host.feedback import parse_feedback_header
-from controls_pcb_host.protocol.can_bus import is_rs02_plant_bus, normalize_can_bus
+from controls_pcb_host.actuator_config import slot_config
+from controls_pcb_host.protocol.can_bus import can_bus_label, is_rs02_plant_bus, normalize_can_bus
 from controls_pcb_host.session import PcbSession
 
 # Bench reply tags in feedback pdu[0] — runtime should see actuator slots, not these.
@@ -132,6 +133,36 @@ def ensure_plant_runtime(
         f"{label}: plant path not clear (plant_block={block_name}, pdu={tag}). "
         "Run: python scripts/control_hub.py --port COMx recover --bus N"
     )
+
+
+def warmup_plant_actuators(session: PcbSession, slots: list[int]) -> None:
+    """Recover + RS2 enable-only per teleop slot (replaces manual probe before teleop).
+
+    Exit teleop runs plant_recovery_all (reset). Next session needs enable before
+    MCP plant RX populates feedback — same as ``control_hub probe --bus N``.
+    """
+    from controls_pcb_host.plugins import robstride as rs02
+
+    if not slots:
+        return
+    print("Waking actuators (recover + enable)...")
+    release_bench_gates(session)
+    for slot in slots:
+        cfg = slot_config(slot)
+        if not cfg.enabled or cfg.protocol_name != "robstride":
+            continue
+        if not is_rs02_plant_bus(cfg.bus):
+            continue
+        label = f"slot{slot} {can_bus_label(cfg.bus)} 0x{cfg.motor_id:02X}"
+        ok = rs02.enable_for_plant(session, cfg.bus, cfg.motor_id)
+        if ok:
+            print(f"  enable OK  {label}")
+        else:
+            print(
+                f"  WARNING: enable failed {label} — "
+                "check harness, motor_id vs plant_config.c, or mechanical fault"
+            )
+    release_stuck(session, rounds=16)
 
 
 def assert_plant_teleop_slot(slot: int, bus: int, protocol_name: str) -> None:
