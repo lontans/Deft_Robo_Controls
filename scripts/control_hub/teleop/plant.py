@@ -283,6 +283,17 @@ def _make_slots(slot_indices: List[int], slot_kp: Tuple[float, ...]) -> List[Slo
     return out
 
 
+def _slots_for_teleop(
+    session: PcbSession,
+    slot_indices: List[int],
+    slot_kp: Tuple[float, ...],
+) -> List[SlotState]:
+    from controls_pcb_host.actuator_config import refresh_host_table_from_mcu
+
+    refresh_host_table_from_mcu(session)
+    return _make_slots(slot_indices, slot_kp)
+
+
 def _resync_from_feedback(
     session: PcbSession,
     slots: List[SlotState],
@@ -327,7 +338,7 @@ def _sync_feedback(
 
 
 def _dead_mcp_slots(slots: List[SlotState]) -> List[SlotState]:
-    """MCP slots with no live CAN feedback — usually motor_id mismatch vs plant_config.c."""
+    """MCP slots with no live CAN feedback — usually motor_id mismatch vs MCU table."""
     return [
         st
         for st in slots
@@ -405,8 +416,16 @@ def _home(
         )
     deadline = time.monotonic() + D.HOME_TIMEOUT_S
     dwell = 0.0
+    progress_at = time.monotonic()
     while time.monotonic() < deadline:
         if poll_key_nonblocking() == "q":
+            for st in slots:
+                st.cmd_velocity = st.kp = st.kd = 0.0
+                if st.feedback_synced:
+                    st.cmd_position = st.fb_position
+            for _ in range(max(4, int(hz * 0.25))):
+                _send_slots(session, slots, kd)
+                time.sleep(dt)
             print("Homing aborted.")
             return True
         slew_done = True
@@ -432,6 +451,14 @@ def _home(
         _send_slots(session, slots, kd)
         _poll_fb(session, slots)
         dwell = dwell + dt if slew_done else 0.0
+        if time.monotonic() - progress_at >= 1.0:
+            progress_at = time.monotonic()
+            parts = []
+            for st in active:
+                parts.append(
+                    f"{st.label()} cmd={st.cmd_position:+.3f} fb={st.fb_position:+.3f} kp={st.kp:.1f}"
+                )
+            print("  homing… " + "  ".join(parts))
         if slew_done and dwell >= D.HOME_DWELL_S:
             break
         time.sleep(dt)
@@ -483,6 +510,26 @@ def _shutdown(
     heal_usb(session)
     session.reader.drain()
     time.sleep(0.15)
+
+
+def _exit_teleop(
+    session: PcbSession,
+    slots: List[SlotState],
+    kd: float,
+    hz: float,
+    ramp_down_s: float,
+    *,
+    recovery: bool,
+    reason: str = "",
+) -> None:
+    if reason:
+        print(reason)
+    print("Stopping plant stream (kp=0) and sending MCU recovery...")
+    _shutdown(session, slots, kd, hz, ramp_down_s, recovery=recovery)
+    print(
+        "If PC2+PC3 blink together after this, power-cycle the board "
+        "(MCU fault loop — not CAN activity on PC6/PC7)."
+    )
 
 
 def _advance_cmd_slew(st: SlotState, *, dt: float, max_lead: float) -> None:
@@ -739,12 +786,6 @@ def run_plant_extremity_teleop(
     pos_tol: float = D.EXTREMITY_POS_TOL,
 ) -> None:
     """Press up/down once: smooth move to +P_MAX / -P_MIN at slew_rate rad/s (RS02)."""
-    slot_states = _make_slots(slots, slot_kp)
-    rs02 = [st for st in slot_states if is_rs02_plant_bus(st.bus)]
-    if not rs02:
-        print("ERROR: no RS02 plant slots in selection.")
-        return
-
     active_bus = 0
     dt = 1.0 / hz
 
@@ -755,10 +796,16 @@ def run_plant_extremity_teleop(
                 ensure_plant_runtime(
                     session,
                     label="plant runtime",
-                    bus=rs02[0].bus,
+                    bus=None,
                 )
             except PlantRuntimeError as exc:
                 print(f"ERROR: {exc}")
+                return
+
+            slot_states = _slots_for_teleop(session, slots, slot_kp)
+            rs02 = [st for st in slot_states if is_rs02_plant_bus(st.bus)]
+            if not rs02:
+                print("ERROR: no RS02 plant slots in selection.")
                 return
 
             print(f"RS02 extremity teleop on {port} @ {hz:.0f} Hz")
@@ -796,6 +843,15 @@ def run_plant_extremity_teleop(
                     home_on_fb=False,
                     idle_kp=0.0,
                 ):
+                    _exit_teleop(
+                        session,
+                        slot_states,
+                        kd,
+                        hz,
+                        D.RAMP_DOWN_S,
+                        recovery=True,
+                        reason="",
+                    )
                     return
 
             fb_line = 0
@@ -939,13 +995,6 @@ def run_plant_teleop(
     debug_trace: Optional[str] = None,
     skip_warmup: bool = False,
 ) -> None:
-    slot_states = _make_slots(slots, slot_kp)
-    for slot in slots:
-        cfg = slot_config(slot)
-        if cfg.protocol_name == "robstride":
-            assert_plant_teleop_slot(slot, cfg.bus, cfg.protocol_name)
-    if home_on_fb is None:
-        home_on_fb = any(is_mcp_bus(st.bus) for st in slot_states)
     active_bus = 0
     dt = 1.0 / hz
 
@@ -956,11 +1005,19 @@ def run_plant_teleop(
                 ensure_plant_runtime(
                     session,
                     label="plant runtime",
-                    bus=slot_states[0].bus if slot_states else None,
+                    bus=None,
                 )
             except PlantRuntimeError as exc:
                 print(f"ERROR: {exc}")
                 return
+
+            slot_states = _slots_for_teleop(session, slots, slot_kp)
+            for slot in slots:
+                cfg = slot_config(slot)
+                if cfg.protocol_name == "robstride":
+                    assert_plant_teleop_slot(slot, cfg.bus, cfg.protocol_name)
+            if home_on_fb is None:
+                home_on_fb = any(is_mcp_bus(st.bus) for st in slot_states)
 
             if not skip_warmup:
                 warmup_plant_actuators(session, slots)
@@ -1001,11 +1058,11 @@ def run_plant_teleop(
                 for st in dead:
                     print(f"    {st.label()} — discover OK but teleop dead?")
                 print(
-                    "  Check plant_config.c motor_id matches discover per bus, then reflash MCU."
+                    "  Check `config show` motor_id matches discover per bus."
                 )
                 print(
-                    "  Host: python scripts/control_hub.py config show  "
-                    "(must match firmware; config set is RAM-only per run)"
+                    "  Host: python scripts/control_hub.py config show --port COM5  "
+                    "(CFG PDU; use config set --persist to save motor IDs in flash)"
                 )
             print()
 
@@ -1023,6 +1080,15 @@ def run_plant_teleop(
                     home_on_fb=home_on_fb,
                     idle_kp=idle_kp,
                 ):
+                    _exit_teleop(
+                        session,
+                        slot_states,
+                        kd,
+                        hz,
+                        ramp_down_s,
+                        recovery=recovery_on_exit,
+                        reason="",
+                    )
                     return
 
             fb_line = 0

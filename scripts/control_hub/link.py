@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Iterator, Optional
 
 from controls_pcb_host.feedback import parse_feedback_header
+from controls_pcb_host.feedback import parse_actuator_feedback
 from controls_pcb_host.actuator_config import slot_config
 from controls_pcb_host.protocol.can_bus import can_bus_label, is_rs02_plant_bus, normalize_can_bus
 from controls_pcb_host.session import PcbSession
@@ -135,17 +136,39 @@ def ensure_plant_runtime(
     )
 
 
+def _arm_rs02_plant_slot(
+    session: PcbSession,
+    slot: int,
+    *,
+    kd: float = 0.45,
+    hz: float = 40.0,
+    arm_kp: float = 8.0,
+) -> bool:
+    """Arm RS02 on the 500 Hz plant path (maintain_enable + MIT), not bench probe."""
+    dt = 1.0 / hz
+    pos = 1e-6
+    got_fb = False
+    for _ in range(max(16, int(hz * 0.6))):
+        session.send_plant({slot: (pos, 0.0, arm_kp, kd, 0.0)})
+        time.sleep(dt)
+        frame = session.reader.pop()
+        while frame is not None:
+            fb = parse_actuator_feedback(frame, slot=slot)
+            if fb is not None:
+                pos = float(fb["position"])
+                got_fb = True
+            frame = session.reader.pop()
+    for _ in range(6):
+        session.send_plant({slot: (pos, 0.0, 0.0, 0.0, 0.0)})
+        time.sleep(dt)
+    return got_fb
+
+
 def warmup_plant_actuators(session: PcbSession, slots: list[int]) -> None:
-    """Recover + RS2 enable-only per teleop slot (replaces manual probe before teleop).
-
-    Exit teleop runs plant_recovery_all (reset). Next session needs enable before
-    MCP plant RX populates feedback — same as ``control_hub probe --bus N``.
-    """
-    from controls_pcb_host.plugins import robstride as rs02
-
+    """Recover + brief plant MIT per teleop slot (arms drives without bench SESSION_END reset)."""
     if not slots:
         return
-    print("Waking actuators (recover + enable)...")
+    print("Waking actuators (plant path arm)...")
     release_bench_gates(session)
     for slot in slots:
         cfg = slot_config(slot)
@@ -154,13 +177,13 @@ def warmup_plant_actuators(session: PcbSession, slots: list[int]) -> None:
         if not is_rs02_plant_bus(cfg.bus):
             continue
         label = f"slot{slot} {can_bus_label(cfg.bus)} 0x{cfg.motor_id:02X}"
-        ok = rs02.enable_for_plant(session, cfg.bus, cfg.motor_id)
+        ok = _arm_rs02_plant_slot(session, slot)
         if ok:
-            print(f"  enable OK  {label}")
+            print(f"  arm OK  {label}")
         else:
             print(
-                f"  WARNING: enable failed {label} — "
-                "check harness, motor_id vs plant_config.c, or mechanical fault"
+                f"  WARNING: arm failed {label} — "
+                "check harness, motor_id vs `config show`, or mechanical fault"
             )
     release_stuck(session, rounds=16)
 

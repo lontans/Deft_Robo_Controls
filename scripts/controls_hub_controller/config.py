@@ -1,9 +1,7 @@
 """Actuator slot configuration — re-exports the host mirror of plant_config.c.
 
-controls_pcb_host.actuator_config already carries this table (kept in sync by hand
-with the C source; there is no live config-readback PDU yet — see the design doc's
-gap list). This module just gives controls_hub_controller callers a stable import
-path that does not pull in controls_pcb_host's RS2/DM/DXL bench CLI surface.
+When a USB session is available, controls_pcb_host `config` commands read/write
+the MCU table via the CFG PDU (with optional flash NVM persist).
 """
 from __future__ import annotations
 

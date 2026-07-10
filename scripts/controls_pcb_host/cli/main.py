@@ -200,27 +200,55 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     )
 
 
-def cmd_config_show(_args: argparse.Namespace) -> int:
-    print(format_table())
+def cmd_config_show(args: argparse.Namespace) -> int:
+    if getattr(args, "mirror_only", False):
+        print(format_table())
+        return 0
+    with PcbSession(_port(args)) as session:
+        with session.rx_pump():
+            from ..plugins import plant_config as cfg_pdu
+            from ..actuator_config import sync_host_table_from_mcu
+
+            slots = cfg_pdu.fetch_table(session)
+            sync_host_table_from_mcu(slots)
+    print(format_table(source="MCU"))
     return 0
 
 
 def cmd_config_set(args: argparse.Namespace) -> int:
     slot = args.slot
     proto = parse_protocol(args.protocol) if args.protocol else None
-    apply_host_config(
-        slot,
-        bus=args.bus,
-        protocol=proto,
-        motor_id=args.motor_id,
-        master_id=args.master_id,
-        enabled=not args.disable,
-        persist=args.persist,
-    )
-    print(format_table())
-    print(
-        "\nHost mirror updated. Reflash or firmware config PDU required for MCU to match.",
-    )
+    port = _port(args)
+    with PcbSession(port) as session:
+        with session.rx_pump():
+            try:
+                apply_host_config(
+                    slot,
+                    bus=args.bus,
+                    protocol=proto,
+                    motor_id=args.motor_id,
+                    master_id=args.master_id,
+                    enabled=not args.disable,
+                    persist=args.persist,
+                    session=session,
+                )
+            except RuntimeError as exc:
+                if args.persist and "flash" in str(exc).lower():
+                    print(format_table(source="MCU RAM"))
+                    print(
+                        f"\nWarning: {exc}\n"
+                        "SET updated MCU RAM, but flash SAVE failed. "
+                        "Power cycle will revert unless you reflash firmware and retry --persist.\n"
+                        "Use:  python scripts/control_hub.py config show --port "
+                        f"{port}"
+                    )
+                    return 1
+                raise
+    print(format_table(source="MCU"))
+    if args.persist:
+        print("\nSaved to MCU flash NVM (survives power cycle).")
+    else:
+        print("\nApplied to MCU RAM (lost on power cycle unless you --persist).")
     return 0
 
 
@@ -264,11 +292,15 @@ def cmd_expert(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    port_help = "USB CDC port (e.g. COM5)"
+    port_parent = argparse.ArgumentParser(add_help=False)
+    port_parent.add_argument("--port", help=port_help)
+
     ap = argparse.ArgumentParser(
         prog="controls_pcb_host",
         description="Deft controls PCB — unified host bring-up over USB CDC (562 B images)",
     )
-    ap.add_argument("--port", help="USB CDC port (e.g. COM5)")
+    ap.add_argument("--port", help=port_help)
     ap.add_argument(
         "--list-ports",
         action="store_true",
@@ -279,13 +311,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ports", help="List serial ports").set_defaults(func=cmd_ports)
     sub.add_parser("list-ports", help="Alias for ports").set_defaults(func=cmd_ports)
 
-    p = sub.add_parser("link-test", help="Send plant frame and wait for feedback")
+    p = sub.add_parser("link-test", parents=[port_parent], help="Send plant frame and wait for feedback")
     p.set_defaults(func=cmd_link_test)
 
-    p = sub.add_parser("status", help="One-shot plant status snapshot")
+    p = sub.add_parser("status", parents=[port_parent], help="One-shot plant status snapshot")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("recover", help="Clear bench gates and RECOVERY mount (before plant teleop)")
+    p = sub.add_parser(
+        "recover",
+        parents=[port_parent],
+        help="Clear bench gates and RECOVERY mount (before plant teleop)",
+    )
     p.add_argument(
         "--bus",
         type=int,
@@ -294,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_recover)
 
-    p = sub.add_parser("discover", help="Scan for motor CAN ID")
+    p = sub.add_parser("discover", parents=[port_parent], help="Scan for motor CAN ID")
     p.add_argument("--protocol", default="robstride", help="robstride | damiao")
     p.add_argument("--bus", type=int, default=1)
     p.add_argument("--start", type=lambda x: int(x, 0), default=0x40)
@@ -302,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--listen-ms", type=int, default=40, help="Damiao listen window")
     p.set_defaults(func=cmd_discover)
 
-    p = sub.add_parser("probe", help="Probe one motor ID")
+    p = sub.add_parser("probe", parents=[port_parent], help="Probe one motor ID")
     p.add_argument("--slot", type=int, default=None)
     p.add_argument("--bus", type=int, default=None)
     p.add_argument("--id", type=lambda x: int(x, 0), default=None, dest="id")
@@ -317,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_probe)
 
-    p = sub.add_parser("teleop", help="FDCAN plant teleop (562 B desires, no RS2 PDU)")
+    p = sub.add_parser("teleop", parents=[port_parent], help="FDCAN plant teleop (562 B desires, no RS2 PDU)")
     p.add_argument("--slot", type=int, default=None, help="Actuator slot (default 0; slot 1 = CH2 0x70)")
     p.add_argument("--servo", action="store_true", help="Dynamixel neck servos")
     p.add_argument(
@@ -361,6 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "calibrate",
+        parents=[port_parent],
         help="RS02 encoder cal (comm 0x05/0x06/0x16 via MCU probe path)",
     )
     p.add_argument("--slot", type=int, default=None, help="Actuator slot (e.g. 1 = CH2 0x70)")
@@ -379,21 +416,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_calibrate)
 
-    cfg = sub.add_parser("config", help="Actuator slot configuration (host mirror)")
+    cfg = sub.add_parser("config", help="Actuator slot table on MCU (CFG PDU + flash NVM)")
     cfg_sub = cfg.add_subparsers(dest="config_cmd", required=True)
-    show_p = cfg_sub.add_parser("show")
+    show_p = cfg_sub.add_parser(
+        "show",
+        parents=[port_parent],
+        help="Read actuator table from MCU (CFG GET)",
+    )
+    show_p.add_argument(
+        "--mirror-only",
+        action="store_true",
+        help="Print host mirror only (no USB)",
+    )
     show_p.set_defaults(func=cmd_config_show)
-    p = cfg_sub.add_parser("set", help="Update host mirror (firmware PDU pending)")
+    p = cfg_sub.add_parser("set", parents=[port_parent], help="Update actuator slot on MCU (CFG SET)")
     p.add_argument("--slot", type=int, required=True)
     p.add_argument("--bus", type=int, default=None)
-    p.add_argument("--protocol", default=None)
+    p.add_argument(
+        "--protocol",
+        default=None,
+        metavar="NAME",
+        help="Slot protocol: robstride | damiao | cubemars | none",
+    )
     p.add_argument("--motor-id", type=lambda x: int(x, 0), default=None)
     p.add_argument("--master-id", type=lambda x: int(x, 0), default=None)
     p.add_argument("--disable", action="store_true")
-    p.add_argument("--persist", action="store_true", help="Request NVM (not on MCU yet)")
+    p.add_argument("--persist", action="store_true", help="Write table to MCU flash NVM")
     p.set_defaults(func=cmd_config_set)
 
-    p = sub.add_parser("led", help="SK9822 strip test")
+    p = sub.add_parser("led", parents=[port_parent], help="SK9822 strip test")
     p.add_argument("--mode", type=int, default=0)
     p.add_argument("--brightness", type=int, default=8)
     p.add_argument("--count", type=int, default=0)
@@ -413,10 +464,23 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _hoist_port_flag(argv: List[str]) -> List[str]:
+    """Allow `control_hub.py --port COM5 discover` as well as `discover --port COM5`."""
+    out = list(argv)
+    for i, arg in enumerate(out):
+        if arg in ("--port", "-p") and i + 1 < len(out):
+            port = out[i + 1]
+            del out[i : i + 2]
+            out.extend(["--port", port])
+            break
+    return out
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ensure_scripts_path()
     ap = build_parser()
-    args = ap.parse_args(argv)
+    raw = sys.argv[1:] if argv is None else argv
+    args = ap.parse_args(_hoist_port_flag(raw))
     if args.list_ports:
         list_serial_ports()
         return 0

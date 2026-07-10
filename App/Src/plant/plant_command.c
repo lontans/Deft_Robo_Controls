@@ -3,6 +3,7 @@
 #include "plant/servo.h"
 #include "plant/led.h"
 #include "plant/plant_diag.h"
+#include "plant/plant_config_nvm.h"
 #include "plant/plugins/robstride.h"
 #include "host/host_uart_bridge.h"
 #include <stdbool.h>
@@ -28,6 +29,11 @@ void plant_command_image_dispatch(const host_command_image_t *cmd)
 
 	uint8_t mcu_state = (uint8_t)cmd->system.mcu_state;
 	g_mcu_state_readback = mcu_state;
+
+	if (plant_config_is_command(cmd)) {
+		plant_config_on_command(cmd);
+		return;
+	}
 
 	/* Host recovery / e-stop: reset configured motors and zero all desires. */
 	if (mcu_state == PLANT_MCU_STATE_RECOVERY || mcu_state == PLANT_MCU_STATE_ESTOP) {

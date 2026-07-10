@@ -157,8 +157,11 @@ void actuator_apply_desire(void)
 		if (bus >= CAN_BUS_CH4 && actuator_desire_is_blank(desire))
 			continue;
 
-		/* Blank FDCAN on a bus with no commanded slot — skip unless all-idle sync. */
-		if (bus < CAN_BUS_CH4 && actuator_desire_is_blank(desire) &&
+		/* Blank FDCAN on a bus with no commanded slot — skip unless all-idle sync.
+		 * Damiao (CH3) is exempt: enable-latch clear-fault/enable must run every
+		 * cycle while idle, and RX must drain for feedback before host raises kp. */
+		if (bus < CAN_BUS_CH4 && actuator_table[i].protocol != PROTO_DAMIAO &&
+		    actuator_desire_is_blank(desire) &&
 		    commanded_buses != 0u &&
 		    (commanded_buses & (1u << (unsigned)bus)) == 0u)
 			continue;
@@ -172,8 +175,6 @@ void actuator_apply_desire(void)
 		}
 
 		if (actuator_table[i].protocol == PROTO_DAMIAO) {
-			if (actuator_desire_is_idle(desire))
-				continue;
 			damiao_apply_cycle(&actuator_table[i], desire,
 			                   &actuator_state_live[i]);
 			continue;

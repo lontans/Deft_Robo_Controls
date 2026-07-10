@@ -1,16 +1,20 @@
 """
-Actuator slot configuration — host mirror of App/Src/plant/plant_config.c.
+Actuator slot configuration — host mirror of firmware actuator_table[].
 
-Firmware PDU for live apply / NVM persist is not wired yet; config show/set
-uses this table until plant_config_apply() lands on the MCU.
+When a USB session is available, `config show` / `config set` use the CFG PDU to
+read or update the MCU table and optional flash NVM (`--persist`).
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from .protocol import ACTUATOR_COUNT
+
+if TYPE_CHECKING:
+    from .session import PcbSession
 
 
 class Protocol(IntEnum):
@@ -109,6 +113,43 @@ def parse_protocol(name: str) -> Protocol:
     return NAME_TO_PROTOCOL[key]
 
 
+def sync_host_table_from_mcu(slots: List[dict]) -> None:
+    global _FIRMWARE_VERIFIED
+    for entry in slots:
+        slot = int(entry["slot"])
+        if slot < 0 or slot >= ACTUATOR_COUNT:
+            continue
+        cfg = _HOST_TABLE[slot]
+        cfg.bus = int(entry["bus"])
+        cfg.protocol = Protocol(int(entry["protocol"]))
+        cfg.motor_id = int(entry["motor_id"]) & 0xFF
+        cfg.enabled = bool(entry.get("enabled", True))
+    _FIRMWARE_VERIFIED = True
+
+
+def refresh_host_table_from_mcu(
+    session: "PcbSession",
+    *,
+    quiet: bool = False,
+) -> bool:
+    """Pull actuator_table[] from MCU (CFG GET) into the host mirror used by teleop."""
+    from .plugins import plant_config as cfg_pdu
+
+    try:
+        slots = cfg_pdu.fetch_table(session)
+        sync_host_table_from_mcu(slots)
+        if not quiet:
+            print("  MCU actuator table synced for teleop.")
+        return True
+    except (RuntimeError, TimeoutError) as exc:
+        if not quiet:
+            print(
+                f"  WARNING: could not read MCU actuator table ({exc}) — "
+                "using host defaults (run: control_hub.py config show --port COMx)."
+            )
+        return False
+
+
 def apply_host_config(
     slot: int,
     *,
@@ -118,6 +159,7 @@ def apply_host_config(
     master_id: Optional[int] = None,
     enabled: Optional[bool] = None,
     persist: bool = False,
+    session: Optional["PcbSession"] = None,
 ) -> ActuatorSlotConfig:
     cfg = _HOST_TABLE[slot]
     if bus is not None:
@@ -130,20 +172,40 @@ def apply_host_config(
         cfg.master_id = master_id & 0xFF
     if enabled is not None:
         cfg.enabled = enabled
-    # persist=True: host encodes flag; firmware NVM not implemented yet.
-    if persist:
-        print(
-            "Note: --persist requested but firmware NVM is not implemented; "
-            "RAM-only host mirror updated.",
-            flush=True,
-        )
-    return cfg
+
+    if session is not None:
+        from .plugins import plant_config as cfg_pdu
+
+        slots = cfg_pdu.fetch_table(session)
+        sync_host_table_from_mcu(slots)
+
+        cfg = _HOST_TABLE[slot]
+        if bus is not None:
+            cfg.bus = bus
+        if protocol is not None:
+            cfg.protocol = protocol
+        if motor_id is not None:
+            cfg.motor_id = motor_id & 0xFF
+        if master_id is not None:
+            cfg.master_id = master_id & 0xFF
+        if enabled is not None:
+            cfg.enabled = enabled
+
+        cfg_pdu.apply_slot(session, cfg)
+        if persist:
+            time.sleep(0.05)
+            cfg_pdu.save_nvm(session)
+        slots = cfg_pdu.fetch_table(session)
+        sync_host_table_from_mcu(slots)
+    elif persist:
+        raise RuntimeError("--persist requires an open MCU session (--port)")
+    return _HOST_TABLE[slot]
 
 
 def format_table(*, source: str = "host mirror") -> str:
     lines = [f"Actuator table ({source}, {ACTUATOR_COUNT} slots):"]
-    if not _FIRMWARE_VERIFIED:
-        lines.append("  (not verified against MCU — firmware config PDU pending)")
+    if not _FIRMWARE_VERIFIED and source == "host mirror":
+        lines.append("  (not verified against MCU — run: config show --port COMx)")
     for cfg in _HOST_TABLE:
         en = "on" if cfg.enabled else "off"
         lines.append(

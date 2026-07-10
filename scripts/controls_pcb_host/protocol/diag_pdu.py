@@ -93,11 +93,32 @@ UB_RESP_TAG = ord("u")
 UB_CMD_MAX_BYTES = 29
 UB_FB_MAX_BYTES = 30
 
-# Config PDU (host contract; firmware TODO)
+# Config PDU — mirrors App/Inc/plant/plant_config_nvm.h
 CFG_TAG0 = ord("C")
 CFG_TAG1 = ord("F")
 CFG_TAG2 = ord("G")
-CFG_RESP_TAG = ord("c")
+CFG_RESP_TAG0 = ord("c")
+CFG_RESP_TAG1 = ord("f")
+CFG_RESP_TAG2 = ord("g")
+CFG_RESP_TAG = CFG_RESP_TAG0  # first-byte tag for feedback routing
+
+CFG_OP_GET = 1
+CFG_OP_SET = 2
+CFG_OP_SAVE = 3
+CFG_OP_LOAD = 4
+CFG_OP_DEFAULTS = 5
+
+CFG_STATUS_OK = 0
+CFG_STATUS_BAD_ARG = 1
+CFG_STATUS_FLASH_ERR = 2
+CFG_STATUS_BAD_CRC = 3
+
+CFG_STATUS_NAMES = {
+    CFG_STATUS_OK: "ok",
+    CFG_STATUS_BAD_ARG: "bad_arg",
+    CFG_STATUS_FLASH_ERR: "flash_err",
+    CFG_STATUS_BAD_CRC: "bad_crc",
+}
 
 RS2_COMM_NAMES = {
     0x00: "get_id",

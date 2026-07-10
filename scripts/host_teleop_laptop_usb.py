@@ -1907,7 +1907,6 @@ def _delegate_plant_teleop(
         home_kp=args.plant_home_kp,
         home_slew=args.plant_home_slew,
         recovery_on_exit=True,
-        home_on_fb=True,
     )
 
 

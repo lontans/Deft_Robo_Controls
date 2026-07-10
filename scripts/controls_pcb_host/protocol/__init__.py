@@ -7,7 +7,20 @@ from .can_bus import (
     rs2_comm_label,
 )
 from .diag_pdu import (
+    CFG_OP_DEFAULTS,
+    CFG_OP_GET,
+    CFG_OP_LOAD,
+    CFG_OP_SAVE,
+    CFG_OP_SET,
     CFG_RESP_TAG,
+    CFG_RESP_TAG0,
+    CFG_RESP_TAG1,
+    CFG_RESP_TAG2,
+    CFG_STATUS_BAD_ARG,
+    CFG_STATUS_BAD_CRC,
+    CFG_STATUS_FLASH_ERR,
+    CFG_STATUS_NAMES,
+    CFG_STATUS_OK,
     CFG_TAG0,
     CFG_TAG1,
     CFG_TAG2,
@@ -99,6 +112,7 @@ from .schema import (
     SERVO0_CMD_OFF,
     SERVO0_FB_OFF,
     SERVO_SLOT_BYTES,
+    STM32_USB_CDC_PID,
     STM32_VID,
     SYSTEM_CMD_OFF,
 )

@@ -6,6 +6,10 @@ from typing import List, Optional
 
 from .commands import actuator_slot_offset, servo_slot_cmd_offset
 from .protocol import (
+    CFG_RESP_TAG0,
+    CFG_RESP_TAG1,
+    CFG_RESP_TAG2,
+    CFG_STATUS_NAMES,
     DM_FB_MAGIC,
     DM_FB_MAGIC_FOUND_OLD,
     DM_PROBE_REG_SCAN,
@@ -86,6 +90,42 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     if timing is not None:
         out.update(timing)
     return out
+
+
+def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
+    """Parse CFG response PDU (cf g) from firmware plant_config_nvm."""
+    if len(pdu) < 6:
+        return None
+    if pdu[0] != CFG_RESP_TAG0 or pdu[1] != CFG_RESP_TAG1 or pdu[2] != CFG_RESP_TAG2:
+        return None
+    op = pdu[3] & 0x7F
+    status = pdu[4]
+    count = pdu[5]
+    slots: List[dict] = []
+    for i in range(min(count, 6)):
+        off = 6 + i * 4
+        if off + 4 > len(pdu):
+            break
+        bus = pdu[off]
+        proto = pdu[off + 1]
+        motor_id = pdu[off + 2]
+        flags = pdu[off + 3]
+        slots.append(
+            {
+                "slot": i,
+                "bus": bus,
+                "protocol": proto,
+                "motor_id": motor_id,
+                "enabled": bool(flags & 1),
+            }
+        )
+    return {
+        "op": op,
+        "status": status,
+        "status_name": CFG_STATUS_NAMES.get(status, f"unknown({status})"),
+        "slot_count": count,
+        "slots": slots,
+    }
 
 
 def parse_actuator_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:

@@ -22,6 +22,7 @@ from controls_hub_controller import ActuatorDesire, PlantSession  # noqa: E402
 def cmd_hold(args: argparse.Namespace) -> None:
     """Example A: single MIT hold."""
     with PlantSession.connect(args.port) as session:
+        session.arm_actuator_slots([args.slot])
         session.set_actuator(
             args.slot, ActuatorDesire(position=args.position, velocity=0.0, kp=args.kp, kd=args.kd, torque=0.0)
         )
@@ -41,6 +42,7 @@ def cmd_hold(args: argparse.Namespace) -> None:
 def cmd_sine(args: argparse.Namespace) -> None:
     """Example B: app-owned trajectory streamed at a fixed rate — no host-side ramp."""
     with PlantSession.connect(args.port) as session:
+        session.arm_actuator_slots([args.slot])
         t0 = time.perf_counter()
 
         def trajectory(_fb) -> dict:

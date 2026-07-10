@@ -13,7 +13,7 @@ try:
 except ImportError as exc:
     raise ImportError("pyserial required: pip install pyserial") from exc
 
-from .protocol import DEFAULT_BAUD, HOST_FEEDBACK_MAGIC, IMAGE_BYTES, STM32_VID
+from .protocol import DEFAULT_BAUD, HOST_FEEDBACK_MAGIC, IMAGE_BYTES, STM32_USB_CDC_PID, STM32_VID
 
 
 class FrameReader:
@@ -104,11 +104,16 @@ def list_serial_ports(*, stm32_hint: bool = True) -> None:
 def auto_pick_port() -> str:
     ports = list(list_ports.comports())
     stm32 = [p for p in ports if p.vid == STM32_VID]
+    cdc = [p for p in stm32 if p.pid == STM32_USB_CDC_PID]
+    if len(cdc) == 1:
+        return cdc[0].device
+    if len(cdc) > 1:
+        return sorted(cdc, key=lambda x: x.device)[0].device
     if len(stm32) == 1:
         return stm32[0].device
     if ports:
         return ports[0].device
-    raise SystemExit("No serial ports found — use --port COMx")
+    raise SystemExit("No serial ports found — use discover --port COM5 (USB CDC, pid=0x5740)")
 
 
 def describe_open_port(port: str) -> None:
@@ -127,8 +132,29 @@ def describe_open_port(port: str) -> None:
 
 
 def open_serial(port: str, baud: int = DEFAULT_BAUD) -> serial.Serial:
-    ser = serial.Serial(port, baud, timeout=0.05)
+    try:
+        ser = serial.Serial(port, baud, timeout=0.05)
+    except (serial.SerialException, PermissionError, OSError) as exc:
+        raise serial.SerialException(format_serial_open_error(port, exc)) from exc
     # STM32 USB CDC: allow host to assert DTR (some drivers gate OUT until set).
     ser.dtr = True
     ser.rts = False
     return ser
+
+
+def format_serial_open_error(port: str, exc: BaseException) -> str:
+    """Human-readable open failure (PermissionError / port in use on Windows)."""
+    msg = str(exc).strip() or repr(exc)
+    lower = msg.lower()
+    if isinstance(exc, PermissionError) or "access is denied" in lower or "permission" in lower:
+        return (
+            f"Cannot open {port}: port is in use or access denied.\n\n"
+            "Close any other program using this COM port, then retry:\n"
+            "  - another controls_hub_dashboard window\n"
+            "  - python teleop / probe / host_teleop in a terminal\n"
+            "  - PuTTY, Arduino IDE Serial Monitor, STM32CubeIDE serial\n\n"
+            "If nothing else is open: Disconnect USB, wait 2 s, replug, or reboot the board."
+        )
+    if "could not open port" in lower or "file not found" in lower:
+        return f"Cannot open {port}: device not found. Refresh the port list and check USB cable."
+    return f"Cannot open {port}: {msg}"

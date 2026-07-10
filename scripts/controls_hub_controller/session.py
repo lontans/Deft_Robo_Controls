@@ -28,8 +28,11 @@ import threading
 import time
 from typing import Callable, Dict, Mapping, Optional
 
-from controls_pcb_host.protocol import DEFAULT_BAUD
+from controls_pcb_host.protocol import DEFAULT_BAUD, ACTUATOR_COUNT, IMAGE_BYTES, SESSION_BEGIN, SESSION_END
+from controls_pcb_host.protocol.can_bus import is_rs02_plant_bus
 from controls_pcb_host.transport import FrameReader, SerialRxPump, describe_open_port, open_serial
+
+from .config import slot_config
 
 from .command import ActuatorDesire, CommandImage, McuState, validate_slot
 from .exceptions import FeedbackTimeoutError, NotConnectedError
@@ -124,6 +127,28 @@ class PlantSession:
         time.sleep(0.05)
         self.set_mcu_state(McuState.NORMAL)
 
+    def arm_actuator_slots(self, slots: Optional[list[int]] = None) -> None:
+        """RS2 enable-only per slot (brief pdu backdoor), then return to NORMAL streaming.
+
+        Operational path uses actuator_commands[] with pdu=0. After recover() or a
+        prior teleop exit, drives are often disabled — same as manual
+        ``control_hub probe --bus N``. Does not change held desires or mcu_state.
+        """
+        from controls_pcb_host.plugins import robstride as rs02
+
+        self._require_serial()
+        if slots is None:
+            slots = list(range(ACTUATOR_COUNT))
+        for slot in slots:
+            cfg = slot_config(slot)
+            if cfg.protocol_name != "robstride" or not cfg.enabled:
+                continue
+            if not is_rs02_plant_bus(cfg.bus):
+                continue
+            rs02.enable_for_plant(self, cfg.bus, cfg.motor_id)
+        # Clear any bench-session gate; next send_once() is pure plant path.
+        self.send_once()
+
     # -- command building / sending --------------------------------------------------
 
     def build_command(self) -> CommandImage:
@@ -135,9 +160,29 @@ class PlantSession:
     def write_command(self, image: CommandImage) -> None:
         """Send a raw, caller-built 562 B command image as-is (bypasses the held
         desire dict — use send_once()/set_actuator() for the normal flow)."""
+        self.write_raw(image.to_bytes())
+
+    def write_raw(self, frame: bytes) -> None:
+        """Send a pre-built 562 B frame (bench pdu probes use this path)."""
+        if len(frame) != IMAGE_BYTES:
+            raise ValueError(f"command frame must be {IMAGE_BYTES} bytes, got {len(frame)}")
         ser = self._require_serial()
-        ser.write(image.to_bytes())
+        ser.write(frame)
         ser.flush()
+
+    @property
+    def reader(self) -> FrameReader:
+        return self._reader
+
+    def rs2_session_begin(self, bus: int = 1) -> None:
+        from controls_pcb_host.plugins import robstride as rs02
+
+        rs02.send_diag(self, 0, SESSION_BEGIN, timeout_s=2.0, bus=bus)
+
+    def rs2_session_end(self, bus: int = 1) -> None:
+        from controls_pcb_host.plugins import robstride as rs02
+
+        rs02.send_diag(self, 0, SESSION_END, timeout_s=2.0, bus=bus)
 
     def send_once(self) -> None:
         """Send exactly one command image built from current desires/mcu_state."""

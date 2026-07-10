@@ -256,15 +256,24 @@ class ActuatorPanel(ttk.Frame):
         if is_mcp:
             ttk.Label(
                 self,
-                text="MCP bus (CH4-6): feedback may update in grouped bursts - see docs/bringup.md §7.",
-                foreground="#8a6d00", wraplength=360, justify="left",
+                text=(
+                    "MCP (CH4–6): operational plant path @ 500 Hz (pdu=0). "
+                    "Expect lap≈0–1 ms when streaming; use Recover if fb stays 0 after connect."
+                ),
+                foreground="#555555",
+                wraplength=360,
+                justify="left",
             ).grid(row=note_y, column=0, columnspan=4, sticky="w", pady=(6, 0))
             note_y += 1
         self._robstride_warn = ttk.Label(
             self,
-            text="RS02 may interpolate position between host updates when |velocity|<0.01 (P1 gap) - "
-                 "send an explicit nonzero velocity to avoid it.",
-            foreground="#8a6d00", wraplength=360, justify="left",
+            text=(
+                "RS02: firmware may interpolate position between host updates when |velocity|≈0. "
+                "Stream ≥10 Hz or set explicit velocity on fast moves."
+            ),
+            foreground="#555555",
+            wraplength=360,
+            justify="left",
         )
         if is_robstride:
             self._robstride_warn.grid(row=note_y, column=0, columnspan=4, sticky="w", pady=(6, 0))
@@ -392,8 +401,15 @@ class DashboardApp(tk.Tk):
             btn = ttk.Button(bar, text=state.name, command=lambda s=state: self._on_mcu_state(s))
             btn.pack(side="left", padx=2)
         tip = ttk.Label(
-            self, text="DIAG_ONLY blocks actuator CAN apply entirely (plant_block=DIAG_ONLY) - visibility only.",
-            foreground="#8a6d00",
+            self,
+            text=(
+                "Normal operation: mcu_state=NORMAL, pdu always zero. "
+                "Connect runs recover + RS2 enable per slot. "
+                "DIAG_ONLY = bench visibility only (no actuator mount)."
+            ),
+            foreground="#555555",
+            wraplength=900,
+            justify="left",
         )
         tip.pack(fill="x", padx=6)
 
@@ -459,9 +475,11 @@ class DashboardApp(tk.Tk):
         )
         ttk.Label(
             frame,
-            text="Uncheck stream + idle all actuators to demo HOST_STALE "
-                 "(non-zero kp/kd/vel/torque bypasses the stale watchdog).",
-            foreground="#8a6d00",
+            text=(
+                "Operational path only (controls_hub_controller): actuator_commands[] + mcu_state. "
+                "Uncheck stream + idle all to demo HOST_STALE (>500 ms without a fresh frame)."
+            ),
+            foreground="#555555",
             wraplength=860,
             justify="left",
         ).grid(row=1, column=0, sticky="w", pady=(2, 0))
@@ -501,11 +519,20 @@ class DashboardApp(tk.Tk):
         if not port:
             messagebox.showerror("No port", "Select a serial port first.")
             return
+        hub: Optional[HubSession] = None
         try:
             hub = HubSession(port, baud=DEFAULT_BAUD)
             hub.open()
+            hub.recover()
+            hub.arm_actuator_slots()
         except Exception as exc:
+            if hub is not None:
+                try:
+                    hub.close()
+                except Exception:
+                    pass
             messagebox.showerror("Connect failed", str(exc))
+            self._append_log(f"connect failed: {exc}")
             return
         self.hub = hub
         self.worker = StreamWorker(
@@ -519,7 +546,7 @@ class DashboardApp(tk.Tk):
         self.connect_btn["state"] = "disabled"
         self.disconnect_btn["state"] = "normal"
         self.port_combo["state"] = "disabled"
-        self._append_log(f"connected {port}")
+        self._append_log(f"connected {port} (recover + arm)")
 
     def _on_disconnect(self) -> None:
         self._stop_worker()
@@ -588,7 +615,8 @@ class DashboardApp(tk.Tk):
         if self.hub is None:
             return
         self.hub.recover()
-        self._append_log("recover: RECOVERY -> NORMAL")
+        self.hub.arm_actuator_slots()
+        self._append_log("recover: RECOVERY -> NORMAL + RS2 enable")
 
     def _on_mcu_state(self, state: McuState) -> None:
         if self.hub is None:

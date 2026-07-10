@@ -7,6 +7,15 @@ from typing import Dict, Optional, Tuple
 from .protocol import (
     ACTUATOR0_OFF,
     ACTUATOR_SLOT_BYTES,
+    CFG_OP_DEFAULTS,
+    CFG_OP_GET,
+    CFG_OP_LOAD,
+    CFG_OP_SAVE,
+    CFG_OP_SET,
+    CFG_RESP_TAG0,
+    CFG_TAG0,
+    CFG_TAG1,
+    CFG_TAG2,
     DM_TAG0,
     DM_TAG1,
     DM_TAG2,
@@ -104,6 +113,33 @@ def build_actuator_command(
     buf = _blank_command(seq)
     patch_system_mcu_state(buf, mcu_state)
     patch_actuator_desire(buf, position, velocity, kp, kd, torque, slot=slot)
+    return bytes(buf)
+
+
+def build_cfg_command(
+    op: int,
+    seq: int,
+    *,
+    slot: int = 0,
+    bus: int = 1,
+    protocol: int = 0,
+    motor_id: int = 0,
+    master_id: int = 0,
+    enabled: bool = True,
+    mcu_state: int = PLANT_MCU_STATE_NORMAL,
+) -> bytes:
+    buf = _blank_command(seq)
+    patch_system_mcu_state(buf, mcu_state)
+    buf[PDU_OFF + 0] = CFG_TAG0
+    buf[PDU_OFF + 1] = CFG_TAG1
+    buf[PDU_OFF + 2] = CFG_TAG2
+    buf[PDU_OFF + 3] = op & 0xFF
+    buf[PDU_OFF + 4] = slot & 0xFF
+    buf[PDU_OFF + 8] = bus & 0xFF
+    buf[PDU_OFF + 9] = protocol & 0xFF
+    buf[PDU_OFF + 10] = motor_id & 0xFF
+    buf[PDU_OFF + 11] = master_id & 0xFF
+    buf[PDU_OFF + 12] = 1 if enabled else 0
     return bytes(buf)
 
 

@@ -111,9 +111,14 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 	}
 
 	if (kind == PLANT_DIAG_SESSION_END) {
+		uint8_t last_kind = g_last_probe.probe_kind;
+
 		g_rs2_session_active = false;
 		g_rs2_quiet_until_ms = HAL_GetTick() + PLANT_DIAG_RS2_QUIET_MS;
-		if (g_rs2_can_bus < CAN_BUS_CH4)
+		/* Plant teleop uses ENABLE_ONLY then SESSION_END — do not reset the drive
+		 * we just armed; plant maintain_enable + MIT stream keeps it running. */
+		if (g_rs2_can_bus < CAN_BUS_CH4 &&
+		    last_kind != PLANT_DIAG_PROBE_ENABLE_ONLY)
 			diag_reset_motor(g_rs2_motor_id, g_rs2_can_bus);
 		actuator_desire_clear();
 		memset(&g_last_probe, 0, sizeof(g_last_probe));
