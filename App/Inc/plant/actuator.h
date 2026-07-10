@@ -23,7 +23,7 @@ typedef struct {
 typedef host_actuator_command_t  actuator_desire_t;
 typedef host_actuator_feedback_t actuator_state_t;
 
-#define ACTUATOR_COUNT 7u
+#define ACTUATOR_COUNT 14u
 
 extern actuator_config_t actuator_table[ACTUATOR_COUNT];
 extern actuator_desire_t actuator_desire_live[ACTUATOR_COUNT];

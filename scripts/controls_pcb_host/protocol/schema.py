@@ -13,7 +13,11 @@ HOST_EXCHANGE_SERVO_SLOTS = 2
 HOST_EXCHANGE_LED_SLOTS = 1
 HOST_PDU_PAYLOAD_BYTES = 32
 
-ACTUATOR_COUNT = 7
+ACTUATOR_COUNT = 14  # dual YAM: slots 0-6 arm1 (CH1), 7-13 arm2 (CH2)
+
+# CFG GET reply is paginated when ACTUATOR_COUNT exceeds one PDU's worth of slots —
+# mirrors PLANT_CFG_GET_SLOTS_PER_PAGE in App/Src/plant/plant_config_nvm.c.
+CFG_GET_SLOTS_PER_PAGE = (HOST_PDU_PAYLOAD_BYTES - 6 - 2) // 3
 
 # Byte offsets in the 562 B command/feedback image (layout v1).
 HEADER_OFF = 0

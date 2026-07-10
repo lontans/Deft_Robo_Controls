@@ -39,7 +39,14 @@ typedef struct __attribute__((packed)) {
 static plant_cfg_nvm_slot_t s_resp_slots[ACTUATOR_COUNT];
 static uint8_t              s_last_status = PLANT_CFG_STATUS_OK;
 static uint8_t              s_last_op;
+static uint8_t              s_resp_start_slot;
 static bool                 s_resp_pending;
+
+/* CFG GET reply is paginated: header (6 B) + up to this many slots (3 B each) +
+ * trailer [total_count][start_slot] (2 B) must fit HOST_PDU_PAYLOAD_BYTES. ACTUATOR_COUNT
+ * can exceed one page (e.g. 14 slots, dual-arm) — host loops CFG GET with slot=start_slot
+ * until it has collected total_count slots. See plant_config_feedback_fill(). */
+#define PLANT_CFG_GET_SLOTS_PER_PAGE ((HOST_PDU_PAYLOAD_BYTES - 6u - 2u) / 3u)
 
 static bool nvm_image_valid(const plant_cfg_nvm_image_t *img);
 
@@ -288,16 +295,23 @@ static void build_nvm_image(plant_cfg_nvm_image_t *img)
 
 void plant_config_load_factory_defaults(void)
 {
-	/* YAM / Damiao CH1 daisy defaults — override via CFG SET after discover. */
-	static const uint8_t k_ids[ACTUATOR_COUNT] = {
+	/* Dual YAM / Damiao daisy defaults — override via CFG SET after discover.
+	 * Arm 1: slots 0-6, CH1, ESC 0x01-0x07. Arm 2: slots 7-13, CH2, ESC 0x01-0x07
+	 * (IDs only need to be unique per-bus, not globally, so arm 2 reuses arm 1's IDs
+	 * on its own bus). Separate buses on purpose — 14 Damiao slots daisy-chained on
+	 * one CH1 branch would push traffic to ~7000 frames/sec at 500 Hz, right at the
+	 * ~7.7-9.3k frames/sec ceiling that already caused slot starvation at 7 (see
+	 * docs/bench-log-2026-07-10-gain-retest.md). */
+	static const uint8_t k_ids[7] = {
 		0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x07u,
 	};
 
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		bool arm2 = (i >= 7u);
 		actuator_table[i] = (actuator_config_t){
-			.bus = CAN_BUS_CH1,
+			.bus = arm2 ? CAN_BUS_CH2 : CAN_BUS_CH1,
 			.protocol = PROTO_DAMIAO,
-			.motor_id = k_ids[i],
+			.motor_id = k_ids[arm2 ? (i - 7u) : i],
 			.master_id = DM_MASTER_ID_AUTO,
 			.enabled = true,
 		};
@@ -324,11 +338,12 @@ bool plant_config_nvm_save(void)
 	return plant_config_nvm_save_image(&img);
 }
 
-static void stage_response(uint8_t op, uint8_t status)
+static void stage_response(uint8_t op, uint8_t status, uint8_t start_slot)
 {
 	table_to_nvm_slots(s_resp_slots);
 	s_last_op = op;
 	s_last_status = status;
+	s_resp_start_slot = (start_slot < ACTUATOR_COUNT) ? start_slot : 0u;
 	s_resp_pending = true;
 }
 
@@ -356,12 +371,13 @@ void plant_config_on_command(const host_command_image_t *cmd)
 
 	switch (op) {
 	case PLANT_CFG_OP_GET:
-		stage_response(op, PLANT_CFG_STATUS_OK);
+		/* slot doubles as the page start index for GET (unused by any other op). */
+		stage_response(op, PLANT_CFG_STATUS_OK, slot);
 		return;
 
 	case PLANT_CFG_OP_SET:
 		if (slot >= ACTUATOR_COUNT) {
-			stage_response(op, PLANT_CFG_STATUS_BAD_ARG);
+			stage_response(op, PLANT_CFG_STATUS_BAD_ARG, 0u);
 			return;
 		}
 		actuator_table[slot].bus = schematic_to_can_bus(p[8]);
@@ -376,26 +392,26 @@ void plant_config_on_command(const host_command_image_t *cmd)
 			actuator_table[slot].master_id = 0u;
 		}
 		actuator_table[slot].enabled = (p[12] & 1u) != 0u;
-		stage_response(op, PLANT_CFG_STATUS_OK);
+		stage_response(op, PLANT_CFG_STATUS_OK, 0u);
 		return;
 
 	case PLANT_CFG_OP_SAVE:
 		stage_response(op, plant_config_nvm_save() ? PLANT_CFG_STATUS_OK :
-		                                           PLANT_CFG_STATUS_FLASH_ERR);
+		                                           PLANT_CFG_STATUS_FLASH_ERR, 0u);
 		return;
 
 	case PLANT_CFG_OP_LOAD:
 		stage_response(op, plant_config_nvm_load() ? PLANT_CFG_STATUS_OK :
-		                                           PLANT_CFG_STATUS_BAD_CRC);
+		                                           PLANT_CFG_STATUS_BAD_CRC, 0u);
 		return;
 
 	case PLANT_CFG_OP_DEFAULTS:
 		plant_config_load_factory_defaults();
-		stage_response(op, PLANT_CFG_STATUS_OK);
+		stage_response(op, PLANT_CFG_STATUS_OK, 0u);
 		return;
 
 	default:
-		stage_response(op, PLANT_CFG_STATUS_BAD_ARG);
+		stage_response(op, PLANT_CFG_STATUS_BAD_ARG, 0u);
 		return;
 	}
 }
@@ -403,6 +419,8 @@ void plant_config_on_command(const host_command_image_t *cmd)
 void plant_config_feedback_fill(host_pdu_feedback_t *pdu)
 {
 	uint8_t i;
+	uint8_t remaining;
+	uint8_t count;
 
 	if (pdu == NULL || !s_resp_pending)
 		return;
@@ -413,25 +431,35 @@ void plant_config_feedback_fill(host_pdu_feedback_t *pdu)
 	pdu->data[2] = (uint8_t)PLANT_CFG_PDU_RESP_TAG2;
 	pdu->data[3] = (uint8_t)(s_last_op | 0x80u);
 	pdu->data[4] = s_last_status;
-	/* Compact 3 B/slot so ACTUATOR_COUNT=7 fits in 32 B PDU:
-	 * [bus][protocol|(enabled<<7)][motor_id]  (header uses bytes 0..5). */
-	pdu->data[5] = ACTUATOR_COUNT;
 
-	for (i = 0; i < ACTUATOR_COUNT; i++) {
+	remaining = (uint8_t)(ACTUATOR_COUNT - s_resp_start_slot);
+	count = (remaining < PLANT_CFG_GET_SLOTS_PER_PAGE) ? remaining : PLANT_CFG_GET_SLOTS_PER_PAGE;
+	/* Compact 3 B/slot, paginated: [bus][protocol|(enabled<<7)][motor_id].
+	 * Header (0..4) + count (5) + up to PLANT_CFG_GET_SLOTS_PER_PAGE slots (6..) +
+	 * trailer [total_count][start_slot] in the last 2 B — lets ACTUATOR_COUNT exceed
+	 * one PDU's worth of slots (host loops CFG GET with slot=start_slot until it has
+	 * collected total_count slots; see scripts/controls_pcb_host/plugins/plant_config.py). */
+	pdu->data[5] = count;
+
+	for (i = 0; i < count; i++) {
 		uint8_t off = (uint8_t)(6u + i * 3u);
+		uint8_t src = (uint8_t)(s_resp_start_slot + i);
 
-		if ((off + 3u) > HOST_PDU_PAYLOAD_BYTES)
-			break;
-		pdu->data[off + 0] = s_resp_slots[i].schematic_bus;
-		pdu->data[off + 1] = (uint8_t)((s_resp_slots[i].protocol & 0x7Fu) |
-		                               ((s_resp_slots[i].flags & 1u) ? 0x80u : 0u));
-		pdu->data[off + 2] = s_resp_slots[i].motor_id;
+		pdu->data[off + 0] = s_resp_slots[src].schematic_bus;
+		pdu->data[off + 1] = (uint8_t)((s_resp_slots[src].protocol & 0x7Fu) |
+		                               ((s_resp_slots[src].flags & 1u) ? 0x80u : 0u));
+		pdu->data[off + 2] = s_resp_slots[src].motor_id;
 	}
+
+	pdu->data[HOST_PDU_PAYLOAD_BYTES - 2u] = ACTUATOR_COUNT;
+	pdu->data[HOST_PDU_PAYLOAD_BYTES - 1u] = s_resp_start_slot;
 
 	s_resp_pending = false;
 }
 
-/* CFG GET packing: 6 B header + 3 B/slot must fit HOST_PDU_PAYLOAD_BYTES. */
-_Static_assert(6u + ACTUATOR_COUNT * 3u <= HOST_PDU_PAYLOAD_BYTES,
-               "CFG GET slot packing exceeds PDU payload");
+/* CFG GET page packing: 6 B header + PLANT_CFG_GET_SLOTS_PER_PAGE slots x 3 B +
+ * 2 B trailer must fit HOST_PDU_PAYLOAD_BYTES. ACTUATOR_COUNT itself may exceed one
+ * page — that's fine, the host pages through it (see plant_config_feedback_fill()). */
+_Static_assert(6u + PLANT_CFG_GET_SLOTS_PER_PAGE * 3u + 2u <= HOST_PDU_PAYLOAD_BYTES,
+               "CFG GET page packing exceeds PDU payload");
 

@@ -18,6 +18,26 @@ def parse_slot_list(text: str) -> list[int]:
     return out
 
 
+def slots_for_arm_local_joints(joints: list[int]) -> list[int]:
+    """Expand arm-local joint numbers (1..ARM_JOINT_COUNT) into slots across every
+    arm present — e.g. joints=[1,2] on a 2-arm bench (14 slots) resolves to
+    [0, 1, 7, 8]: arm1 J1/J2 AND arm2 J1/J2 (J8/J9), so one CLI group selects the
+    same joint on every arm to move together via --plant-teleop's active_bus=0
+    (all) default, one arm per physical bus (see docs/plan-yam-joint-commands.md)."""
+    ensure_scripts_path()
+    from control_hub.yam_limits import ARM_JOINT_COUNT  # noqa: WPS433
+    from ..protocol import ACTUATOR_COUNT  # noqa: WPS433
+
+    num_arms = ACTUATOR_COUNT // ARM_JOINT_COUNT
+    slots: set[int] = set()
+    for j in joints:
+        if j < 1 or j > ARM_JOINT_COUNT:
+            raise ValueError(f"joint must be 1..{ARM_JOINT_COUNT} (arm-local), got {j}")
+        for arm_idx in range(num_arms):
+            slots.add(arm_idx * ARM_JOINT_COUNT + (j - 1))
+    return sorted(slots)
+
+
 def run_plant_extremity_teleop_for_slot(
     port: str,
     slot: int,

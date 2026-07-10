@@ -97,18 +97,24 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
 def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
     """Parse CFG response PDU (cfg) from firmware plant_config_nvm.
 
-    Slot records are 3 bytes each (ACTUATOR_COUNT=7 must fit in 32 B PDU):
-      [bus][protocol|(enabled<<7)][motor_id]
+    Paginated when ACTUATOR_COUNT exceeds one PDU's worth of slots (dual-arm, 14
+    actuators): header (0..4) + count (5) + up to CFG_GET_SLOTS_PER_PAGE slot records,
+    3 bytes each ([bus][protocol|(enabled<<7)][motor_id]) + trailer [total_count]
+    [start_slot] in the last 2 bytes. Mirrors plant_config_feedback_fill() in
+    App/Src/plant/plant_config_nvm.c — see fetch_table() in plugins/plant_config.py
+    for the loop that collects every page.
     """
-    if len(pdu) < 6:
+    if len(pdu) < 8:
         return None
     if pdu[0] != CFG_RESP_TAG0 or pdu[1] != CFG_RESP_TAG1 or pdu[2] != CFG_RESP_TAG2:
         return None
     op = pdu[3] & 0x7F
     status = pdu[4]
     count = pdu[5]
+    total_count = pdu[-2]
+    start_slot = pdu[-1]
     slots: List[dict] = []
-    max_fit = (len(pdu) - 6) // 3
+    max_fit = (len(pdu) - 6 - 2) // 3
     for i in range(min(count, max_fit)):
         off = 6 + i * 3
         bus = pdu[off]
@@ -116,7 +122,7 @@ def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
         motor_id = pdu[off + 2]
         slots.append(
             {
-                "slot": i,
+                "slot": start_slot + i,
                 "bus": bus,
                 "protocol": packed & 0x7F,
                 "motor_id": motor_id,
@@ -128,6 +134,8 @@ def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
         "status": status,
         "status_name": CFG_STATUS_NAMES.get(status, f"unknown({status})"),
         "slot_count": count,
+        "total_count": total_count,
+        "start_slot": start_slot,
         "slots": slots,
     }
 

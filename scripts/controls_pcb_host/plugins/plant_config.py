@@ -74,7 +74,21 @@ def exchange_cfg(
 
 
 def fetch_table(session: "PcbSession", *, timeout_s: float = 1.5) -> List[dict]:
-    return exchange_cfg(session, CFG_OP_GET, timeout_s=timeout_s)["slots"]
+    """CFG GET, paging through the whole table (dual-arm ACTUATOR_COUNT=14 exceeds one
+    PDU's worth of slots — see plant_config_feedback_fill() in plant_config_nvm.c)."""
+    collected: List[dict] = []
+    start = 0
+    for _ in range(32):  # safety cap; each page carries CFG_GET_SLOTS_PER_PAGE slots
+        resp = exchange_cfg(session, CFG_OP_GET, slot=start, timeout_s=timeout_s)
+        page_slots = resp["slots"]
+        if not page_slots:
+            break
+        collected.extend(page_slots)
+        total = resp.get("total_count", len(collected))
+        if len(collected) >= total:
+            break
+        start += len(page_slots)
+    return collected
 
 
 def apply_slot(

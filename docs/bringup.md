@@ -122,6 +122,80 @@ python scripts/control_hub.py joint goto --port COM5 --joint 5 --to 0.4 --absolu
 is not yet aligned to the MuJoCo model frame (calibration steps in the plan §6).
 `joint home` is P2 and not implemented yet (stub returns non-zero).
 
+### Dual-arm YAM bring-up (Jul 2026)
+
+Scaled from one arm (7 slots, CH1) to two identical arms (14 slots): arm1 = slots 0-6 /
+J1-J7 on CH1 (unchanged), **arm2 = slots 7-13 / J8-J14 on CH2**. Arm2 mirrors arm1's
+soft limits and gains exactly (identical hardware) — see `arm_local_joint()` /
+`load_yam_limits()` in `scripts/control_hub/yam_limits.py`. Bench-verified both arms
+alive and moving via `joint goto`/`config show`/`discover` on real hardware.
+
+**Firmware fixes required to get here** (all in this session's diff, all need
+rebuild + reflash — see git history on `App/`):
+
+| Bug | Symptom | Fix |
+|-----|---------|-----|
+| CFG PDU packing overflowed at 14 slots | `_Static_assert` build failure (6+14×3 > 32 B PDU) | Paginated CFG GET: firmware replies ≤8 slots/page + `[total_count][start_slot]` trailer; host (`plugins/plant_config.py::fetch_table`) loops pages automatically. `plant_config_nvm.c` |
+| Damiao TX tripled per slot per tick | J6/J7 (last-enqueued slots) silently stopped tracking MIT commands once 6-7 Damiao slots were enabled at once — CH1 bus oversubscribed (~10.5k frames/sec demand vs ~7.7-9.3k capacity) | `damiao_apply_cycle()`: 3× redundant MIT send → 1×. `plugins/damiao.c` |
+| Thermo diag reply clobbered CFG replies every tick | `config show`/`discover` hard-timeout (`pdu=t` on every frame, even after `recover`) | `thermo_feedback_fill()` now only writes if nothing else claimed the shared PDU slot that tick. `thermo.c` |
+| CH2 was ext-ID-only (RobStride-provisioned) | `discover --bus 2` found nothing on arm2 even fully powered/wired — CH2's global filter rejected all standard-ID (Damiao) frames | `fdcan_rx_mode_for_bus()`: CH2 now mixed std+ext like CH1/CH3. Verified safe via the STM32G4 HAL source — each FDCAN instance has its own independent message-RAM block, so this doesn't touch CH1/CH3's RAM. `can_router.c` |
+
+**Host-side actuator table** (`scripts/controls_pcb_host/actuator_config.py` /
+`protocol/schema.py`): `ACTUATOR_COUNT=14`, `_DEFAULT_TABLE` extended arm2 CH2 entries,
+`session.py`'s `status` display fixed to show all slots (was hardcoded to 6).
+
+**Teleop rework** (`scripts/control_hub/teleop/`):
+
+- **No more gravity sag on release** — `_update_slot_motion` used to drop to a weak
+  `idle_kp` (or 0, fully backdrivable) once the arrow was released or homing finished.
+  It now holds at each slot's full tuned `SLOT_KP` at all times once synced.
+- **Non-target joints no longer go limp** — a plain single-slot `send_plant({slot: ...})`
+  zero-fills every other slot in that frame (firmware copies the whole staged image into
+  `actuator_desire_live[]` each tick), so `teleop --slot N` used to drop every other joint
+  to kp=0. It now pulls in every enabled slot and braces all but the target one at their
+  current position, full stiffness (`target_slot` param, `run_for_slot`).
+- **Home to current position, not a fixed 0 rad** — `_home()` takes a per-slot
+  `home_target` dict (defaults to each slot's fb right after wake) instead of driving
+  everything to `D.HOME_TARGET=0.0`. Avoids a large forced move on arms that are nowhere
+  near a calibrated zero pose; "already at home" fires immediately since target==current.
+- **Group selection by joint number across arms** — `--plant-teleop --joints 1,2,3,4`
+  expands arm-local joint numbers (1..7) to the matching slot on *every* arm at once
+  (`slots_for_arm_local_joints()` in `controls_pcb_host/teleop/delegate.py`); e.g.
+  `--joints 1,2,3,4` → slots `0,1,2,3,7,8,9,10`. `--plant-slots` (raw slot list) still
+  works for asymmetric picks. Bus-select keys (`0`/`1`/`2`) now usefully split by arm
+  since arm2 is on its own bus — `1`=arm1 only, `2`=arm2 only, `0`=both together.
+
+**Gain/velocity tuning history** (bench feedback, Jul 2026 — see `teleop/defaults.py`):
+
+| Setting | History | Current |
+|---|---|---|
+| `SLOT_KP` (per-joint) | flat 12.0 → (30,50,90,50,12,12,12) → (40,60,90,60,25,25,20), mirrored per arm | wrist/EE joints bumped once they started holding at full stiffness continuously (weren't firm enough for that duty at 12.0) |
+| `DM_KD` | 0.5 → 0.8 → 1.0 | more damping to match higher `SLOT_KP` |
+| `DM_ARROW_VEL` | 3.0 → 0.6 → 0.25 → 0.12 rad/s | still "a little high" per bench feedback — next lever to pull if whip persists |
+| `MAX_CMD_LEAD` | 0.35 → 0.18 rad | caps how far cmd can run ahead of fb before capping — was contributing to "whipping" (stored torque released suddenly) |
+
+**Commands:**
+
+```powershell
+# Enable check / current position, any joint 1-14
+python scripts/control_hub.py joint status --port COM5 --joint 8
+
+# Single joint (braces all other 13 automatically)
+python scripts/control_hub.py teleop --port COM5 --slot 0
+
+# One full arm
+python scripts/control_hub.py --plant-teleop --plant-slots 0,1,2,3,4,5,6 --port COM5   # arm1
+python scripts/control_hub.py --plant-teleop --plant-slots 7,8,9,10,11,12,13 --port COM5 # arm2
+
+# Joint group across both arms at once
+python scripts/control_hub.py --plant-teleop --joints 1,2,3,4 --port COM5
+```
+
+**Not yet done:** arm2's limits/gains are mirrored from arm1, not independently
+bench-verified per-joint (flagged in `yam_limits.reasonableness_notes()`). Velocity may
+need another cut. Full session trace (live commands + output):
+[bench-log-2026-07-10-gain-retest.md](bench-log-2026-07-10-gain-retest.md).
+
 ### Damiao CH3 (earlier bench — Jul 2026)
 
 Single DM-J4310 on CH3: USB/DM0 OK, CAN TX OK; **`rx_raw=0`** on register scan until motor-end **120 Ω** termination is added (4310 has no software termination register). Superseded for multi-motor work by CH1 daisy-chain bench above.

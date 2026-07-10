@@ -1,6 +1,7 @@
 """Non-interactive single-slot plant jog — agent/script friendly hello-world.
 
-Respects YAM joint soft limits from ``yam_limits`` (MuJoCo J1–J6 + bench J7).
+Respects YAM joint soft limits from ``yam_limits`` (MuJoCo J1-J6 + bench J7, mirrored
+onto arm2 J8-J14 — dual identical-arm bench, Jul 2026).
 
 Examples:
   python scripts/control_hub.py --hello-world --port COM5 --joint 7 --dry-run
@@ -16,6 +17,7 @@ from typing import Optional
 
 from controls_pcb_host.actuator_config import refresh_host_table_from_mcu, slot_config
 from controls_pcb_host.feedback import parse_actuator_feedback
+from controls_pcb_host.protocol import ACTUATOR_COUNT
 from controls_pcb_host.protocol.can_bus import can_bus_label
 from controls_pcb_host.session import PcbSession
 
@@ -29,6 +31,7 @@ from control_hub.teleop import defaults as D
 from control_hub.yam_limits import (
     DEFAULT_DELTA_CAP,
     DEFAULT_DELTA_FRAC,
+    arm_local_joint,
     clamp_delta,
     format_limits_table,
     joint_to_slot,
@@ -103,16 +106,17 @@ def _slew_to(
 
 
 def _resolve_slot(*, slot: Optional[int], joint: Optional[int]) -> int:
+    max_joint = ACTUATOR_COUNT  # dual arm: 1..7 arm1, 8..14 arm2
     if joint is not None and slot is not None and joint_to_slot(joint) != slot:
         raise ValueError(f"--joint {joint} conflicts with --slot {slot}")
     if joint is not None:
-        if joint < 1 or joint > 7:
-            raise ValueError(f"--joint must be 1..7, got {joint}")
+        if joint < 1 or joint > max_joint:
+            raise ValueError(f"--joint must be 1..{max_joint}, got {joint}")
         return joint_to_slot(joint)
     if slot is None:
         return 0
-    if slot < 0 or slot > 6:
-        raise ValueError(f"--slot must be 0..6 for YAM map, got {slot}")
+    if slot < 0 or slot > max_joint - 1:
+        raise ValueError(f"--slot must be 0..{max_joint - 1} for YAM map, got {slot}")
     return slot
 
 
@@ -198,8 +202,12 @@ def run_hello_world(
         print(f"  absolute target: to={to:+.4f} rad (motor frame; per-call step capped to {span_cap:.3f})")
 
     if dry_run:
-        # Without live fb, show clamp assuming mid-range (and J7 hard-stop note).
-        assume = lim.mid if lim.joint != 7 else max(lim.lo + 0.05, min(lim.hi - 0.05, 1.20))
+        # Without live fb, show clamp assuming mid-range (and EE-joint hard-stop note).
+        assume = (
+            lim.mid
+            if arm_local_joint(lim.joint) != 7
+            else max(lim.lo + 0.05, min(lim.hi - 0.05, 1.20))
+        )
         planned_delta = _plan_delta(assume)
         d, tgt, note = clamp_delta(
             assume, planned_delta, lim, absolute=absolute_limits

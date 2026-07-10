@@ -25,6 +25,7 @@ from ..teleop import (
     run_plant_teleop_for_slot,
     run_plant_teleop_for_slots,
     run_servo_teleop,
+    slots_for_arm_local_joints,
 )
 from ..transport import auto_pick_port, list_serial_ports
 
@@ -302,6 +303,17 @@ def cmd_plant_teleop(args: argparse.Namespace) -> int:
     if args.damiao_teleop:
         slots = [2]
         damiao_only = True
+    elif getattr(args, "plant_joints", None):
+        try:
+            joints = parse_slot_list(args.plant_joints)
+            slots = slots_for_arm_local_joints(joints)
+        except ValueError as exc:
+            print(f"--joints: {exc}", file=sys.stderr)
+            return 2
+        if not slots:
+            print("--joints: need at least one joint number", file=sys.stderr)
+            return 2
+        damiao_only = False
     else:
         slots = parse_slot_list(args.plant_slots)
         if not slots:
@@ -493,7 +505,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--joint",
         type=int,
         default=None,
-        help="YAM joint 1..7 (hello-world; slot = joint-1)",
+        help="YAM joint 1..14 (hello-world; slot = joint-1; 1-7 arm1, 8-14 arm2)",
     )
     ap.add_argument(
         "--delta",
@@ -561,6 +573,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="0",
         metavar="LIST",
         help="Actuator slot indices for --plant-teleop (comma-separated, e.g. 0,1 or 2)",
+    )
+    ap.add_argument(
+        "--joints",
+        default=None,
+        dest="plant_joints",
+        metavar="LIST",
+        help="--plant-teleop: arm-local joint numbers 1..7 (comma-separated, e.g. 1,2,3,4) — "
+        "expands to that joint on every arm/bus at once (e.g. 1,2 on a 2-arm bench = "
+        "slots 0,1,7,8). Overrides --plant-slots.",
     )
     ap.add_argument(
         "--skip-home",
@@ -670,8 +691,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[port_parent],
         help="Non-interactive single-joint plant jog (limit-aware; enable -> delta -> return)",
     )
-    p.add_argument("--slot", type=int, default=None, help="Actuator slot 0..6 (MCU config)")
-    p.add_argument("--joint", type=int, default=None, help="YAM joint 1..7 (overrides --slot)")
+    p.add_argument("--slot", type=int, default=None, help="Actuator slot 0..13 (MCU config; 0-6 arm1, 7-13 arm2)")
+    p.add_argument("--joint", type=int, default=None, help="YAM joint 1..14 (overrides --slot; 1-7 arm1, 8-14 arm2)")
     p.add_argument(
         "--delta",
         type=float,
@@ -708,15 +729,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     joint = sub.add_parser(
         "joint",
-        help="Joint-level status / goto (YAM 1..7; see docs/plan-yam-joint-commands.md)",
+        help="Joint-level status / goto (YAM 1..14, dual arm; see docs/plan-yam-joint-commands.md)",
     )
     joint_sub = joint.add_subparsers(dest="joint_cmd", required=True)
 
     jp = joint_sub.add_parser(
         "status", parents=[port_parent], help="Read-only fb + soft-limit distance (no motion)"
     )
-    jp.add_argument("--slot", type=int, default=None, help="Actuator slot 0..6 (MCU config)")
-    jp.add_argument("--joint", type=int, default=None, help="YAM joint 1..7 (overrides --slot)")
+    jp.add_argument("--slot", type=int, default=None, help="Actuator slot 0..13 (MCU config; 0-6 arm1, 7-13 arm2)")
+    jp.add_argument("--joint", type=int, default=None, help="YAM joint 1..14 (overrides --slot; 1-7 arm1, 8-14 arm2)")
     jp.add_argument("--hz", type=float, default=None, help="Poll rate (default 40)")
     jp.add_argument("--xml", type=str, default=None, help="Override path to yam.xml")
     jp.set_defaults(func=cmd_joint_status)
@@ -727,8 +748,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Relative (--delta) or absolute motor-frame (--to --absolute) jog; same "
         "codepath as hello-world",
     )
-    jp.add_argument("--slot", type=int, default=None, help="Actuator slot 0..6 (MCU config)")
-    jp.add_argument("--joint", type=int, default=None, help="YAM joint 1..7 (overrides --slot)")
+    jp.add_argument("--slot", type=int, default=None, help="Actuator slot 0..13 (MCU config; 0-6 arm1, 7-13 arm2)")
+    jp.add_argument("--joint", type=int, default=None, help="YAM joint 1..14 (overrides --slot; 1-7 arm1, 8-14 arm2)")
     jp.add_argument("--delta", type=float, default=None, help="Relative move in rad from current fb")
     jp.add_argument("--to", type=float, default=None, help="Absolute motor-frame target rad (needs --absolute)")
     jp.add_argument(

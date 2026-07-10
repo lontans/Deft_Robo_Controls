@@ -58,15 +58,22 @@ class ActuatorSlotConfig:
         return PROTOCOL_NAMES.get(self.protocol, "unknown")
 
 
-# Mirror plant_config_load_factory_defaults() (Damiao CH1 daisy / YAM).
+# Mirror plant_config_load_factory_defaults() (dual YAM: arm1 CH1 daisy, arm2 CH2 daisy).
 _DEFAULT_TABLE: Tuple[Tuple[int, Protocol, int, int, bool], ...] = (
-    (1, Protocol.DAMIAO, 0x01, 0, True),  # slot 0
-    (1, Protocol.DAMIAO, 0x02, 0, True),  # slot 1
-    (1, Protocol.DAMIAO, 0x03, 0, True),  # slot 2
-    (1, Protocol.DAMIAO, 0x04, 0, True),  # slot 3
-    (1, Protocol.DAMIAO, 0x05, 0, True),  # slot 4
-    (1, Protocol.DAMIAO, 0x06, 0, True),  # slot 5
-    (1, Protocol.DAMIAO, 0x07, 0, True),  # slot 6
+    (1, Protocol.DAMIAO, 0x01, 0, True),  # slot 0   arm1 J1
+    (1, Protocol.DAMIAO, 0x02, 0, True),  # slot 1   arm1 J2
+    (1, Protocol.DAMIAO, 0x03, 0, True),  # slot 2   arm1 J3
+    (1, Protocol.DAMIAO, 0x04, 0, True),  # slot 3   arm1 J4
+    (1, Protocol.DAMIAO, 0x05, 0, True),  # slot 4   arm1 J5
+    (1, Protocol.DAMIAO, 0x06, 0, True),  # slot 5   arm1 J6
+    (1, Protocol.DAMIAO, 0x07, 0, True),  # slot 6   arm1 J7
+    (2, Protocol.DAMIAO, 0x01, 0, True),  # slot 7   arm2 J1
+    (2, Protocol.DAMIAO, 0x02, 0, True),  # slot 8   arm2 J2
+    (2, Protocol.DAMIAO, 0x03, 0, True),  # slot 9   arm2 J3
+    (2, Protocol.DAMIAO, 0x04, 0, True),  # slot 10  arm2 J4
+    (2, Protocol.DAMIAO, 0x05, 0, True),  # slot 11  arm2 J5
+    (2, Protocol.DAMIAO, 0x06, 0, True),  # slot 12  arm2 J6
+    (2, Protocol.DAMIAO, 0x07, 0, True),  # slot 13  arm2 J7
 )
 
 

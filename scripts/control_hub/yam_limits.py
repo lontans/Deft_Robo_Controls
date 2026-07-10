@@ -1,7 +1,12 @@
 """YAM arm joint limits — MuJoCo ``yam.xml`` (J1–J6) + bench-derived J7.
 
-``yam.xml`` is a 6-DOF collision model (no end-effector joint). Slot/joint map for
-the Damiao CH1 daisy is 0-based plant slot == joint_index - 1 (J1→slot0 … J7→slot6).
+Dual identical-arm bench (Jul 2026): arm1 = joints 1-7 (slots 0-6, CH1), arm2 =
+joints 8-14 (slots 7-13, CH2) — mirrors arm1's limits joint-for-joint since the arms
+are identical hardware. ``ARM_JOINT_COUNT=7``; joint j's arm-local position is
+``((j-1) % ARM_JOINT_COUNT) + 1`` (so both J7 and J14 are each arm's EE joint).
+
+``yam.xml`` is a 6-DOF collision model (no end-effector joint). Slot/joint map is
+0-based plant slot == joint_index - 1 (J1→slot0 … J14→slot13).
 
 **Frame caveat:** XML ranges are model joint angles. Damiao feedback is motor
 encoder angle. Absolute clamps are only safe after zero alignment; until then
@@ -18,6 +23,19 @@ from typing import Dict, Optional, Tuple
 # Repo-relative default (works from repo root or scripts/).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_YAM_XML = _REPO_ROOT / "External_Documentation" / "yam_arm_damiao" / "yam.xml"
+
+# Joints per arm; arm N owns joints [(N-1)*ARM_JOINT_COUNT+1, N*ARM_JOINT_COUNT].
+ARM_JOINT_COUNT = 7
+
+
+def arm_local_joint(joint: int) -> int:
+    """Which joint (1..ARM_JOINT_COUNT) within its own arm — J7 and J14 both -> 7."""
+    return ((int(joint) - 1) % ARM_JOINT_COUNT) + 1
+
+
+def arm_number(joint: int) -> int:
+    """1-based arm index — J1..J7 -> 1, J8..J14 -> 2."""
+    return ((int(joint) - 1) // ARM_JOINT_COUNT) + 1
 
 # Jul 2026 bench (motor frame, ESC 0x07 / slot 6):
 # - At fb≈+1.11 rad, MIT −delta held ~−8 Nm with moved≈0.01 → hard stop / fold limit.
@@ -36,7 +54,7 @@ DEFAULT_DELTA_CAP = 0.35
 
 @dataclass(frozen=True)
 class JointLimit:
-    joint: int  # 1..7
+    joint: int  # 1..14 (1..7 arm1, 8..14 arm2)
     name: str
     lo: float
     hi: float
@@ -82,7 +100,8 @@ def _parse_force_attr(attr: Optional[str]) -> Tuple[float, float]:
 
 
 def load_yam_limits(xml_path: Optional[Path] = None) -> Dict[int, JointLimit]:
-    """Load J1–J6 from MuJoCo XML; attach provisional J7 motor-frame soft range."""
+    """Load arm1 J1-J6 from MuJoCo XML + provisional J7 motor-frame range, then mirror
+    the same 7 limits onto arm2 (J8-J14) — identical arm hardware, identical limits."""
     path = Path(xml_path) if xml_path is not None else DEFAULT_YAM_XML
     if not path.is_file():
         raise FileNotFoundError(f"yam.xml not found: {path}")
@@ -122,6 +141,20 @@ def load_yam_limits(xml_path: Optional[Path] = None) -> Dict[int, JointLimit]:
         force_lo=-10.0,
         force_hi=10.0,
     )
+
+    for j in range(1, ARM_JOINT_COUNT + 1):
+        base = out[j]
+        mirrored = j + ARM_JOINT_COUNT
+        out[mirrored] = JointLimit(
+            joint=mirrored,
+            name=f"{base.name}_arm2",
+            lo=base.lo,
+            hi=base.hi,
+            source=f"{base.source} (arm2 mirror, identical hardware)",
+            force_lo=base.force_lo,
+            force_hi=base.force_hi,
+        )
+
     return out
 
 
@@ -155,11 +188,12 @@ def clamp_delta(
     lo, hi = lim.soft(margin)
     span_cap = min(DEFAULT_DELTA_CAP, max(0.05, DEFAULT_DELTA_FRAC * lim.span))
 
-    # J7 bench: hard-stop when commanding more negative near ~+1.11 motor-frame.
-    if lim.joint == 7 and start <= J7_MOTOR_LO + 0.15 and delta < 0.0:
+    # EE joint (J7 or J14 — each arm's local joint 7) bench: hard-stop when commanding
+    # more negative near ~+1.11 motor-frame. Identical arms -> identical bench behavior.
+    if arm_local_joint(lim.joint) == 7 and start <= J7_MOTOR_LO + 0.15 and delta < 0.0:
         mag = min(abs(delta), span_cap)
         return mag, start + mag, (
-            f"J7 near motor-frame hard-stop (~{J7_MOTOR_LO:.2f}); "
+            f"J{lim.joint} near motor-frame hard-stop (~{J7_MOTOR_LO:.2f}); "
             f"flipped delta to +{mag:.3f} (avoid negative)"
         )
 
@@ -214,16 +248,18 @@ def reasonableness_notes() -> str:
     """Short review of yam.xml ranges vs bench (for docs / dry-run)."""
     return "\n".join(
         [
-            "YAM limit review (yam.xml + J7 bench):",
-            "  J1 [-2.62, 3.13] asymmetric base yaw - OK for floor-mounted arm.",
-            "  J2 [0, 3.65] and J3 [0, 3.13] one-sided - typical folded pitch; large (>pi).",
-            "  J4/J5 +/-pi/2 wrist - standard.",
-            "  J6 +/-2.09 (+/-120 deg) wrist roll - standard.",
+            "YAM limit review (yam.xml + J7 bench, dual identical arms):",
+            "  J1/J8 [-2.62, 3.13] asymmetric base yaw - OK for floor-mounted arm.",
+            "  J2/J9 [0, 3.65] and J3/J10 [0, 3.13] one-sided - typical folded pitch; large (>pi).",
+            "  J4/J5 and J11/J12 +/-pi/2 wrist - standard.",
+            "  J6/J13 +/-2.09 (+/-120 deg) wrist roll - standard.",
             "  actuatorfrcrange +/-10 Nm on all - matches host Damiao TMAX; OK as soft cap",
             "    (DM-J4340 can exceed; keep host clamp for bring-up).",
             "  No joint7 in XML (6-link model + tcp/grasp sites only) - expected.",
-            f"  J7 provisional motor-frame [{J7_MOTOR_LO:.2f}, {J7_MOTOR_HI:.2f}] from hard-stop",
+            f"  J7/J14 provisional motor-frame [{J7_MOTOR_LO:.2f}, {J7_MOTOR_HI:.2f}] from hard-stop",
             "    at ~+1.11 (neg fight) and safe MIT travel to ~+2.5; EE not strict.",
+            "  Arm2 (J8-J14) mirrors arm1's limits exactly - identical hardware, not yet",
+            "    independently bench-verified; treat as provisional until arm2 is tested.",
             "  Do not treat motor fb as MuJoCo qpos until zeros are calibrated.",
         ]
     )

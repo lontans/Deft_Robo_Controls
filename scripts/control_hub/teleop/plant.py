@@ -10,7 +10,11 @@ from typing import List, Optional, Tuple
 from controls_pcb_host import commands as cmd
 from controls_pcb_host.actuator_config import ActuatorSlotConfig, slot_config
 from controls_pcb_host.feedback import parse_actuator_feedback, parse_feedback_header
-from controls_pcb_host.protocol import PLANT_MCU_STATE_NORMAL, PLANT_MCU_STATE_RECOVERY
+from controls_pcb_host.protocol import (
+    ACTUATOR_COUNT,
+    PLANT_MCU_STATE_NORMAL,
+    PLANT_MCU_STATE_RECOVERY,
+)
 from controls_pcb_host.protocol.can_bus import can_bus_label, is_mcp_bus, is_rs02_plant_bus
 from controls_pcb_host.protocol.schema import MAX_CAN_BUS
 from controls_pcb_host.session import PcbSession
@@ -278,7 +282,18 @@ def _bus_label(active: int) -> str:
     return f"ACTIVE_BUS={active} ({can_bus_label(active)})"
 
 
-def _targets(slots: List[SlotState], active_bus: int) -> List[SlotState]:
+def _targets(
+    slots: List[SlotState], active_bus: int, target_slot: Optional[int] = None
+) -> List[SlotState]:
+    """Which slots respond to the arrow keys this tick.
+
+    ``target_slot`` picks one slot by index regardless of bus — YAM's whole daisy chain
+    is on CH1, so bus-based active_bus selection can't isolate a single joint there.
+    Any slot not in the returned list still gets a full-stiffness hold command each tick
+    (see _update_slot_motion) — it just doesn't move.
+    """
+    if target_slot is not None:
+        return [st for st in slots if st.slot == target_slot]
     if active_bus == 0:
         return slots
     return [st for st in slots if st.bus == active_bus]
@@ -389,9 +404,26 @@ def _home(
     home_slew: float,
     home_on_fb: bool,
     idle_kp: float,
+    target_slot: Optional[int] = None,
+    home_target: Optional[dict] = None,
 ) -> bool:
+    """``home_target`` (slot -> rad) overrides D.HOME_TARGET per slot — used for
+    "home to current position" so teleop doesn't force a big drive-to-zero on an
+    arm that's currently sitting well outside the model's zero pose (see
+    run_plant_teleop's home_to_current)."""
     dt = 1.0 / hz
+
+    def _target_for(st: SlotState) -> float:
+        if home_target is not None and st.slot in home_target:
+            return home_target[st.slot]
+        return D.HOME_TARGET
+
     active = [st for st in slots if st.feedback_synced]
+    if target_slot is not None:
+        active = [st for st in active if st.slot == target_slot]
+    # Braced: synced but not being homed (target_slot mode) — hold at current fb,
+    # full stiffness, for the whole homing wait instead of sitting at kp=0.
+    braced = [st for st in slots if st.feedback_synced and st not in active]
     if not active:
         print("Homing skipped: no feedback.")
         return False
@@ -401,17 +433,25 @@ def _home(
         st.cmd_velocity = 0.0
         st.last_drive_dir = 0
 
+    for st in braced:
+        _anchor_cmd_from_fb(st)
+        st.cmd_velocity = 0.0
+        st.last_drive_dir = 0
+        st.kp = st.max_kp
+        st.kd = kd
+
     if all(
-        abs(st.fb_position - D.HOME_TARGET) <= D.HOME_POS_TOL
+        abs(st.fb_position - _target_for(st)) <= D.HOME_POS_TOL
         if _slot_home_on_fb(st, override=home_on_fb)
-        else abs(st.cmd_position - D.HOME_TARGET) <= D.HOME_POS_TOL * 0.1
+        else abs(st.cmd_position - _target_for(st)) <= D.HOME_POS_TOL * 0.1
         for st in active
     ):
         pos_s = ", ".join(f"{st.fb_position:+.4f}" for st in active)
         print(f"Already at home ({pos_s} rad) — short dwell, then teleop.")
         for st in active:
-            st.cmd_position = D.HOME_TARGET
-            st.kp = st.kd = 0.0
+            st.cmd_position = _target_for(st)
+            st.kp = st.max_kp
+            st.kd = kd
         for _ in range(max(4, int(hz * 0.5))):
             _send_slots(session, slots, kd)
             _poll_fb(session, slots)
@@ -422,7 +462,12 @@ def _home(
     start_pos = active[0].fb_position if len(active) == 1 else None
     if len(active) == 1:
         print(
-            f"Homing from {start_pos:+.4f} rad → {D.HOME_TARGET:+.2f} rad "
+            f"Homing from {start_pos:+.4f} rad → {_target_for(active[0]):+.2f} rad "
+            f"(slew {home_slew:.2f} rad/s, kp={home_kp:.1f}) — q aborts"
+        )
+    elif home_target is not None:
+        print(
+            f"Homing {len(active)} slot(s) to their current position "
             f"(slew {home_slew:.2f} rad/s, kp={home_kp:.1f}) — q aborts"
         )
     else:
@@ -445,25 +490,26 @@ def _home(
             return True
         slew_done = True
         for st in active:
-            delta = D.HOME_TARGET - st.cmd_position
+            tgt = _target_for(st)
+            delta = tgt - st.cmd_position
             step = home_slew * dt
             if abs(delta) <= step:
-                st.cmd_position = D.HOME_TARGET
+                st.cmd_position = tgt
             else:
                 st.cmd_position += math.copysign(step, delta)
                 slew_done = False
             st.cmd_position = max(D.P_MIN, min(D.P_MAX, st.cmd_position))
             st.cmd_velocity = 0.0
             slot_fb_home = _slot_home_on_fb(st, override=home_on_fb)
-            at_fb = abs(st.fb_position - D.HOME_TARGET) <= D.HOME_POS_TOL
-            at_cmd = abs(st.cmd_position - D.HOME_TARGET) <= D.HOME_POS_TOL * 0.1
+            at_fb = abs(st.fb_position - tgt) <= D.HOME_POS_TOL
+            at_cmd = abs(st.cmd_position - tgt) <= D.HOME_POS_TOL * 0.1
             at_target = at_fb if slot_fb_home else at_cmd
             # Soft-land (kp≤4) is for RS cmd-reach homing only. Damiao/MCP must keep
             # full home_kp until fb is inside tol — otherwise residual ~0.1 rad stalls.
             if slot_fb_home:
                 eff_kp = home_kp
             else:
-                near = abs(st.fb_position - D.HOME_TARGET) < 0.12
+                near = abs(st.fb_position - tgt) < 0.12
                 eff_kp = min(home_kp, 4.0) if near else home_kp
             st.kp = 0.0 if at_target else eff_kp
             st.kd = 0.0 if at_target else kd
@@ -493,14 +539,16 @@ def _home(
             st.cmd_position = D.HOME_TARGET
         st.cmd_velocity = 0.0
         st.last_drive_dir = 0
+        # Hold firmly at each slot's own tuned stiffness post-home — matches
+        # _update_slot_motion (no weak idle_kp gap before the first arrow press).
         slot_fb_home = _slot_home_on_fb(st, override=home_on_fb)
-        st.kd = 0.0 if (idle_kp if slot_fb_home else 0.0) == 0.0 else kd
-        st.kp = idle_kp if slot_fb_home else 0.0
+        st.kd = kd if slot_fb_home else 0.0
+        st.kp = st.max_kp if slot_fb_home else 0.0
     stuck = [
         st
         for st in active
         if _slot_home_on_fb(st, override=home_on_fb)
-        and abs(st.fb_position - D.HOME_TARGET) > D.HOME_POS_TOL
+        and abs(st.fb_position - _target_for(st)) > D.HOME_POS_TOL
     ]
     if stuck:
         pos_s = ", ".join(f"{st.label()} fb={st.fb_position:+.4f}" for st in stuck)
@@ -736,18 +784,15 @@ def _update_slot_motion(
     if moving:
         _advance_cmd_slew(st, dt=dt, max_lead=D.MAX_CMD_LEAD)
 
-    if arrow_active or moving:
-        st.kp = st.max_kp
-        st.kd = kd
-    elif idle_kp > 0.0:
-        st.kp = idle_kp
-        st.kd = kd
-        _anchor_cmd_from_fb(st)
-    else:
-        st.kp = 0.0
-        st.kd = 0.0
-        # Soft catch-up only when nearly stopped and close — avoid hard snap onto
-        # a lagged MCP fb sample at the end of a coast.
+    # Hold at full per-slot stiffness at all times once synced — arrows just move a
+    # position setpoint; releasing the key must not drop to a weak/backdrivable idle_kp
+    # (gravity sags load-bearing joints). idle_kp param kept for signature compat, unused.
+    _ = idle_kp
+    st.kp = st.max_kp
+    st.kd = kd
+    if not (arrow_active or moving):
+        # Anchor the hold target to where it actually settled — avoid holding a stale
+        # lead (e.g. against a stop) at full stiffness indefinitely.
         if abs(st.cmd_position - st.fb_position) <= D.MAX_CMD_LEAD:
             _anchor_cmd_from_fb(st)
 
@@ -1021,6 +1066,8 @@ def run_plant_teleop(
     idle_kp: float = 0.0,
     debug_trace: Optional[str] = None,
     skip_warmup: bool = False,
+    target_slot: Optional[int] = None,
+    home_to_current: bool = True,
 ) -> None:
     active_bus = 0
     dt = 1.0 / hz
@@ -1057,11 +1104,18 @@ def run_plant_teleop(
             print(f"{teleop_title} on {port} @ {hz:.0f} Hz")
             for st in slot_states:
                 print(f"  {st.label()}")
-            print(f"  Idle: kp=0 kd=0 (backdrivable).  Arrows: ±{arrow_vel:.1f} rad/s  0–{MAX_CAN_BUS}: bus  q: quit")
+            print(f"  Arrows: ±{arrow_vel:.1f} rad/s  0–{MAX_CAN_BUS}: bus  q: quit")
             print(
                 f"  Hold arrow = cruise at ±{arrow_vel:.1f} rad/s "
-                f"(position slew, v=0 MIT — ramp in {ramp_up_s:.2f}s, coast {ramp_down_s:.2f}s)"
+                f"(position slew, v=0 MIT — ramp in {ramp_up_s:.2f}s, coast {ramp_down_s:.2f}s). "
+                "Release: holds firmly at full stiffness — not backdrivable, gravity will not sag it."
             )
+            if target_slot is not None:
+                braced = [st.slot for st in slot_states if st.slot != target_slot]
+                print(
+                    f"  Bracing slot(s) {braced} at their current position (full stiffness) "
+                    f"— only slot {target_slot} responds to arrows."
+                )
             print(
                 f"  Tuning: kd={kd:.2f}  vel_stop={D.VEL_STOP:.2f}  "
                 f"(CLI: --arrow-vel --ramp-up --ramp-down --kd --kp)"
@@ -1098,7 +1152,17 @@ def run_plant_teleop(
             print()
 
             _wake(session, slot_states, kd, hz)
-            print("Wake done — idle kp=0 kd=0 (backdrivable).\n")
+            print("Wake done.\n")
+
+            # Home to wherever each slot currently is, not a fixed D.HOME_TARGET —
+            # driving hard to 0 rad is a large, unwanted move for a joint (or a whole
+            # second arm) that isn't anywhere near a calibrated zero pose. "Already at
+            # home" fires immediately per slot since target == current fb by construction.
+            home_target = None
+            if home_to_current:
+                home_target = {
+                    st.slot: st.fb_position for st in slot_states if st.feedback_synced
+                }
 
             if not skip_home:
                 if _home(
@@ -1110,6 +1174,8 @@ def run_plant_teleop(
                     home_slew=home_slew,
                     home_on_fb=home_on_fb,
                     idle_kp=idle_kp,
+                    target_slot=target_slot,
+                    home_target=home_target,
                 ):
                     _exit_teleop(
                         session,
@@ -1158,7 +1224,7 @@ def run_plant_teleop(
                         break
 
                     motion_dir = _poll_motion_dir()
-                    motion_targets = _targets(slot_states, active_bus)
+                    motion_targets = _targets(slot_states, active_bus, target_slot)
                     target_ids = {id(st) for st in motion_targets}
                     for st in slot_states:
                         _update_slot_motion(
@@ -1250,9 +1316,16 @@ def run_for_slot(
         # kp_tuple already resolves slot_kp/explicit --kp over D.SLOT_KP (YAM J1-J4 need
         # more than the wrist default) — previously this branch ignored kp_tuple entirely
         # and always sent flat D.DM_KP, silently dropping any --kp override too.
+        #
+        # Include every actuator slot, not just the requested one: a plain single-slot
+        # send_plant({slot: (...)}) zero-fills every other slot's desire each tick, which
+        # firmware copies straight into actuator_desire_live[] — so the rest of the arm
+        # would go limp (gravity sag) while this session runs. target_slot makes only
+        # `slot` respond to arrows; the others get braced at their current position.
+        all_slots = list(range(ACTUATOR_COUNT))
         run_plant_teleop(
             port,
-            [slot],
+            all_slots,
             kd=D.DM_KD if kd == D.KD else kd,
             arrow_vel=D.DM_ARROW_VEL if arrow_vel == D.ARROW_VEL else arrow_vel,
             slot_kp=kp_tuple,
@@ -1267,6 +1340,7 @@ def run_for_slot(
             hz=hz,
             ramp_up_s=ramp_up_s,
             ramp_down_s=ramp_down_s,
+            target_slot=slot,
         )
     else:
         run_plant_teleop(

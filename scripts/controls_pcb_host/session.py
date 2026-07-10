@@ -11,6 +11,7 @@ from . import commands as cmd
 from .actuator_config import Protocol, slot_config  # noqa: F401 — re-export for plugins
 from .feedback import parse_actuator_feedback, parse_feedback_header
 from .protocol import (
+    ACTUATOR_COUNT,
     PLANT_MCU_STATE_NORMAL,
     PLANT_MCU_STATE_RECOVERY,
     SESSION_BEGIN,
@@ -124,7 +125,7 @@ class PcbSession:
         if hdr is None:
             return None
         slots = []
-        for i in range(6):
+        for i in range(ACTUATOR_COUNT):
             slots.append(parse_actuator_feedback(frame, i))
         hdr["actuator_slots"] = slots
         return hdr

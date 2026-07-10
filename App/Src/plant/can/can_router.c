@@ -177,7 +177,17 @@ static fdcan_rx_mode_t fdcan_rx_mode_for_bus(can_bus_id_t bus)
 {
 	switch (bus) {
 	case CAN_BUS_CH1:
+	case CAN_BUS_CH2:
 	case CAN_BUS_CH3:
+		/* CH2 (hfdcan3) was ext-only (RobStride) — Cube StdFiltersNbr=0 for this
+		 * instance, but each FDCAN instance owns an independent, fixed-size message
+		 * RAM block on G4 (FDCAN_CalcultateRamBlockAddresses: base + instance_idx *
+		 * SRAMCAN_SIZE), so std+ext here does not touch FDCAN1/2's RAM or overrun
+		 * CH2's own regions — StdFiltersNbr=0 just means the global filter's
+		 * NonMatchingStd policy decides std-frame disposition (now ACCEPT, matching
+		 * how ext already worked with ExtFiltersNbr=0). Needed once CH2 carries a
+		 * Damiao (std-ID) arm2 daisy alongside any existing ext-ID RobStride use.
+		 */
 		return FDCAN_RX_STD_AND_EXT;
 	default:
 		return FDCAN_RX_EXT_ONLY;

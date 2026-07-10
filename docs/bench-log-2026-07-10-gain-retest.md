@@ -336,3 +336,33 @@ PASS: hello-world J7(joint7_ee) slot6 CH1 (PB8/9 FDCAN1) damiao id=0x07
 - CFG PDU (config show / discover / joint status MCU sync): working, thermo no longer clobbers it
 - Damiao 1x-TX fix: J6 PASS (moved 0.091/0.10), J7 PASS (moved 0.091/0.10)
 - All 7 slots confirmed enabled and correctly mapped (CH1, damiao, 0x01-0x07)
+
+## Session continuation — dual-arm scale-up (same day, Jul 2026)
+
+Scope grew from single-arm gain tuning to a full dual-arm bring-up. Summarized in
+detail in [bringup.md § Dual-arm YAM bring-up](bringup.md#dual-arm-yam-bring-up-jul-2026);
+short version:
+
+1. Wrote in the 14-actuator dual-arm config (arm2 = slots 7-13, CH2) — firmware
+   `ACTUATOR_COUNT` 7→14, factory defaults, matching host `_DEFAULT_TABLE`.
+2. CFG GET broke at 14 slots (32 B PDU can't hold 14×3+6 B) — paginated it.
+3. `discover --bus 2` found nothing despite both arms powered — traced to
+   `fdcan_rx_mode_for_bus()`: CH2 was ext-ID-only (RobStride-provisioned), rejecting
+   all Damiao (standard-ID) frames. Verified via STM32G4 HAL source that each FDCAN
+   instance owns independent message RAM before flipping CH2 to mixed std+ext.
+4. Live enable check: all 14 motors respond, no faults, positions scattered relative
+   to each joint's nominal 0 (e.g. J2/J9 ≈ -2.61, J7/J14 well outside soft EE range).
+5. Reworked homing: `_home()` now targets each slot's own current position
+   (`home_to_current`, default True) instead of a fixed 0 rad — avoids a large forced
+   move on arms nowhere near a calibrated zero.
+6. Added `--joints` group selection (`controls_pcb_host/teleop/delegate.py::
+   slots_for_arm_local_joints`) — arm-local joint numbers expand across every arm's bus
+   automatically (e.g. `--joints 1,2,3,4` → slots 0,1,2,3,7,8,9,10).
+7. Gain/velocity tuning rounds on live bench feedback ("whipping"): SLOT_KP raised
+   further (esp. wrist/EE, which weren't firm enough once braced holding became
+   full-stiffness-always), DM_KD 0.8→1.0, MAX_CMD_LEAD 0.35→0.18 rad, DM_ARROW_VEL
+   0.25→0.12 rad/s. User feedback after this round: "stiffness is better, arrow vel
+   still a little high but its ok for now" — next lever if revisited is DM_ARROW_VEL.
+
+All test-suite runs stayed at 68 passed / 1 pre-existing unrelated failure
+(`test_make_slots_mcp_kp_uses_slot_index`, predates this session) throughout.

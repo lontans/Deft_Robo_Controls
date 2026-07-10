@@ -5,6 +5,7 @@ from .delegate import (
     run_plant_teleop_for_slot,
     run_plant_teleop_for_slots,
     run_servo_teleop,
+    slots_for_arm_local_joints,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "run_plant_teleop_for_slot",
     "run_plant_teleop_for_slots",
     "run_servo_teleop",
+    "slots_for_arm_local_joints",
 ]
