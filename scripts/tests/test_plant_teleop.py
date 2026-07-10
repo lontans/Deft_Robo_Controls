@@ -4,15 +4,38 @@ from __future__ import annotations
 import math
 
 from control_hub.teleop import defaults as D
-from control_hub.teleop.plant import SlotState, _make_slots, _update_slot_motion
+from control_hub.teleop.plant import SlotState, _make_slots, _slot_home_on_fb, _update_slot_motion
 from controls_pcb_host import commands as cmd
+from controls_pcb_host.actuator_config import Protocol, default_table, host_table
+from controls_pcb_host.actuator_config import _HOST_TABLE  # noqa: PLC2701
+
+
+def test_slot_home_on_fb_fdcan_rs_uses_cmd() -> None:
+    st = SlotState(slot=1, bus=2, motor_id=0x70, max_kp=8.0)
+    _HOST_TABLE[1] = default_table()[1]
+    _HOST_TABLE[1].bus = 2
+    _HOST_TABLE[1].protocol = Protocol.ROBSTRIDE
+    assert _slot_home_on_fb(st) is False
+
+
+def test_slot_home_on_fb_damiao_uses_fb() -> None:
+    st = SlotState(slot=0, bus=1, motor_id=0x06, max_kp=10.0)
+    _HOST_TABLE[0] = default_table()[0]
+    _HOST_TABLE[0].protocol = Protocol.DAMIAO
+    assert _slot_home_on_fb(st) is True
+
+
+def test_slot_home_on_fb_mcp_rs_uses_fb() -> None:
+    st = SlotState(slot=3, bus=4, motor_id=0x73, max_kp=6.0)
+    _HOST_TABLE[3] = default_table()[3]
+    assert _slot_home_on_fb(st) is True
 
 
 def test_make_slots_mcp_kp_uses_slot_index() -> None:
     slots = _make_slots([3, 4, 5], D.SLOT_KP)
     assert [s.max_kp for s in slots] == [6.0, 6.0, 6.0]
     assert slots[0].motor_id == 0x73  # CH4 after bus 4/5 swap
-    assert slots[1].motor_id == 0x70  # CH5
+    assert slots[1].motor_id == 0x73  # CH5
 
 
 def test_send_slots_keeps_mcp_non_blank_at_home() -> None:

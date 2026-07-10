@@ -3,6 +3,15 @@ Actuator slot configuration — host mirror of firmware actuator_table[].
 
 When a USB session is available, `config show` / `config set` use the CFG PDU to
 read or update the MCU table and optional flash NVM (`--persist`).
+
+Move a slot to another schematic bus (daisy-chain / mixed protocol on one channel):
+
+```powershell
+python scripts/control_hub.py config set --port COM5 --slot 1 --bus 3 --motor-id 0x74
+python scripts/control_hub.py config set --port COM5 --slot 1 --bus 3 --motor-id 0x74 --persist
+```
+
+`--bus` and `--channel` are equivalent (CH1–CH6).
 """
 from __future__ import annotations
 
@@ -12,6 +21,7 @@ from enum import IntEnum
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from .protocol import ACTUATOR_COUNT
+from .protocol.can_bus import normalize_can_bus
 
 if TYPE_CHECKING:
     from .session import PcbSession
@@ -167,7 +177,7 @@ def apply_host_config(
 ) -> ActuatorSlotConfig:
     cfg = _HOST_TABLE[slot]
     if bus is not None:
-        cfg.bus = bus
+        cfg.bus = normalize_can_bus(bus)
     if protocol is not None:
         cfg.protocol = protocol
     if motor_id is not None:
@@ -185,7 +195,7 @@ def apply_host_config(
 
         cfg = _HOST_TABLE[slot]
         if bus is not None:
-            cfg.bus = bus
+            cfg.bus = normalize_can_bus(bus)
         if protocol is not None:
             cfg.protocol = protocol
         if motor_id is not None:

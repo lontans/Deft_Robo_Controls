@@ -171,6 +171,16 @@ class SlotState:
         return f"slot{self.slot} {can_bus_label(self.bus)} 0x{self.motor_id:02X} kp<={self.max_kp:.0f}"
 
 
+def _slot_home_on_fb(st: SlotState, *, override: Optional[bool] = None) -> bool:
+    """Per-slot homing done criterion: Damiao/MCP track fb; FDCAN RS uses cmd reach."""
+    if override is not None:
+        return override
+    cfg = slot_config(st.slot)
+    if cfg.protocol_name == "damiao":
+        return True
+    return is_mcp_bus(st.bus)
+
+
 def _sanitize_pos(pos: float, fallback: float) -> float:
     if abs(pos) <= D.SYNC_POS_MAX:
         return pos
@@ -391,7 +401,12 @@ def _home(
         st.cmd_velocity = 0.0
         st.last_drive_dir = 0
 
-    if all(abs(st.fb_position - D.HOME_TARGET) <= D.HOME_POS_TOL for st in active):
+    if all(
+        abs(st.fb_position - D.HOME_TARGET) <= D.HOME_POS_TOL
+        if _slot_home_on_fb(st, override=home_on_fb)
+        else abs(st.cmd_position - D.HOME_TARGET) <= D.HOME_POS_TOL * 0.1
+        for st in active
+    ):
         pos_s = ", ".join(f"{st.fb_position:+.4f}" for st in active)
         print(f"Already at home ({pos_s} rad) — short dwell, then teleop.")
         for st in active:
@@ -439,14 +454,17 @@ def _home(
                 slew_done = False
             st.cmd_position = max(D.P_MIN, min(D.P_MAX, st.cmd_position))
             st.cmd_velocity = 0.0
+            slot_fb_home = _slot_home_on_fb(st, override=home_on_fb)
             at_fb = abs(st.fb_position - D.HOME_TARGET) <= D.HOME_POS_TOL
             at_cmd = abs(st.cmd_position - D.HOME_TARGET) <= D.HOME_POS_TOL * 0.1
-            at_target = at_fb if home_on_fb else at_cmd
+            at_target = at_fb if slot_fb_home else at_cmd
             near = abs(st.fb_position - D.HOME_TARGET) < 0.12
             eff_kp = min(home_kp, 4.0) if near else home_kp
             st.kp = 0.0 if at_target else eff_kp
             st.kd = 0.0 if at_target else kd
-            if not at_cmd or (home_on_fb and not at_fb):
+            if not at_cmd:
+                slew_done = False
+            if slot_fb_home and not at_fb:
                 slew_done = False
         _send_slots(session, slots, kd)
         _poll_fb(session, slots)
@@ -466,19 +484,23 @@ def _home(
     for st in slots:
         if st.feedback_synced:
             _anchor_cmd_from_fb(st)
-        elif not home_on_fb and abs(st.fb_position) <= D.HOME_POS_TOL:
+        elif not _slot_home_on_fb(st, override=home_on_fb) and abs(st.fb_position) <= D.HOME_POS_TOL:
             st.cmd_position = D.HOME_TARGET
         st.cmd_velocity = 0.0
         st.last_drive_dir = 0
-        st.kd = 0.0 if (idle_kp if home_on_fb else 0.0) == 0.0 else kd
-        st.kp = idle_kp if home_on_fb else 0.0
-    if home_on_fb and not all(
-        abs(st.fb_position - D.HOME_TARGET) <= D.HOME_POS_TOL
+        slot_fb_home = _slot_home_on_fb(st, override=home_on_fb)
+        st.kd = 0.0 if (idle_kp if slot_fb_home else 0.0) == 0.0 else kd
+        st.kp = idle_kp if slot_fb_home else 0.0
+    stuck = [
+        st
         for st in active
-    ):
-        pos_s = ", ".join(f"{st.fb_position:+.4f}" for st in active)
+        if _slot_home_on_fb(st, override=home_on_fb)
+        and abs(st.fb_position - D.HOME_TARGET) > D.HOME_POS_TOL
+    ]
+    if stuck:
+        pos_s = ", ".join(f"{st.label()} fb={st.fb_position:+.4f}" for st in stuck)
         print(
-            f"WARNING: homing timed out with fb still at {pos_s} rad "
+            f"WARNING: homing timed out — {pos_s} rad "
             "(motor did not track cmd — check bus TX / recover / reflash)."
         )
         return True
@@ -1247,6 +1269,5 @@ def run_for_slot(
             home_kp=home_kp,
             home_slew=home_slew,
             recovery_on_exit=True,
-            home_on_fb=True,
             debug_trace=debug_trace,
         )

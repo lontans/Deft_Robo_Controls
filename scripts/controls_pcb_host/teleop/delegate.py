@@ -167,7 +167,6 @@ def run_plant_teleop_for_slots(
         home_kp=home_kp if home_kp is not None else D.HOME_KP,
         home_slew=home_slew if home_slew is not None else D.HOME_SLEW_RAD_S,
         recovery_on_exit=True,
-        home_on_fb=True,
         debug_trace=debug_trace,
     )
 

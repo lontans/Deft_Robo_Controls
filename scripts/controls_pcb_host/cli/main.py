@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from .._bootstrap import ensure_scripts_path
 from ..actuator_config import (
+    PROTOCOL_NAMES,
     apply_host_config,
     format_table,
     parse_protocol,
@@ -258,6 +259,17 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     slot = args.slot
     proto = parse_protocol(args.protocol) if args.protocol else None
     port = _port(args)
+    changes: list[str] = []
+    if args.bus is not None:
+        changes.append(f"bus=CH{args.bus}")
+    if proto is not None:
+        changes.append(f"protocol={PROTOCOL_NAMES[proto]}")
+    if args.motor_id is not None:
+        changes.append(f"motor_id=0x{args.motor_id & 0xFF:02X}")
+    if args.master_id is not None:
+        changes.append(f"master_id=0x{args.master_id & 0xFF:02X}")
+    if args.disable:
+        changes.append("enabled=off")
     with PcbSession(port) as session:
         with session.rx_pump():
             try:
@@ -283,6 +295,8 @@ def cmd_config_set(args: argparse.Namespace) -> int:
                     )
                     return 1
                 raise
+    if changes:
+        print(f"Updated slot {slot}: {', '.join(changes)}")
     print(format_table(source="MCU"))
     if args.persist:
         print("\nSaved to MCU flash NVM (survives power cycle).")
@@ -498,9 +512,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print host mirror only (no USB)",
     )
     show_p.set_defaults(func=cmd_config_show)
-    p = cfg_sub.add_parser("set", parents=[port_parent], help="Update actuator slot on MCU (CFG SET)")
+    p = cfg_sub.add_parser(
+        "set",
+        parents=[port_parent],
+        help="Update actuator slot on MCU (CFG SET); use --bus to move a slot to another channel",
+    )
     p.add_argument("--slot", type=int, required=True)
-    p.add_argument("--bus", type=int, default=None)
+    p.add_argument(
+        "--bus",
+        "--channel",
+        type=int,
+        default=None,
+        dest="bus",
+        metavar="CH",
+        help="Schematic CAN bus CH1–CH6 (same channel for daisy-chain / mixed-protocol slots)",
+    )
     p.add_argument(
         "--protocol",
         default=None,
