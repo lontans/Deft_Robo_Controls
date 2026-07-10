@@ -11,8 +11,13 @@ ARROW_VEL = 3.5
 RAMP_UP_S = 0.12
 RAMP_DOWN_S = 0.35
 VEL_STOP = 0.05
-# Slot 0 RS02; 1 RS01/FDCAN; 2 Damiao; 3–5 MCP SPI-CAN (gentler kp on MCP).
-SLOT_KP: Tuple[float, ...] = (10.0, 8.0, 8.0, 6.0, 6.0, 6.0)
+# Per-slot max kp (indexed by slot, YAM CH1 daisy: slot i = joint i+1).
+# J1-J4 (slots 0-3) are the load-bearing base/shoulder/elbow/forearm joints (DM-J4340,
+# real headroom well above these values) — the old flat 12.0 for every slot was tuned for
+# wrist joints and was not enough stiffness to move J2/J3/J4 against gravity/static load
+# (bench-confirmed Jul 2026: J2/J4 needed ~40, J3 needed ~80 to track a jog at all).
+# J5-J7 (wrist/EE) stay at the original gentle default — confirmed sufficient on bench.
+SLOT_KP: Tuple[float, ...] = (30.0, 50.0, 90.0, 50.0, 12.0, 12.0, 12.0)
 
 HOME_TARGET = 0.0
 HOME_SLEW_RAD_S = 0.18
@@ -43,11 +48,13 @@ EXTREMITY_POS_TOL = 0.05
 
 BUS_KEYS: Tuple[str, ...] = tuple(str(i) for i in range(MAX_CAN_BUS + 1))
 
-# Damiao slot 2
+# Legacy factory Damiao slot (CH3 0x06). Prefer the slot passed to teleop/--plant-slots.
 DM_SLOT = 2
-DM_KP = 12.0
-DM_KD = 0.5
-DM_ARROW_VEL = 3.0
+DM_KP = 12.0  # fallback only — per-slot gain now comes from SLOT_KP (see run_for_slot)
+DM_KD = 0.8   # bumped from 0.5 to damp the higher SLOT_KP values on J1-J4
+DM_ARROW_VEL = 0.6  # slow cruise on purpose: SLOT_KP (30-90 for J1-J4) now supplies the
+# holding/torque authority, so velocity is the only lever left to give a human time to
+# release the key before MAX_CMD_LEAD (0.35 rad) worth of error builds up against a stop.
 DM_HOME_KP = 8.0
 DM_HOME_SLEW = 0.2
 DM_IDLE_KP = 6.0

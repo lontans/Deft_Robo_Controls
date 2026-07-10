@@ -22,6 +22,7 @@ from controls_pcb_host.protocol.diag_pdu import (
     DM_PROBE_ALL,
     DM_PROBE_CLEAR_FAULT,
     DM_PROBE_DISABLE,
+    DM_PROBE_DISCOVER,
     DM_PROBE_ENABLE,
     DM_PROBE_ID_SWEEP,
     DM_PROBE_KIND_NAMES,
@@ -150,6 +151,35 @@ def format_hit(resp: dict, motor_id: int, master_id: int, kind: int) -> str:
         f"mode={kind_name}{reg}{motion}  "
         f"err=0x{resp['err']:X}  raw={resp['raw_frames']}  tx={resp['tx_frames']}"
     )
+
+
+def print_all_hits_summary(hits: List[dict], *, port: str, bus: int) -> None:
+    """Deduplicate FOUND replies by ESC_ID and print a config-set friendly list."""
+    by_esc: dict[int, dict] = {}
+    for resp in hits:
+        esc = true_esc_id(resp) & 0xFF
+        prev = by_esc.get(esc)
+        if prev is None or int(resp.get("raw_frames", 0)) >= int(prev.get("raw_frames", 0)):
+            by_esc[esc] = resp
+    print()
+    print(f"Motors on bus ({len(by_esc)} unique ESC_ID(s)):")
+    for slot, esc in enumerate(sorted(by_esc)):
+        resp = by_esc[esc]
+        master = int(resp.get("master_id", 0)) & 0xFF
+        print(
+            f"  [{slot}] ESC_ID=0x{esc:02X}  Master=0x{master:02X}  "
+            f"rx_can_id=0x{resp.get('rx_can_id', 0):03X}"
+        )
+        print(
+            f"       config set --slot {slot} --protocol damiao --bus {bus} "
+            f"--motor-id 0x{esc:02X}"
+        )
+    if by_esc:
+        first = sorted(by_esc)[0]
+        print(
+            f"  Confirm one: python scripts/damiao_scan.py --port {port} "
+            f"--probe-id 0x{first:02X} --bus {bus}"
+        )
 
 
 def build_id_list(start: int, end: int, deep: bool) -> List[int]:
@@ -463,15 +493,7 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
             print()
 
         if hits:
-            best = hits[0]
-            esc = true_esc_id(best)
-            master = int(best.get("master_id", 0)) & 0xFF
-            print(f"Motor on bus: ESC_ID=0x{esc:02X}  Master ID=0x{master:02X}  "
-                  f"(rx_raw={best['raw_frames']}  rx_can_id=0x{best.get('rx_can_id', 0):03X})")
-            print("  Update plant_config slot 2: motor_id=0x{:02X}  "
-                  "master_id=DM_MASTER_ID_AUTO or 0x{:02X}".format(esc, master))
-            print("  Confirm: python scripts/damiao_scan.py --port {} --probe-id 0x{:02X} --bus {}".format(
-                ser.port, esc, bus))
+            print_all_hits_summary(hits, port=ser.port, bus=bus)
             send_dm_probe(ser, reader, 0, SESSION_END, seq, 0.5, bus=bus)
             print("\nDone: motor candidate(s) seen during scan.")
             return 0
@@ -500,16 +522,7 @@ def run_discover(ser: serial.Serial, args: argparse.Namespace) -> int:
                     print(format_miss(mid, DM_MASTER_ANY, probe_kind, resp, mcu_timeout))
 
             if hits:
-                best = max(hits, key=lambda r: (true_esc_id(r), r.get("raw_frames", 0)))
-                esc = true_esc_id(best)
-                master = int(best.get("master_id", 0)) & 0xFF
-                print()
-                print(f"Motor on bus: ESC_ID=0x{esc:02X}  Master ID=0x{master:02X}  "
-                      f"(rx_raw={best['raw_frames']}  rx_can_id=0x{best.get('rx_can_id', 0):03X})")
-                print("  Update plant_config slot 2: motor_id=0x{:02X}  "
-                      "master_id=DM_MASTER_ID_AUTO or 0x{:02X}".format(esc, master))
-                print("  Confirm: python scripts/damiao_scan.py --port {} --probe-id 0x{:02X} --bus {}".format(
-                    ser.port, esc, bus))
+                print_all_hits_summary(hits, port=ser.port, bus=bus)
 
             if not hits and getattr(args, "mit_fallback", False):
                 print("\nNo reg-scan hits — MIT feedback fallback (one MIT frame per ID)...")

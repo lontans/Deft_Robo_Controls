@@ -54,8 +54,9 @@ def test_parse_cfg_feedback_roundtrip() -> None:
     pdu[3] = CFG_OP_GET | 0x80
     pdu[4] = CFG_STATUS_OK
     pdu[5] = 2
-    pdu[6:10] = bytes([4, 1, 0x73, 1])
-    pdu[10:14] = bytes([5, 1, 0x70, 1])
+    # 3 B/slot: bus, protocol|(enabled<<7), motor_id
+    pdu[6:9] = bytes([4, 0x81, 0x73])
+    pdu[9:12] = bytes([5, 0x81, 0x70])
     parsed = parse_cfg_feedback(bytes(pdu))
     assert parsed is not None
     assert parsed["status_name"] == "ok"
@@ -67,3 +68,25 @@ def test_parse_cfg_feedback_roundtrip() -> None:
         "motor_id": 0x73,
         "enabled": True,
     }
+
+
+def test_parse_cfg_feedback_seven_slots() -> None:
+    pdu = bytearray(32)
+    pdu[0] = CFG_RESP_TAG0
+    pdu[1] = CFG_RESP_TAG1
+    pdu[2] = CFG_RESP_TAG2
+    pdu[3] = CFG_OP_GET | 0x80
+    pdu[4] = CFG_STATUS_OK
+    pdu[5] = 7
+    for i in range(7):
+        off = 6 + i * 3
+        pdu[off] = 1
+        pdu[off + 1] = 0x80 | 3  # damiao + enabled
+        pdu[off + 2] = i + 1
+    parsed = parse_cfg_feedback(bytes(pdu))
+    assert parsed is not None
+    assert parsed["slot_count"] == 7
+    assert len(parsed["slots"]) == 7
+    assert parsed["slots"][6]["motor_id"] == 7
+    assert parsed["slots"][6]["protocol"] == 3
+    assert parsed["slots"][6]["enabled"] is True

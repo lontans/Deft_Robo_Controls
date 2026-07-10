@@ -451,10 +451,15 @@ void damiao_apply_cycle(const actuator_config_t *cfg,
 			(void)can_tx_enqueue(bus, &frame);
 	}
 
-	for (uint8_t i = 0; i < 3u; i++) {
-		if (damiao_pack_tx(cfg, desire, &frame) == PLUGIN_OK)
-			(void)can_tx_enqueue(bus, &frame);
-	}
+	/* One MIT frame per slot per tick. The old 3x redundant send (added 2026-07-06 for
+	 * single/dual-motor reliability) triples CH1 load; with 6-7 Damiao slots enabled at
+	 * once (YAM daisy) that oversubscribes 1 Mbps (up to 21 frames/tick @ 500 Hz vs
+	 * ~7.7-9.3k frames/sec bus capacity), and since actuator_apply_desire() enqueues by
+	 * slot index in order, the TX queue backs up and the highest-index slots (J6/J7)
+	 * consistently lose the enqueue race — they stop tracking MIT commands entirely
+	 * while earlier slots keep working. */
+	if (damiao_pack_tx(cfg, desire, &frame) == PLUGIN_OK)
+		(void)can_tx_enqueue(bus, &frame);
 }
 
 static bool damiao_probe_send(can_bus_id_t bus,

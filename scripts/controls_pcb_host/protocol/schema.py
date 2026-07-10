@@ -13,7 +13,7 @@ HOST_EXCHANGE_SERVO_SLOTS = 2
 HOST_EXCHANGE_LED_SLOTS = 1
 HOST_PDU_PAYLOAD_BYTES = 32
 
-ACTUATOR_COUNT = 6
+ACTUATOR_COUNT = 7
 
 # Byte offsets in the 562 B command/feedback image (layout v1).
 HEADER_OFF = 0

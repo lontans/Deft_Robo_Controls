@@ -36,6 +36,9 @@ from .protocol import (
     SERVO0_CMD_OFF,
     SERVO_SLOT_BYTES,
     SYSTEM_CMD_OFF,
+    THERMO_TAG0,
+    THERMO_TAG1,
+    THERMO_TAG2,
     UB_CMD_MAX_BYTES,
     UB_TAG0,
     UB_TAG1,
@@ -218,6 +221,28 @@ def build_dxl_probe_command(
     buf[PDU_OFF + 4] = kind & 0xFF
     buf[PDU_OFF + 5] = id_start & 0xFF
     buf[PDU_OFF + 6] = id_end & 0xFF
+    return bytes(buf)
+
+
+def build_thermo_probe_command(
+    seq: int,
+    slot_commands: Optional[Dict[int, Tuple[float, float, float, float, float]]] = None,
+    mcu_state: int = PLANT_MCU_STATE_NORMAL,
+) -> bytes:
+    """Bench thermocouple (MAX31855) probe — TMP PDU tag. Unlike the DM/DXL/UB
+    bench backdoors, this does NOT force DIAG_ONLY: mirrors
+    App/Src/plant/thermo.c (2026-07-10 workstreams), where a TMP-tagged
+    command still falls through to normal actuator_commands[] mounting —
+    read-only telemetry, no reason to block plant operation. Pass
+    slot_commands to probe alongside a live teleop stream."""
+    buf = _blank_command(seq)
+    patch_system_mcu_state(buf, mcu_state)
+    if slot_commands:
+        for slot, (pos, vel, kp, kd, tau) in slot_commands.items():
+            patch_actuator_desire(buf, pos, vel, kp, kd, tau, slot=slot)
+    buf[PDU_OFF + 0] = THERMO_TAG0
+    buf[PDU_OFF + 1] = THERMO_TAG1
+    buf[PDU_OFF + 2] = THERMO_TAG2
     return bytes(buf)
 
 

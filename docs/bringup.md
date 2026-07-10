@@ -18,16 +18,13 @@ Rebuild and flash from STM32CubeIDE (Debug).
 
 ## 2. Motor and CAN
 
-`plant_config.c` enables **six** actuators (`ACTUATOR_COUNT = 6`):
+`plant_config` enables **seven** actuators (`ACTUATOR_COUNT = 7`):
 
 | Slot | Bus | Motor ID | Protocol |
 |------|-----|----------|----------|
-| 0 | CH1 | `0x06` | Damiao DM-J4310 |
-| 1 | CH2 | `0x70` | RobStride RS02 |
-| 2 | CH3 | `0x75` | RobStride RS02 |
-| 3 | CH4 | `0x73` | RobStride (MCP2518) |
-| 4 | CH5 | `0x73` | RobStride (MCP2518) |
-| 5 | CH6 | `0x75` | RobStride (MCP2518) |
+| 0–6 | CH1 | `0x01`…`0x07` (factory placeholders) | Damiao |
+
+Runtime: `config set` after discover. Wire image still 562 B (`HOST_EXCHANGE_ACTUATOR_SLOTS=25`); plant applies slots `0..ACTUATOR_COUNT-1` only.
 
 - FDCAN1/2/3 @ 1 Mbit/s, per-bus TX queue + RX ring (depth 128)
 - **CH1:** **mixed** standard + extended when Damiao and RobStride share the branch (see [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md)); Damiao daisy-chain bench Jul 2026
@@ -47,22 +44,83 @@ On boot, `control_loop_start()` in `main()` arms TIM6 @ 500 Hz (before the FreeR
 |-------|----------------|
 | USB / DM0 session | OK |
 | Discover **DM-J4310** | **OK** — register scan finds 4310 ESC_IDs on CH1 |
-| Discover **DM-J4340** | **FAIL** — not found via `--discover --host-only` on CH1 (`--start 1 --end 16`) |
-| Plant teleop homing (configured 4310 slots) | **OK** — daisy-chained motors that moved homed to zero |
-| Plant teleop motion | **Not yet** — configured 4310s faulted during teleop when sandwiched between **un-enabled DM-J4340** units on the harness (expected until 4340s are discovered/enabled or bypassed) |
+| Discover **DM-J4340P-2EC** (isolated CH1) | **OK** — same MIT + `0x7FF` reg-scan as 4310 (docs register map / read-param identical). Bench unit: `ESC_ID=0x01`, `Master=0x11`. Enable (`0xFC`) + MIT feedback OK (`ERR=1`, pos/temp). |
+| Plant slot map (RAM) | Slot 0 → Damiao CH1 `0x01`; other slots disabled for isolate test. **`--persist` flash SAVE currently `flash_err`** (RAM survives until power cycle; needs NVM/flash fix + reflash). |
+| Plant feedback (slot 0) | **OK** — `status` shows `slot0 pos≈-0.75 err=0x1` while motor enabled |
+| Plant teleop jog | **Pending** — run `teleop --slot 0` interactively |
+| Multi-motor daisy teleop | **Not yet** — previously 4310s faulted when un-enabled 4340s sat mid-chain; re-test after each 4340 ID is mapped+enabled |
+
+**Doc note:** Extended manuals (`DMJ4310 Documentation Extended.pdf` vs `DM-J4340P-2EC V1.1 Documentation Extended.pdf`) share the same CAN 2.0B @ 1 Mbps MIT / `0x7FF` param protocol and register addresses. No separate `PROTO_DAMIAO_4340`. If a unit never answers, check Assistant baud (codes >1M → CAN FD feedback the MCU will not decode) and ESC_ID range — not a different wire format.
 
 `control_hub.py discover` returns **one** motor per run (first responder). To list every ID on the branch:
 
 ```powershell
 python scripts/control_hub.py discover --port COM5 --protocol damiao --bus 1          # first hit only
-python scripts/damiao_scan.py --port COM5 --discover --host-only --bus 1 --start 1 --end 16
+python scripts/damiao_scan.py --port COM5 --discover --host-only --bus 1 --start 0 --end 32 --listen-ms 60
+python scripts/damiao_scan.py --port COM5 --probe-id 0x01 --bus 1 --enable --hold-ms 2000
 ```
 
-Discovery uses **register read** (`DM_PROBE_REG_SCAN`): TX `0x7FF` read ESC_ID (`0x08`) + MST_ID (`0x07`). Works while motor is **disabled** (red LED). Map each FOUND `esc_id` / `master_rx` to a plant slot with `config set --bus 1 --motor-id … --persist`.
+Discovery uses **register read** (`DM_PROBE_REG_SCAN`): TX `0x7FF` read ESC_ID (`0x08`) + MST_ID (`0x07`). Works while motor is **disabled** (red LED). Map each FOUND `esc_id` / `master_rx` to a plant slot with `config set --bus 1 --motor-id …` (add `--persist` once flash SAVE works).
 
-**Next:** bring up DM-J4340 (Assistant + USB2CAN isolate test, or wider ID range / per-model probe); then re-run multi-slot plant teleop on CH1.
+**Isolate-bench map (Jul 2026):**
 
-Extended notes: local `docs/damiao-bringup.md` (gitignored). See [known-issues.md](known-issues.md).
+| Joint / unit | Slot | Bus | ESC_ID | Master | Notes |
+|--------------|------|-----|--------|--------|-------|
+| DM-J4340P-2EC (isolate) | 0 | CH1 | `0x01` | `0x11` (AUTO ok) | Discover+enable+wave OK |
+| YAM 7-motor daisy | 0–6 | CH1 | TBD after discover | | `ACTUATOR_COUNT=7` — reflash required; then `damiao_scan --discover --host-only --bus 1` |
+
+```powershell
+# After reflash (ACTUATOR_COUNT=7):
+python scripts/control_hub.py config show --port COM5   # expect 7 slots
+python scripts/damiao_scan.py --port COM5 --discover --host-only --bus 1 --start 0 --end 32 --listen-ms 60
+python scripts/control_hub.py --port COM5 --plant-teleop --plant-slots 0,1,2,3,4,5,6
+python scripts/control_hub.py --hello-world --port COM5 --slot N   # AI jog when teleop not holding COM
+```
+
+**Agent plan:** [plan-damiao-4340-bringup.md](plan-damiao-4340-bringup.md). Arm shared-teleop: expand to 7 slots, discover all ESC_IDs, shared plant. Extended notes: local `docs/damiao-bringup.md` (gitignored). See [known-issues.md](known-issues.md).
+
+### YAM joint-slot-ESC_ID map and command policy (Jul 2026)
+
+Joint-space host commands (single-joint AI jog/status, user multi-joint teleop) are
+specified in [plan-yam-joint-commands.md](plan-yam-joint-commands.md); it is the source
+of truth for the command surface, soft-limit rules, and calibration gap. Summary:
+
+| Joint | Slot | Bus | ESC_ID | Master | Soft limit (rad, motor frame until zeroed) |
+|-------|------|-----|--------|--------|----------------------------------------------|
+| J1 | 0 | CH1 | `0x01` | `0x11` | `[-2.618, 3.130]` |
+| J2 | 1 | CH1 | `0x02` | `0x12` | `[0, 3.650]` |
+| J3 | 2 | CH1 | `0x03` | `0x13` | `[0, 3.130]` |
+| J4 | 3 | CH1 | `0x04` | `0x14` | `±1.5708` |
+| J5 | 4 | CH1 | `0x05` | `0x15` | `±1.5708` |
+| J6 | 5 | CH1 | `0x06` | `0x16` | `±2.094` |
+| J7 (EE, bench-only) | 6 | CH1 | `0x07` | `0x17` | `[1.10, 2.80]` provisional, not in `yam.xml` |
+
+ESC_ID/Master column is the nominal factory-placeholder mapping (`0x01`…`0x07` /
+`0x11`…`0x17`); confirm against the actual daisy chain with `damiao_scan --discover`
+(see the isolate-bench map above) before trusting slot assignment. J1–J6 ranges come
+from `External_Documentation/yam_arm_damiao/yam.xml`; J7 is bench-derived and
+intentionally loose. Both sourced live via `control_hub.py hello-world --limits`.
+
+**Who holds COM5:**
+
+| Who | Command |
+|-----|---------|
+| User (interactive) | `--plant-teleop --plant-slots 0,1,2,3,4,5,6` or `teleop --slot N` |
+| AI (single-joint, non-interactive) | `hello-world --joint N …` / `joint goto --joint N …` / `joint status --joint N` |
+
+User stops teleop (`q`) before handing the port to AI commands; AI prefers one joint per
+invocation and runs `--dry-run` first when a joint/delta is ambiguous.
+
+```powershell
+python scripts/control_hub.py hello-world --limits
+python scripts/control_hub.py joint status --port COM5 --joint 1
+python scripts/control_hub.py joint goto --port COM5 --joint 7 --delta -0.3 --dry-run
+python scripts/control_hub.py joint goto --port COM5 --joint 5 --to 0.4 --absolute --i-know-zeros --dry-run
+```
+
+`joint goto --to --absolute` is refused without `--i-know-zeros` — motor encoder frame
+is not yet aligned to the MuJoCo model frame (calibration steps in the plan §6).
+`joint home` is P2 and not implemented yet (stub returns non-zero).
 
 ### Damiao CH3 (earlier bench — Jul 2026)
 
@@ -71,6 +129,8 @@ Single DM-J4310 on CH3: USB/DM0 OK, CAN TX OK; **`rx_raw=0`** on register scan u
 ### Mixed std/ext on CH1 / CH3 (Jul 2026)
 
 Firmware accepts **both** 11-bit and 29-bit classic CAN on schematic CH1 and CH3 (`FDCAN_RX_STD_AND_EXT`). Plant teleop fans out RX to every enabled actuator slot on the bus so Damiao and RobStride can coexist when assigned to different slots on the same harness.
+
+**Architecture (FIFOs, filter masks, demux):** [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md) §0 — HW RX FIFO0 is shared; std vs ext is identified by HAL `IdType` / `can_frame_t.id_type`; software fan-out replaces per-plugin ring drains.
 
 **Bench verified (Jul 2026):** four-slot plant teleop `0,1,2,3` — Damiao + RS on CH1–CH3, including Damiao + RS both on CH1. Smooth arrow motion after homing when all configured motors are enabled. **Damiao-only CH1 daisy chain:** homing OK on DM-J4310 slots; teleop still blocked when un-enabled DM-J4340 units sit between configured 4310s — see § Damiao CH1 daisy chain.
 
@@ -87,7 +147,7 @@ python scripts/control_hub.py --plant-teleop --plant-slots 1,2 --port COM5
 2. `discover --protocol robstride --bus 3` → FOUND when RS motor on CH3 (ext frames).
 3. Mixed `--plant-slots`: both slots show feedback; arrow motion moves the selected motor only.
 4. Regression: Damiao-only CH3 teleop; RS CH1/CH2 teleop unchanged.
-5. Damiao CH1 daisy chain: `damiao_scan.py --discover --host-only --bus 1` lists DM-J4310 IDs; homing completes; teleop pending 4340 bring-up.
+5. Damiao CH1 daisy chain: isolated DM-J4340P-2EC discover/enable OK (`0x01`/`0x11`); multi-motor daisy teleop still pending full-chain enable.
 
 All devices on a mixed branch must share **1 Mbps** nominal bit timing and proper **120 Ω** termination at each end.
 
@@ -183,7 +243,7 @@ This script targets the original single-slot position-step teleop; for multi-mot
 | `ack_seq` | Tracks low 8 bits of command seq |
 | `tick` | Increments (12-bit plant counter) |
 | All RobStride slots | Feedback populates after wake; homing completes → arrow keys enabled |
-| Damiao `--discover` | `FOUND` with `esc_id` + `master_rx`; `rx_raw > 0` (DM-J4310 on CH1 OK; DM-J4340 not yet) |
+| Damiao `--discover` | `FOUND` with `esc_id` + `master_rx`; `rx_raw > 0` (4310 OK; isolated 4340P `0x01`/`0x11` OK) |
 | Damiao CH1 daisy homing | Configured 4310 slots reach home; teleop motion pending full chain enable |
 
 ## 6. Common mismatches

@@ -22,6 +22,7 @@ from .protocol import (
     SERVO_SLOT_BYTES,
     SESSION_BEGIN,
     SESSION_END,
+    THERMO_RESP_TAG,
     UB_FB_MAX_BYTES,
     UB_RESP_TAG,
 )
@@ -34,6 +35,7 @@ PDU_TAG_NAMES = {
     "S": "servo diag (SVD)",
     "u": "UART4 bridge",
     "c": "config reply",
+    "t": "thermocouple bench reply",
 }
 
 PLANT_BLOCK_NAMES = {
@@ -93,7 +95,11 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
 
 
 def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
-    """Parse CFG response PDU (cf g) from firmware plant_config_nvm."""
+    """Parse CFG response PDU (cfg) from firmware plant_config_nvm.
+
+    Slot records are 3 bytes each (ACTUATOR_COUNT=7 must fit in 32 B PDU):
+      [bus][protocol|(enabled<<7)][motor_id]
+    """
     if len(pdu) < 6:
         return None
     if pdu[0] != CFG_RESP_TAG0 or pdu[1] != CFG_RESP_TAG1 or pdu[2] != CFG_RESP_TAG2:
@@ -102,21 +108,19 @@ def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
     status = pdu[4]
     count = pdu[5]
     slots: List[dict] = []
-    for i in range(min(count, 6)):
-        off = 6 + i * 4
-        if off + 4 > len(pdu):
-            break
+    max_fit = (len(pdu) - 6) // 3
+    for i in range(min(count, max_fit)):
+        off = 6 + i * 3
         bus = pdu[off]
-        proto = pdu[off + 1]
+        packed = pdu[off + 1]
         motor_id = pdu[off + 2]
-        flags = pdu[off + 3]
         slots.append(
             {
                 "slot": i,
                 "bus": bus,
-                "protocol": proto,
+                "protocol": packed & 0x7F,
                 "motor_id": motor_id,
-                "enabled": bool(flags & 1),
+                "enabled": bool(packed & 0x80),
             }
         )
     return {
@@ -285,6 +289,31 @@ def parse_ub_feedback(frame: bytes) -> Optional[bytes]:
         return None
     n = min(pdu[1], UB_FB_MAX_BYTES)
     return bytes(pdu[2 : 2 + n])
+
+
+def parse_thermo_feedback(frame: bytes) -> Optional[dict]:
+    """Parse thermocouple (MAX31855) response PDU ('t' tag).
+
+    When firmware SPI3 role is THERMO, every feedback image carries this PDU
+    with the latest cached reading (see App/Src/plant/thermo.c).
+    """
+    if len(frame) != IMAGE_BYTES:
+        return None
+    pdu = frame[PDU_OFF : PDU_OFF + 32]
+    if pdu[0] != THERMO_RESP_TAG:
+        return None
+    fault_bits = pdu[1]
+    ok = bool(pdu[2])
+    thermocouple_c, = struct.unpack_from("<f", pdu, 4)
+    cold_junction_c, = struct.unpack_from("<f", pdu, 8)
+    age_ms, = struct.unpack_from("<I", pdu, 12)
+    return {
+        "thermocouple_c": thermocouple_c,
+        "cold_junction_c": cold_junction_c,
+        "fault_bits": fault_bits,
+        "ok": ok,
+        "age_ms": age_ms,
+    }
 
 
 def format_status_line(hdr: dict, actuator_slots: Optional[List[dict]] = None) -> str:

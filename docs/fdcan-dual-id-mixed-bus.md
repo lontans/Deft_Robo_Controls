@@ -1,6 +1,156 @@
 # FDCAN dual ID-type (11-bit + 29-bit) on one physical bus
 
-## Agent prompt (paste this to the implementing agent)
+**Status (Jul 2026):** Implemented and bench-verified. CH1 + CH3 run `FDCAN_RX_STD_AND_EXT`; CH2 remains ext-only. Plant teleop with Damiao (std) + RobStride (ext) on the same harness works; `lap≈0–1 ms` with three FDCAN motors including one mixed daisy on CH1. See §0 for the as-built FIFO / filter / demux model. Historical agent prompt and design notes follow for context.
+
+---
+
+## 0. As-built bringup — FIFOs, filters, demux
+
+### 0.1 What “mixed frame” means here
+
+Classic CAN only (`FDCAN_FRAME_CLASSIC`). On one twisted pair:
+
+| Protocol | Wire ID type | Typical IDs |
+|----------|--------------|-------------|
+| Damiao | **11-bit standard** (`CAN_ID_STD`) | ESC ID, `0x7FF` param read, Master ID replies |
+| RobStride | **29-bit extended** (`CAN_ID_EXT`) | Packed comm-mode + motor ID |
+
+The IDE bit in the CAN header is the only wire-level discriminator. Firmware never collapses std into a 29-bit namespace.
+
+### 0.2 Storage layers (three places a frame can live)
+
+```
+Wire ──► FDCAN HW RX FIFO0 ──► software rx_rings[bus] ──► actuator_dispatch_bus_rx
+              ▲                         ▲
+         Message RAM              RAM ring (depth 128)
+         (peripheral)             can_frame_t {id, id_type, dlc, data}
+
+TX path (reverse):
+actuator plugin ──► tx_queues[bus] ──► FDCAN HW TX FIFO/Queue ──► Wire
+```
+
+| Layer | Where | Depth / notes |
+|-------|--------|----------------|
+| **HW RX FIFO0** | STM32 FDCAN Message RAM | Default Cube FIFO0; **both** std and ext accepted frames land here (not split by ID type). Firmware only reads `FDCAN_RX_FIFO0` — FIFO1 unused. |
+| **SW RX ring** | `rx_rings[CAN_FDCAN_COUNT]` in `can_router.c` | 128 × `can_frame_t` per FDCAN bus (CH1–3). Head/tail circular; overrun drops oldest. |
+| **SW TX queue** | `tx_queues[CAN_FDCAN_COUNT]` | Same depth; plugins enqueue, `can_tx_flush` / poll pushes to HW. |
+| **HW TX FIFO** | `TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION` | Peripheral TX FIFO/queue; `HAL_FDCAN_AddMessageToTxFifoQ`. |
+
+**Important:** There is **not** a separate HW FIFO for standard vs extended. Both frame types share RX FIFO0. Separation is carried in each element’s `IdType` field when the HAL pops the message.
+
+MCP CH4–6 are a different backend (`spi_can_router` + MCP2518 RX FIFO1) and are **not** mixed-std/ext in this bring-up.
+
+### 0.3 How the peripheral decides std vs ext (filters + bitmasks)
+
+Cube allocates filter banks in Message RAM:
+
+| Instance | Schematic | `StdFiltersNbr` | `ExtFiltersNbr` | RX mode |
+|----------|-----------|-----------------|-----------------|---------|
+| `hfdcan1` | CH1 | **1** | **1** | `FDCAN_RX_STD_AND_EXT` |
+| `hfdcan3` | CH2 | 0 | 0 | `FDCAN_RX_EXT_ONLY` (global accept-ext) |
+| `hfdcan2` | CH3 | **1** | **1** | `FDCAN_RX_STD_AND_EXT` |
+
+On mixed buses, `fdcan_bus_start()` installs **two** mask filters, both routed to RX FIFO0:
+
+```c
+/* Accept-all standard: ID=0, mask=0 → every bit "don't care" */
+filter.IdType       = FDCAN_STANDARD_ID;
+filter.FilterType   = FDCAN_FILTER_MASK;
+filter.FilterID1    = 0;   /* ID   */
+filter.FilterID2    = 0;   /* mask — 0 means match any 11-bit ID */
+filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+
+/* Accept-all extended: same pattern for 29-bit */
+filter.IdType       = FDCAN_EXTENDED_ID;
+filter.FilterID1    = 0;
+filter.FilterID2    = 0;
+```
+
+**Mask semantics (FDCAN_FILTER_MASK):** for each ID bit, `mask bit = 0` → don’t care; `mask bit = 1` → must equal ID bit. `FilterID1=0` + `FilterID2=0` is therefore **accept all** of that ID type.
+
+**Global filter** (non-matching frames) on mixed buses:
+
+```c
+HAL_FDCAN_ConfigGlobalFilter(h,
+    FDCAN_ACCEPT_IN_RX_FIFO0,  /* non-matching standard */
+    FDCAN_ACCEPT_IN_RX_FIFO0,  /* non-matching extended */
+    FDCAN_FILTER_REMOTE,
+    FDCAN_FILTER_REMOTE);
+```
+
+CH2 ext-only uses global `REJECT` for std + `ACCEPT_IN_RX_FIFO0` for ext (with `ExtFiltersNbr=0` the configured mask filter is inert — the global filter is what actually accepts RobStride).
+
+### 0.4 How software identifies the frame type after RX
+
+`fdcan_backend_recv()` pops **only** FIFO0 and copies HAL `IdType` into `can_frame_t`:
+
+```c
+frame->id      = rx_header.Identifier;
+frame->id_type = (rx_header.IdType == FDCAN_EXTENDED_ID)
+                 ? CAN_ID_EXT : CAN_ID_STD;
+```
+
+ID width masks (`can_frame.h`):
+
+| Constant | Value | Use |
+|----------|-------|-----|
+| `CAN_STD_ID_MASK` | `0x7FF` | 11-bit field on TX/RX |
+| `CAN_EXT_MASK` | `0x1FFFFFFF` | 29-bit field on TX/RX |
+
+Optional debug / map key (does **not** go on the wire):
+
+```c
+can_route_key(f):
+  EXT → 0x80000000 | (id & CAN_EXT_MASK)
+  STD → id & CAN_STD_ID_MASK
+```
+
+So numeric ID `0x06` std and `0x06` ext are distinct keys.
+
+### 0.5 Plant demux (fan-out) — why filters alone were not enough
+
+Hardware acceptance gets both types into `rx_rings[bus]`. Demux is **software**:
+
+1. Each 500 Hz tick builds a **`poll_buses` bitmask** — bit `N` set if any enabled slot on `CAN_BUS_CH{N+1}` needs TX/RX this tick (`actuator_apply_desire`).
+2. For each set bit: `can_router_poll_bus(bus)` drains HW FIFO0 → SW ring.
+3. **`actuator_dispatch_bus_rx(bus)`** pops each SW frame **once** and offers it to **every** enabled slot on that bus:
+   - Damiao `parse_rx`: rejects if `id_type != CAN_ID_STD`, then matches ESC/Master ID.
+   - RobStride `robstride_on_rx_frame`: rejects if `id_type != CAN_ID_EXT`, then matches motor / comm; pararead fallback on same copy.
+
+Before fan-out, each plugin’s `while (can_rx_pop)` **consumed the whole ring**, so the second protocol on a shared bus starved. That was the second bring-up fix after dual filters.
+
+### 0.6 TX path (unchanged model)
+
+Plugins set `id_type` when packing:
+
+- Damiao → always `CAN_ID_STD`
+- RobStride → always `CAN_ID_EXT`
+
+`fdcan_backend_send()` maps that to `FDCAN_TxHeaderTypeDef.IdType` and masks the identifier. Shared `tx_queues[bus]` + HW arbitration; no firmware merge of std/ext streams.
+
+### 0.7 Host policy
+
+`scripts/controls_pcb_host/protocol/can_bus.py`:
+
+- `FDCAN_MIXED_BUSES = {1, 3}`
+- `is_fdcan_mixed_bus(bus)` for tooling
+
+Plant teleop no longer hard-rejects RobStride on CH3 or Damiao on CH1; slot config (NVM / `config set`) is the source of truth.
+
+### 0.8 Bench outcome (Jul 2026)
+
+| Check | Result |
+|-------|--------|
+| Dual filters on CH1/CH3 | OK — std Damiao + ext RS RX |
+| Fan-out multi-slot same bus | OK — Damiao + RS on CH1 |
+| Multi-bus plant teleop CH1–3 | OK — `lap≈0–1 ms` typical |
+| Damiao-only daisy (4310) | Homing OK; teleop blocked when un-enabled 4340s sit mid-chain (harness, not FIFO) |
+
+Operator notes: [bringup.md](bringup.md) § Damiao CH1 daisy chain / Mixed std/ext.
+
+---
+
+## Agent prompt (historical — paste this to the implementing agent)
 
 ```
 Implement mixed standard (11-bit) and extended (29-bit) classic CAN on shared FDCAN
@@ -44,7 +194,9 @@ and implement the smallest working subset (CH3 dual-RX + fan-out).
 
 ## 1. Problem statement
 
-### 1.1 Current behavior
+> **Historical.** §0 documents the as-built fix. This section describes the pre-fix failure mode.
+
+### 1.1 Behavior before mixed bring-up
 
 | Layer | Behavior |
 |-------|----------|
@@ -123,20 +275,21 @@ typedef enum {
 } fdcan_rx_mode_t;
 ```
 
-Policy function (replace `fdcan_mode_for_bus`):
+**As-built policy:** CH1 and CH3 → `FDCAN_RX_STD_AND_EXT`; CH2 → `FDCAN_RX_EXT_ONLY`. See §0.3.
 
 ```c
 static fdcan_rx_mode_t fdcan_rx_mode_for_bus(can_bus_id_t bus) {
     switch (bus) {
+    case CAN_BUS_CH1:
     case CAN_BUS_CH3:
-        return FDCAN_RX_STD_AND_EXT;  // first mixed bus on bench
+        return FDCAN_RX_STD_AND_EXT;
     default:
-        return FDCAN_RX_EXT_ONLY;     // CH1/CH2 unchanged in v1
+        return FDCAN_RX_EXT_ONLY;  // CH2
     }
 }
 ```
 
-**Rollout note:** CH1/CH2 can move to `FDCAN_RX_STD_AND_EXT` later for CANopen on daisy-chain; not required for initial CH3 bring-up.
+**Rollout note (original):** CH1 moved to mixed when Damiao was assigned there; CH2 stays ext-only unless CANopen/Damiao is needed on that branch.
 
 ---
 
@@ -438,14 +591,14 @@ Pass criteria:
 
 ## 9. Implementation checklist (ordered)
 
-- [ ] **3.2** `fdcan.c`: `hfdcan2` StdFiltersNbr=1, ExtFiltersNbr=1
-- [ ] **3.3** `fdcan_bus_start()` dual mode + `fdcan_rx_mode_for_bus()`
-- [ ] **3.4** Wire CH3 to `FDCAN_RX_STD_AND_EXT` in init/restart
-- [ ] **4.2** `actuator_dispatch_bus_rx()` + remove per-plugin full drain
-- [ ] **4.2** RobStride pararead fallback preserved (§4.2 note A/B)
-- [ ] **6.2** Host assert relaxation
-- [ ] **7** Bench command doc in PR description
-- [ ] **8** Doc updates
+- [x] **3.2** `fdcan.c`: `hfdcan1` + `hfdcan2` StdFiltersNbr=1, ExtFiltersNbr=1
+- [x] **3.3** `fdcan_bus_start()` dual mode + `fdcan_rx_mode_for_bus()` (CH1 + CH3)
+- [x] **3.4** Wire CH1/CH3 to `FDCAN_RX_STD_AND_EXT` in init/restart
+- [x] **4.2** `actuator_dispatch_bus_rx()` + remove per-plugin full drain
+- [x] **4.2** RobStride pararead fallback via `robstride_on_rx_frame()`
+- [x] **6.2** Host assert relaxation + `FDCAN_MIXED_BUSES = {1, 3}`
+- [x] **7** Bench verified (mixed teleop; see §0.8)
+- [x] **8** Doc updates — §0 as-built; [bringup.md](bringup.md)
 
 ---
 
@@ -473,23 +626,25 @@ Pass criteria:
 ## 12. Key file reference
 
 ```
-App/Src/plant/can/can_router.c      # FDCAN filters, rx ring, TX/RX HAL
-Core/Src/fdcan.c                      # Filter bank counts
-App/Src/plant/actuator.c              # 500 Hz apply, poll_buses, dispatch hook
-App/Src/plant/plugins/damiao.c        # std TX/RX, apply_cycle drain
-App/Src/plant/plugins/robstride.c    # ext TX/RX, apply_drain_rx
-App/Inc/plant/can/can_frame.h         # id_type, masks
+App/Src/plant/can/can_router.c      # Filters, HW FIFO0↔SW rings, TX/RX HAL
+Core/Src/fdcan.c                      # StdFiltersNbr / ExtFiltersNbr
+App/Src/plant/actuator.c              # poll_buses mask, actuator_dispatch_bus_rx
+App/Src/plant/plugins/damiao.c        # std TX/RX; damiao_apply_cycle (TX-only)
+App/Src/plant/plugins/robstride.c     # ext TX/RX; robstride_on_rx_frame
+App/Inc/plant/can/can_frame.h         # id_type, CAN_STD_ID_MASK, CAN_EXT_MASK, can_route_key
+App/Inc/plant/can/can_router.h        # fdcan_rx_mode_t, can_router_fdcan_rx_mode
 scripts/control_hub/link.py           # assert_plant_teleop_slot
-scripts/controls_pcb_host/protocol/can_bus.py
+scripts/controls_pcb_host/protocol/can_bus.py  # FDCAN_MIXED_BUSES
 scripts/control_hub/teleop/plant.py   # multi-slot teleop
+docs/fdcan-dual-id-mixed-bus.md       # this file — §0 as-built
 ```
 
 ---
 
 ## 13. Acceptance criteria (summary)
 
-1. CH3 FDCAN receives **both** standard and extended classic CAN frames into `rx_rings[2]`.
-2. Two actuator slots on the same bus with different protocols both receive correct feedback without starving each other.
-3. Host `control_hub.py --plant-teleop` does not reject RobStride on CH3 by policy alone.
+1. ~~CH3~~ **CH1 and CH3** FDCAN receive **both** standard and extended classic CAN frames into `rx_rings[]` via shared HW RX FIFO0 + SW ring (§0).
+2. Two actuator slots on the same bus with different protocols both receive correct feedback without starving each other (`actuator_dispatch_bus_rx`).
+3. Host `control_hub.py --plant-teleop` does not reject RobStride on CH3 / Damiao on CH1 by policy alone.
 4. Existing single-protocol bench paths (Damiao discover, RS2 CH1/CH2 teleop) remain working.
-5. Spec + bringup docs updated for the next operator.
+5. Spec + bringup docs updated — **§0 as-built** is the operator reference for FIFOs / filters / demux.

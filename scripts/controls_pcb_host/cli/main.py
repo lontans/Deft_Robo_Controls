@@ -183,6 +183,120 @@ def cmd_teleop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_hello_world(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from control_hub.hello_world import print_yam_limits, run_hello_world
+
+    if getattr(args, "limits_only", False):
+        xml = getattr(args, "xml", None)
+        print_yam_limits(Path(xml) if xml else None)
+        return 0
+
+    slot = getattr(args, "slot", None)
+    joint = getattr(args, "joint", None)
+    if slot is None and joint is None:
+        slot = 0
+
+    xml = getattr(args, "xml", None)
+    return run_hello_world(
+        _port(args),
+        slot=slot,
+        joint=joint,
+        delta=getattr(args, "delta", 0.25) if getattr(args, "delta", None) is not None else 0.25,
+        slew=getattr(args, "slew", 0.30) if getattr(args, "slew", None) is not None else 0.30,
+        hold_s=getattr(args, "hold_s", 1.0) if getattr(args, "hold_s", None) is not None else 1.0,
+        hz=args.hz if getattr(args, "hz", None) is not None else 40.0,
+        kp=getattr(args, "kp", None),
+        kd=getattr(args, "kd", None),
+        return_home=not getattr(args, "no_return", False),
+        skip_arm=getattr(args, "skip_arm", False),
+        dry_run=getattr(args, "dry_run", False),
+        no_limit_clamp=getattr(args, "no_limit_clamp", False),
+        absolute_limits=getattr(args, "absolute_limits", False),
+        xml_path=Path(xml) if xml else None,
+        show_limits=getattr(args, "show_limits", False),
+    )
+
+
+def cmd_joint_status(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from control_hub.joint_cmd import run_joint_status
+
+    xml = getattr(args, "xml", None)
+    return run_joint_status(
+        _port(args),
+        slot=getattr(args, "slot", None),
+        joint=getattr(args, "joint", None),
+        hz=args.hz if getattr(args, "hz", None) is not None else 40.0,
+        xml_path=Path(xml) if xml else None,
+    )
+
+
+def cmd_joint_goto(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    xml = getattr(args, "xml", None)
+
+    if getattr(args, "brace", False):
+        from control_hub.joint_cmd import run_joint_goto_braced
+
+        return run_joint_goto_braced(
+            _port(args),
+            slot=getattr(args, "slot", None),
+            joint=getattr(args, "joint", None),
+            delta=getattr(args, "delta", None),
+            to=getattr(args, "to", None),
+            absolute=getattr(args, "absolute", False),
+            i_know_zeros=getattr(args, "i_know_zeros", False),
+            slew=args.slew if getattr(args, "slew", None) is not None else 0.15,
+            hold_s=args.hold_s if getattr(args, "hold_s", None) is not None else 1.0,
+            hz=args.hz if getattr(args, "hz", None) is not None else 40.0,
+            kp=getattr(args, "kp", None),
+            kd=getattr(args, "kd", None),
+            brace_kp=getattr(args, "brace_kp", None),
+            brace_kd=getattr(args, "brace_kd", None),
+            no_return=getattr(args, "no_return", False),
+            dry_run=getattr(args, "dry_run", False),
+            no_limit_clamp=getattr(args, "no_limit_clamp", False),
+            xml_path=Path(xml) if xml else None,
+            show_limits=getattr(args, "show_limits", False),
+        )
+
+    from control_hub.joint_cmd import run_joint_goto
+
+    return run_joint_goto(
+        _port(args),
+        slot=getattr(args, "slot", None),
+        joint=getattr(args, "joint", None),
+        delta=getattr(args, "delta", None),
+        to=getattr(args, "to", None),
+        absolute=getattr(args, "absolute", False),
+        i_know_zeros=getattr(args, "i_know_zeros", False),
+        slew=args.slew if getattr(args, "slew", None) is not None else 0.30,
+        hold_s=args.hold_s if getattr(args, "hold_s", None) is not None else 1.0,
+        hz=args.hz if getattr(args, "hz", None) is not None else 40.0,
+        kp=getattr(args, "kp", None),
+        kd=getattr(args, "kd", None),
+        no_return=getattr(args, "no_return", False),
+        skip_arm=getattr(args, "skip_arm", False),
+        dry_run=getattr(args, "dry_run", False),
+        no_limit_clamp=getattr(args, "no_limit_clamp", False),
+        xml_path=Path(xml) if xml else None,
+        show_limits=getattr(args, "show_limits", False),
+    )
+
+
+def cmd_joint_home(args: argparse.Namespace) -> int:
+    _ = args
+    print(
+        "FAIL: joint home is not implemented yet (P2, deferred — "
+        "see docs/plan-yam-joint-commands.md §3.2)"
+    )
+    return 2
+
+
 def cmd_plant_teleop(args: argparse.Namespace) -> int:
     port = _port(args)
     if args.damiao_teleop:
@@ -351,7 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ap = argparse.ArgumentParser(
         prog="controls_pcb_host",
-        description="Deft controls PCB — unified host bring-up over USB CDC (562 B images)",
+        description="Deft controls PCB - unified host bring-up over USB CDC (562 B images)",
     )
     ap.add_argument("--port", help=port_help)
     ap.add_argument(
@@ -368,6 +482,79 @@ def build_parser() -> argparse.ArgumentParser:
         "--damiao-teleop",
         action="store_true",
         help="Damiao plant teleop on slot 2 (alias for --plant-teleop --plant-slots 2)",
+    )
+    ap.add_argument(
+        "--hello-world",
+        action="store_true",
+        help="Non-interactive single-slot plant jog (agent/script smoke test)",
+    )
+    ap.add_argument("--slot", type=int, default=None, help="Actuator slot (hello-world / teleop)")
+    ap.add_argument(
+        "--joint",
+        type=int,
+        default=None,
+        help="YAM joint 1..7 (hello-world; slot = joint-1)",
+    )
+    ap.add_argument(
+        "--delta",
+        type=float,
+        default=None,
+        help="hello-world: relative move rad from current fb (default +0.25)",
+    )
+    ap.add_argument(
+        "--slew",
+        type=float,
+        default=None,
+        help="hello-world: slew rate rad/s (default 0.30)",
+    )
+    ap.add_argument(
+        "--hold-s",
+        type=float,
+        default=None,
+        dest="hold_s",
+        help="hello-world: hold at target seconds (default 1.0)",
+    )
+    ap.add_argument(
+        "--no-return",
+        action="store_true",
+        help="hello-world: stay at target (do not slew back)",
+    )
+    ap.add_argument(
+        "--skip-arm",
+        action="store_true",
+        help="hello-world: skip Damiao 0xFB/0xFC enable probe",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="hello-world: print limit plan only (no motion)",
+    )
+    ap.add_argument(
+        "--limits",
+        action="store_true",
+        dest="limits_only",
+        help="Print YAM joint soft limits and exit",
+    )
+    ap.add_argument(
+        "--show-limits",
+        action="store_true",
+        help="hello-world: print limit table before jog",
+    )
+    ap.add_argument(
+        "--no-limit-clamp",
+        action="store_true",
+        help="hello-world: do not clamp delta to YAM soft limits",
+    )
+    ap.add_argument(
+        "--absolute-limits",
+        action="store_true",
+        help="hello-world: treat fb as model frame when clamping (needs zero cal)",
+    )
+    ap.add_argument(
+        "--xml",
+        type=str,
+        default=None,
+        help="Override path to yam.xml for joint limits",
     )
     ap.add_argument(
         "--plant-slots",
@@ -437,7 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_probe)
 
     p = sub.add_parser("teleop", parents=[port_parent], help="FDCAN plant teleop (562 B desires, no RS2 PDU)")
-    p.add_argument("--slot", type=int, default=None, help="Actuator slot (default 0; slot 2 = Damiao CH3)")
+    p.add_argument("--slot", type=int, default=None, help="Actuator slot (default 0; uses MCU config bus/id)")
     p.add_argument("--servo", action="store_true", help="Dynamixel neck servos")
     p.add_argument(
         "--extremity",
@@ -479,6 +666,110 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_teleop)
 
     p = sub.add_parser(
+        "hello-world",
+        parents=[port_parent],
+        help="Non-interactive single-joint plant jog (limit-aware; enable -> delta -> return)",
+    )
+    p.add_argument("--slot", type=int, default=None, help="Actuator slot 0..6 (MCU config)")
+    p.add_argument("--joint", type=int, default=None, help="YAM joint 1..7 (overrides --slot)")
+    p.add_argument(
+        "--delta",
+        type=float,
+        default=0.25,
+        help="Relative move in rad from current fb (default +0.25; soft-clamped)",
+    )
+    p.add_argument("--slew", type=float, default=0.30, help="Slew rate rad/s (default 0.30)")
+    p.add_argument("--hold-s", type=float, default=1.0, dest="hold_s", help="Hold at target seconds")
+    p.add_argument("--hz", type=float, default=40.0, help="Host command rate")
+    p.add_argument("--kp", type=float, default=None, help="MIT kp while moving")
+    p.add_argument("--kd", type=float, default=None, help="MIT kd while moving")
+    p.add_argument("--no-return", action="store_true", help="Stay at target (do not slew back)")
+    p.add_argument("--skip-arm", action="store_true", help="Skip Damiao 0xFB/0xFC enable probe")
+    p.add_argument("--dry-run", action="store_true", help="Print limit plan only (no motion)")
+    p.add_argument(
+        "--limits",
+        action="store_true",
+        dest="limits_only",
+        help="Print YAM joint soft limits and exit",
+    )
+    p.add_argument("--show-limits", action="store_true", help="Print limit table before jog")
+    p.add_argument(
+        "--no-limit-clamp",
+        action="store_true",
+        help="Do not clamp delta to YAM soft limits",
+    )
+    p.add_argument(
+        "--absolute-limits",
+        action="store_true",
+        help="Treat fb as model frame when clamping (needs zero cal)",
+    )
+    p.add_argument("--xml", type=str, default=None, help="Override path to yam.xml")
+    p.set_defaults(func=cmd_hello_world)
+
+    joint = sub.add_parser(
+        "joint",
+        help="Joint-level status / goto (YAM 1..7; see docs/plan-yam-joint-commands.md)",
+    )
+    joint_sub = joint.add_subparsers(dest="joint_cmd", required=True)
+
+    jp = joint_sub.add_parser(
+        "status", parents=[port_parent], help="Read-only fb + soft-limit distance (no motion)"
+    )
+    jp.add_argument("--slot", type=int, default=None, help="Actuator slot 0..6 (MCU config)")
+    jp.add_argument("--joint", type=int, default=None, help="YAM joint 1..7 (overrides --slot)")
+    jp.add_argument("--hz", type=float, default=None, help="Poll rate (default 40)")
+    jp.add_argument("--xml", type=str, default=None, help="Override path to yam.xml")
+    jp.set_defaults(func=cmd_joint_status)
+
+    jp = joint_sub.add_parser(
+        "goto",
+        parents=[port_parent],
+        help="Relative (--delta) or absolute motor-frame (--to --absolute) jog; same "
+        "codepath as hello-world",
+    )
+    jp.add_argument("--slot", type=int, default=None, help="Actuator slot 0..6 (MCU config)")
+    jp.add_argument("--joint", type=int, default=None, help="YAM joint 1..7 (overrides --slot)")
+    jp.add_argument("--delta", type=float, default=None, help="Relative move in rad from current fb")
+    jp.add_argument("--to", type=float, default=None, help="Absolute motor-frame target rad (needs --absolute)")
+    jp.add_argument(
+        "--absolute",
+        action="store_true",
+        help="Treat --to as an absolute motor-frame target (needs --i-know-zeros)",
+    )
+    jp.add_argument(
+        "--i-know-zeros",
+        action="store_true",
+        dest="i_know_zeros",
+        help="Acknowledge motor zero != model zero until calibrated (required with --to)",
+    )
+    jp.add_argument("--slew", type=float, default=None, help="Slew rate rad/s (default 0.30)")
+    jp.add_argument("--hold-s", type=float, default=None, dest="hold_s", help="Hold at target seconds")
+    jp.add_argument("--hz", type=float, default=None, help="Host command rate (default 40)")
+    jp.add_argument("--kp", type=float, default=None, help="MIT kp while moving")
+    jp.add_argument("--kd", type=float, default=None, help="MIT kd while moving")
+    jp.add_argument("--no-return", action="store_true", help="Stay at target (do not slew back)")
+    jp.add_argument("--skip-arm", action="store_true", help="Skip Damiao 0xFB/0xFC enable probe")
+    jp.add_argument("--dry-run", action="store_true", help="Print limit plan only (no motion)")
+    jp.add_argument("--show-limits", action="store_true", help="Print limit table before jog")
+    jp.add_argument("--no-limit-clamp", action="store_true", help="Do not clamp delta to YAM soft limits")
+    jp.add_argument(
+        "--brace",
+        action="store_true",
+        help="Hold every other enabled slot at its current position while moving the "
+        "target (single-slot sends otherwise zero-fill/limp every other slot each tick)",
+    )
+    jp.add_argument("--brace-kp", type=float, default=None, dest="brace_kp", help="Override brace-slot kp (default: per-protocol default)")
+    jp.add_argument("--brace-kd", type=float, default=None, dest="brace_kd", help="Override brace-slot kd (default: per-protocol default)")
+    jp.add_argument("--xml", type=str, default=None, help="Override path to yam.xml")
+    jp.set_defaults(func=cmd_joint_goto)
+
+    jp = joint_sub.add_parser(
+        "home", parents=[port_parent], help="Per-joint home (P2 — not implemented yet)"
+    )
+    jp.add_argument("--joints", type=str, default=None, help="e.g. 1-6 (unused; not implemented)")
+    jp.set_defaults(func=cmd_joint_home)
+
+    p = sub.add_parser(
         "calibrate",
         parents=[port_parent],
         help="RS02 encoder cal (comm 0x05/0x06/0x16 via MCU probe path)",
@@ -495,7 +786,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--strict-cali",
         action="store_true",
-        help="Require mms→rest/running in readback before zero/save (old behavior)",
+        help="Require mms->rest/running in readback before zero/save (old behavior)",
     )
     p.set_defaults(func=cmd_calibrate)
 
@@ -579,6 +870,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.list_ports:
         list_serial_ports()
         return 0
+    if getattr(args, "limits_only", False) and args.command is None and not args.hello_world:
+        return cmd_hello_world(args)
+    if args.hello_world:
+        if args.slot is None and getattr(args, "joint", None) is None:
+            args.slot = 0
+        if args.delta is None:
+            args.delta = 0.25
+        if args.slew is None:
+            args.slew = 0.30
+        if args.hold_s is None:
+            args.hold_s = 1.0
+        return cmd_hello_world(args)
     if args.plant_teleop or args.damiao_teleop:
         return cmd_plant_teleop(args)
     if args.command is None:

@@ -1,6 +1,7 @@
 #include "plant/led.h"
 #include "plant/plugins/sk9822.h"
 #include "plant/plant_config.h"
+#include "plant/spi3_role.h"
 #include "main.h"
 #include <string.h>
 
@@ -99,6 +100,10 @@ void led_service(void)
 	uint8_t mode;
 	uint8_t brightness;
 	uint16_t n;
+
+	/* Exclusive SPI3 — do not clock SK9822 while thermo owns the bus. */
+	if (spi3_role_get() != SPI3_ROLE_LED)
+		return;
 
 	if ((now - g_last_ms) < LED_PERIOD_MS)
 		return;

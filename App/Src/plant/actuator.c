@@ -134,9 +134,13 @@ static void actuator_dispatch_bus_rx(can_bus_id_t bus)
 			}
 
 			if (actuator_table[i].protocol == PROTO_DAMIAO) {
-				(void)plugin_parse_rx(&actuator_table[i], &frame,
-				                      &actuator_state_live[i]);
-				damiao_had_rx[i] = true;
+				/* Only mark had_rx on a real match. Marking every Damiao slot on
+				 * every CH1 frame clears enable-latch via post_rx when fault is
+				 * still 0 (common for the far end of a daisy) and strands the
+				 * slot in clear/enable instead of MIT tracking. */
+				if (plugin_parse_rx(&actuator_table[i], &frame,
+				                    &actuator_state_live[i]) == PLUGIN_OK)
+					damiao_had_rx[i] = true;
 				continue;
 			}
 

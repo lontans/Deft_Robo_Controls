@@ -3,6 +3,8 @@
 #include "plant/actuator.h"
 #include "plant/servo.h"
 #include "plant/led.h"
+#include "plant/thermo.h"
+#include "plant/spi3_role.h"
 #include "plant/plugins/dynamixel.h"
 #include "plant/control_loop.h"
 #include "plant/plant_diag.h"
@@ -27,6 +29,7 @@ void app_init(void)
 	actuator_init();
 	servo_init();
 	led_init();
+	thermo_init();
 	plant_config_init();
 
 	dynamixel_bus_init();
@@ -55,7 +58,11 @@ void app_run(void)
 	control_loop_service();
 #endif
 
-	led_service();
+	/* Exclusive SPI3: only the active role touches hspi3. */
+	if (spi3_role_get() == SPI3_ROLE_LED)
+		led_service();
+	else if (spi3_role_get() == SPI3_ROLE_THERMO)
+		thermo_service();
 
 #if !USE_FREERTOS_SCHEDULER
 	host_link_poll_tx();

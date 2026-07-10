@@ -86,6 +86,8 @@ from .diag_pdu import (
     UB_TAG0,
     UB_TAG1,
 )
+from .cubemars import CubemarsControlMode
+from .thermo import THERMO_RESP_TAG, THERMO_TAG0, THERMO_TAG1, THERMO_TAG2
 from .schema import (
     ACTUATOR0_OFF,
     ACTUATOR_COUNT,

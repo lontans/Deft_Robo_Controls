@@ -58,14 +58,15 @@ class ActuatorSlotConfig:
         return PROTOCOL_NAMES.get(self.protocol, "unknown")
 
 
-# Mirror plant_config.c defaults (update when C table changes).
+# Mirror plant_config_load_factory_defaults() (Damiao CH1 daisy / YAM).
 _DEFAULT_TABLE: Tuple[Tuple[int, Protocol, int, int, bool], ...] = (
-    (1, Protocol.DAMIAO, 0x06, 0, True),      # slot 0
-    (2, Protocol.ROBSTRIDE, 0x70, 0, True),     # slot 1
-    (3, Protocol.ROBSTRIDE, 0x75, 0, True),     # slot 2
-    (4, Protocol.ROBSTRIDE, 0x73, 0, True),     # slot 3 — CH4 MCP
-    (5, Protocol.ROBSTRIDE, 0x73, 0, True),     # slot 4 — CH5 MCP
-    (6, Protocol.ROBSTRIDE, 0x75, 0, True),   # slot 5 — CH6 MCP
+    (1, Protocol.DAMIAO, 0x01, 0, True),  # slot 0
+    (1, Protocol.DAMIAO, 0x02, 0, True),  # slot 1
+    (1, Protocol.DAMIAO, 0x03, 0, True),  # slot 2
+    (1, Protocol.DAMIAO, 0x04, 0, True),  # slot 3
+    (1, Protocol.DAMIAO, 0x05, 0, True),  # slot 4
+    (1, Protocol.DAMIAO, 0x06, 0, True),  # slot 5
+    (1, Protocol.DAMIAO, 0x07, 0, True),  # slot 6
 )
 
 

@@ -5,6 +5,7 @@
 #include "plant/plant_diag.h"
 #include "plant/plant_config_nvm.h"
 #include "plant/plugins/robstride.h"
+#include "plant/thermo.h"
 #include "host/host_uart_bridge.h"
 #include <stdbool.h>
 
@@ -49,7 +50,12 @@ void plant_command_image_dispatch(const host_command_image_t *cmd)
 	bool pdu_dxl = plant_diag_is_dxl_command(cmd);
 	bool pdu_dm  = plant_diag_is_dm_command(cmd);
 	bool pdu_ub  = host_uart_bridge_is_command(cmd);
+	bool pdu_tmp = thermo_is_command(cmd);
 	bool diag_only = (mcu_state == PLANT_MCU_STATE_DIAG_ONLY);
+
+	/* TMP is read-only telemetry — does not gate desire mounting. */
+	if (pdu_tmp)
+		thermo_on_command(cmd);
 
 	if (pdu_ub)
 		host_uart_bridge_on_command(cmd);

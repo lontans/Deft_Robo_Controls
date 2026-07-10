@@ -288,25 +288,20 @@ static void build_nvm_image(plant_cfg_nvm_image_t *img)
 
 void plant_config_load_factory_defaults(void)
 {
-	actuator_table[0] = (actuator_config_t){
-		.bus = CAN_BUS_CH1, .protocol = PROTO_DAMIAO, .motor_id = 0x06,
-		.master_id = 0u, .enabled = true,
+	/* YAM / Damiao CH1 daisy defaults — override via CFG SET after discover. */
+	static const uint8_t k_ids[ACTUATOR_COUNT] = {
+		0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x07u,
 	};
-	actuator_table[1] = (actuator_config_t){
-		.bus = CAN_BUS_CH2, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x70, .enabled = true,
-	};
-	actuator_table[2] = (actuator_config_t){
-		.bus = CAN_BUS_CH3, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x75, .enabled = true,
-	};
-	actuator_table[3] = (actuator_config_t){
-		.bus = CAN_BUS_CH4, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x73, .enabled = true,
-	};
-	actuator_table[4] = (actuator_config_t){
-		.bus = CAN_BUS_CH5, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x73, .enabled = true,
-	};
-	actuator_table[5] = (actuator_config_t){
-		.bus = CAN_BUS_CH6, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x75, .enabled = true,
-	};
+
+	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		actuator_table[i] = (actuator_config_t){
+			.bus = CAN_BUS_CH1,
+			.protocol = PROTO_DAMIAO,
+			.motor_id = k_ids[i],
+			.master_id = DM_MASTER_ID_AUTO,
+			.enabled = true,
+		};
+	}
 }
 
 bool plant_config_nvm_load(void)
@@ -418,18 +413,25 @@ void plant_config_feedback_fill(host_pdu_feedback_t *pdu)
 	pdu->data[2] = (uint8_t)PLANT_CFG_PDU_RESP_TAG2;
 	pdu->data[3] = (uint8_t)(s_last_op | 0x80u);
 	pdu->data[4] = s_last_status;
+	/* Compact 3 B/slot so ACTUATOR_COUNT=7 fits in 32 B PDU:
+	 * [bus][protocol|(enabled<<7)][motor_id]  (header uses bytes 0..5). */
 	pdu->data[5] = ACTUATOR_COUNT;
 
 	for (i = 0; i < ACTUATOR_COUNT; i++) {
-		uint8_t off = (uint8_t)(6u + i * 4u);
+		uint8_t off = (uint8_t)(6u + i * 3u);
 
-		if ((off + 4u) > HOST_PDU_PAYLOAD_BYTES)
+		if ((off + 3u) > HOST_PDU_PAYLOAD_BYTES)
 			break;
 		pdu->data[off + 0] = s_resp_slots[i].schematic_bus;
-		pdu->data[off + 1] = s_resp_slots[i].protocol;
+		pdu->data[off + 1] = (uint8_t)((s_resp_slots[i].protocol & 0x7Fu) |
+		                               ((s_resp_slots[i].flags & 1u) ? 0x80u : 0u));
 		pdu->data[off + 2] = s_resp_slots[i].motor_id;
-		pdu->data[off + 3] = s_resp_slots[i].flags;
 	}
 
 	s_resp_pending = false;
 }
+
+/* CFG GET packing: 6 B header + 3 B/slot must fit HOST_PDU_PAYLOAD_BYTES. */
+_Static_assert(6u + ACTUATOR_COUNT * 3u <= HOST_PDU_PAYLOAD_BYTES,
+               "CFG GET slot packing exceeds PDU payload");
+

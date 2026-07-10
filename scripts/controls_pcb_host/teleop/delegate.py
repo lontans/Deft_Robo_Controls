@@ -127,7 +127,11 @@ def run_plant_teleop_for_slots(
         len(slots) == 1 and slot_config(slots[0]).protocol == Protocol.DAMIAO
     ):
         dm_slot = slots[0]
-        dm_kp = kp if kp is not None else D.DM_KP
+        dm_kp = kp if kp is not None else (
+            D.SLOT_KP[dm_slot] if dm_slot < len(D.SLOT_KP) else D.DM_KP
+        )
+        # slot_kp is indexed by slot number in _make_slots
+        dm_kp_table = [dm_kp] * (dm_slot + 1)
         run_plant_teleop(
             port,
             [dm_slot],
@@ -136,7 +140,7 @@ def run_plant_teleop_for_slots(
             arrow_vel=arrow_vel if arrow_vel is not None else D.DM_ARROW_VEL,
             ramp_up_s=ramp_up_s if ramp_up_s is not None else D.RAMP_UP_S,
             ramp_down_s=ramp_down_s if ramp_down_s is not None else D.RAMP_DOWN_S,
-            slot_kp=(dm_kp,),
+            slot_kp=tuple(dm_kp_table),
             skip_home=skip_home,
             home_kp=home_kp if home_kp is not None else D.DM_HOME_KP,
             home_slew=home_slew if home_slew is not None else D.DM_HOME_SLEW,

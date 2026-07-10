@@ -458,8 +458,13 @@ def _home(
             at_fb = abs(st.fb_position - D.HOME_TARGET) <= D.HOME_POS_TOL
             at_cmd = abs(st.cmd_position - D.HOME_TARGET) <= D.HOME_POS_TOL * 0.1
             at_target = at_fb if slot_fb_home else at_cmd
-            near = abs(st.fb_position - D.HOME_TARGET) < 0.12
-            eff_kp = min(home_kp, 4.0) if near else home_kp
+            # Soft-land (kp≤4) is for RS cmd-reach homing only. Damiao/MCP must keep
+            # full home_kp until fb is inside tol — otherwise residual ~0.1 rad stalls.
+            if slot_fb_home:
+                eff_kp = home_kp
+            else:
+                near = abs(st.fb_position - D.HOME_TARGET) < 0.12
+                eff_kp = min(home_kp, 4.0) if near else home_kp
             st.kp = 0.0 if at_target else eff_kp
             st.kd = 0.0 if at_target else kd
             if not at_cmd:
@@ -1061,6 +1066,10 @@ def run_plant_teleop(
                 f"  Tuning: kd={kd:.2f}  vel_stop={D.VEL_STOP:.2f}  "
                 f"(CLI: --arrow-vel --ramp-up --ramp-down --kd --kp)"
             )
+            print(
+                f"  r: zero cmd to fb — if cmd runs ahead of fb (max lead {D.MAX_CMD_LEAD:.2f} rad, "
+                "e.g. against a stop), press r to snap cmd back to the actual position and keep going."
+            )
             print()
 
             sync_s = 3.0 if any(is_mcp_bus(st.bus) for st in slot_states) else 1.5
@@ -1237,12 +1246,16 @@ def run_for_slot(
         kp_table[slot] = kp
     kp_tuple = tuple(kp_table)
     if damiao or cfg.protocol_name == "damiao":
+        # Use the requested slot — do not hardcode legacy factory slot 2 (CH3 0x06).
+        # kp_tuple already resolves slot_kp/explicit --kp over D.SLOT_KP (YAM J1-J4 need
+        # more than the wrist default) — previously this branch ignored kp_tuple entirely
+        # and always sent flat D.DM_KP, silently dropping any --kp override too.
         run_plant_teleop(
             port,
-            [D.DM_SLOT],
-            kd=D.DM_KD,
-            arrow_vel=D.DM_ARROW_VEL,
-            slot_kp=(D.DM_KP,),
+            [slot],
+            kd=D.DM_KD if kd == D.KD else kd,
+            arrow_vel=D.DM_ARROW_VEL if arrow_vel == D.ARROW_VEL else arrow_vel,
+            slot_kp=kp_tuple,
             skip_home=skip_home,
             home_kp=D.DM_HOME_KP,
             home_slew=D.DM_HOME_SLEW,
