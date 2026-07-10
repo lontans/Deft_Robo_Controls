@@ -1,38 +1,27 @@
 # Known issues and upgrade backlog
 
-RobStride CH1 bench is functional for plant teleop and per-bus RS2 calibrate/discover. **Damiao CH3 discovery is blocked** on CAN RX (see below). Other items are open gaps or operational quirks.
-
-## High priority — RS02 plant teleop chunking + CH2 cali (Jul 2026)
-
-### Grouped motion on FDCAN CH2 and MCP CH4 (regression)
-
-| | |
-|---|---|
-| **Symptom** | Plant teleop moves in ~0.2–0.4 s lumps; `fb` jumps ~0.35 rad; `lead` pins at ±0.35. **CH2 used to be smooth** before MCP teleop commits. |
-| **Telemetry** | `pend=6`, `lap≈205ms` (CH2) / `368ms` (CH4), `block=none`. See `docs/bringup.md` §7. |
-| **Regression** | Git `d9ce9e6` / `c700c78` after known-good `5df1f04`. Partial revert **did not fix** (Jul 2026). |
-| **Handoff** | [handoff-plant-superloop-regression.md](handoff-plant-superloop-regression.md) |
-
-### CH2 cali (`--bus 2`) no shaft spin after teleop
-
-| | |
-|---|---|
-| **Symptom** | `calibrate --bus 2 --id 0x70`: prep OK, `0x05` issued, no `... cali listen` lines, no spin. |
-| **Note** | Distinct from chunking path (bench PDU). CH4 MCP cali on same motor ID worked earlier. See `docs/bringup.md` §8. |
+RobStride CH1 bench is functional for plant teleop and per-bus RS2 calibrate/discover. **Damiao CH3 discover** had a host scan-order bug (fixed in `damiao.discover()`); see below. Other items are open gaps or operational quirks.
 
 ## High priority — Damiao CH3 (Jul 2026)
 
-### CAN TX OK, motor RX silent (`rx_raw=0`)
+### Discover scans wrong IDs first (host) — fixed Jul 2026
 
 | | |
 |---|---|
-| **Symptom** | `python scripts/damiao_scan.py --discover --bus 3` reports `tx>0` but `rx_raw=0` on every ESC_ID; no `FOUND`. USB `--link-test` and DM0 session path pass. |
-| **Ruled out** | CAN H/L swap; missing termination **on controls PCB** (PCB has board-side 120 Ω). |
-| **Likely cause** | **Missing 120 Ω at motor end** of a two-node bus. DM-J4310 has **no register** to enable onboard termination — external resistor across CAN_H/CAN_L at the far connector is required. Single-ended termination → frames leave MCU but nothing reflects back to RX. |
-| **Verify** | Power off: measure CAN_H–CAN_L at PCB connector (~120 Ω = one terminator; ~60 Ω = both ends). Damiao Assistant + USB2CAN on motor with same harness. |
-| **Workaround** | Splice 120 Ω across H/L at motor-side XT30 (or unused daisy-chain port). Re-run discover. |
-| **Firmware** | `scripts/damiao_scan.py` + `plant_diag.c` / `damiao.c` — DM0 sync probe, REG_SCAN, `'m'` PDU. Reflash before bench. |
-| **After fix** | Update `plant_config.c` slot 2 `motor_id` + `master_id` from reg scan; confirm with `--probe-id <N> --bus 3`. |
+| **Symptom** | `control_hub.py discover --protocol damiao --bus 3 --start 1 --end 16` → no hit; `--start 6 --end 6` or `damiao_scan.py --discover` finds ESC_ID **0x06**. |
+| **Cause** | Per-ID `REG_SCAN` from ID **1** upward sends ~60 CAN frames per wrong ID before reaching the motor at **0x06**; the drive stops replying until a quiet period. Not missing termination — **scan order + TX flood**. |
+| **Fix** | `damiao.discover()` runs MCU `ID_SWEEP` first, then per-ID fallback with configured Damiao slot IDs (default **6**) before 1..5. Firmware: lighter reg-scan TX burst, RX drain after each probe. |
+| **Verify** | `python scripts/control_hub.py discover --port COM5 --protocol damiao --bus 3` → `FOUND … esc_id=0x06`. Expert path: `python scripts/damiao_scan.py --port COM5 --discover --bus 3`. |
+| **Config** | Slot 2: `motor_id=0x06`, `master_id=auto` (RX master **0x16** on bench). |
+
+### CAN TX OK, motor RX silent (`rx_raw=0`) — deprioritized
+
+| | |
+|---|---|
+| **Symptom** | Expert scan reports `tx>0` but `rx_raw=0` on every ESC_ID after the host-order bug is ruled out. |
+| **Note** | If discover finds **0x06** with `damiao_scan.py --discover` or single-ID probe but never with `1..16` reg-scan only, treat as scan-order issue (above), not wiring. |
+| **Still check** | Motor-end 120 Ω on a two-node bus if **all** probe styles show `rx_raw=0` including direct `--probe-id 0x06` after power cycle. |
+| **Firmware** | `damiao.c` / `diag_dm.c` — DM0 session, REG_SCAN, `ID_SWEEP`. Reflash after bench changes. |
 
 ## Operational — calibration
 
@@ -102,6 +91,15 @@ Bench path: full uncut strip on **SPI3** (PB3 SCK, PB5 MOSI), **5 V** PSU, commo
 **Host `leds[0]`** (offset **528**, uint16 LE): mode 5b \| brightness 5b \| led_count 6b. Count **0** → `led_table[0].default_count` (`LED_STRIP_MAX`, default **120**).  
 **Runtime:** `led_command_mount` in `plant_command.c`; **`led_service()` in `app_run()` @ ~30 Hz** (not TIM6). Modes: **0** = knight-rider test, **1** = off.  
 **Test:** `python scripts/sk9822_led_test.py --port COM9`
+
+## Closed — RS02 plant teleop + CH2 cali (Jul 2026)
+
+Bench verified: CH2 FDCAN (`teleop --slot 1`) and CH4 MCP (`teleop --slot 3`) with `lap≈0–1 ms`, smooth `cmd`/`fb`; CH2 cali after teleop spins. Details: [bringup.md](bringup.md) §7–§8, [handoff-plant-superloop-regression.md](handoff-plant-superloop-regression.md).
+
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| Grouped motion on CH2 / CH4 | ~0.2–0.4 s motion lumps; `lap` 50–370 ms, `pend` maxed, `lead` pinned | Firmware: restore burst 8, single `control_loop_service()`, DXL skip without servo session, eager MCP init, fire-and-forget MCP plant TX. Host: ack-only stale gate, cmd slew integration, `fb_age` on any fresh sample (`plant.py`) |
+| CH2 cali after teleop | Prep HIT, `0x05` sent, no `cali listen`, no spin | `calibrate.py`: FDCAN gets same 250 ms settle + pre-`0x05` reset as MCP (removed `CALI_SKIP_RESET`); teleop exit runs `recovery_on_exit` |
 
 ## Closed (fixed in current tree)
 

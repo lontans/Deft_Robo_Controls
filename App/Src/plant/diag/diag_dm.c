@@ -164,6 +164,9 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 		g_last_dm_probe.found = false;
 	g_probe_in_progress = false;
 
+	if (g_dm_pending_bus < CAN_BUS_CH4)
+		can_rx_drain(g_dm_pending_bus);
+
 	diag_dm_publish_actuator_state();
 	g_dm_feedback_active = true;
 	g_dm_feedback_ttl = 4u;

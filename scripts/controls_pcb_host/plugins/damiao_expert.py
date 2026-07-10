@@ -10,6 +10,8 @@ import serial
 from controls_pcb_host import commands as cmd
 from controls_pcb_host.feedback import (
     dm_fault_found,
+    dm_fault_is_probe,
+    parse_actuator_feedback,
     parse_dm_probe_pdu,
     parse_dm_from_actuator,
     parse_feedback_header,
@@ -40,7 +42,7 @@ DAMIAO_PLANT_SLOT = 2
 DEFAULT_MASTER_IDS: Tuple[int, ...] = (
     0x16, 0x11, 0x12, 0x13, 0, 1, 2, 0x7F, 0x7E, 0xFD, 0xFC,
 )
-PRIORITY_MOTOR_IDS: Tuple[int, ...] = (0, 1, 2, 3, 4, 5, 0x10, 0x11, 0x7F)
+PRIORITY_MOTOR_IDS: Tuple[int, ...] = (6, 0, 1, 2, 3, 4, 5, 0x10, 0x11, 0x7F)
 PROBE_KIND_NAMES = DM_PROBE_KIND_NAMES
 
 
@@ -160,7 +162,7 @@ def build_id_list(start: int, end: int, deep: bool) -> List[int]:
         head = [i for i in PRIORITY_MOTOR_IDS if start <= i <= end]
         seen = set(head)
         return head + [i for i in full if i not in seen]
-    head = [i for i in (1, 2, 3, 4, 5) if start <= i <= end]
+    head = [i for i in (6, 1, 2, 3, 4, 5) if start <= i <= end]
     seen = set(head)
     return head + [i for i in full if i not in seen]
 
@@ -322,8 +324,9 @@ def run_ack_debug(ser: serial.Serial, args: argparse.Namespace) -> int:
 
         seq = 1
         reader.drain()
-        cmd = cmd.build_dm_probe_command(0, SESSION_BEGIN, seq, bus=bus)
-        ser.write(cmd)
+        from controls_pcb_host import commands as dm_cmd
+        frame = dm_cmd.build_dm_probe_command(0, SESSION_BEGIN, seq, bus=bus)
+        ser.write(frame)
         ser.flush()
         frames = collect_frames(reader, 1.0)
         diagnose_mcu_ack(seq, PLANT_MCU_STATE_DIAG_ONLY, frames, expect_kind=SESSION_BEGIN)
@@ -332,11 +335,11 @@ def run_ack_debug(ser: serial.Serial, args: argparse.Namespace) -> int:
         reader.drain()
         probe_kind = DM_PROBE_REG_SCAN
         timeout_s = probe_timeout_s(probe_kind, listen_ms)
-        cmd = cmd.build_dm_probe_command(
+        frame = dm_cmd.build_dm_probe_command(
             motor_id, probe_kind, seq, bus=bus,
             master_id=DM_MASTER_ANY, listen_ms=listen_ms,
         )
-        ser.write(cmd)
+        ser.write(frame)
         ser.flush()
         print(f"\n--- REG_SCAN probe seq={seq} timeout={timeout_s:.2f}s ---")
         frames = collect_frames(reader, timeout_s + 0.5)

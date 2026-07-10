@@ -18,9 +18,11 @@ from ..plugins import damiao, dynamixel, led, robstride, uart_bridge
 from ..protocol import PROBE_ENABLE_ONLY, PROBE_FULL
 from ..session import PcbSession
 from ..teleop import (
+    parse_slot_list,
     run_calibrate,
     run_plant_extremity_teleop_for_slot,
     run_plant_teleop_for_slot,
+    run_plant_teleop_for_slots,
     run_servo_teleop,
 )
 from ..transport import auto_pick_port, list_serial_ports
@@ -180,6 +182,43 @@ def cmd_teleop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plant_teleop(args: argparse.Namespace) -> int:
+    port = _port(args)
+    if args.damiao_teleop:
+        slots = [2]
+        damiao_only = True
+    else:
+        slots = parse_slot_list(args.plant_slots)
+        if not slots:
+            print("--plant-slots: need at least one slot index", file=sys.stderr)
+            return 2
+        damiao_only = False
+    try:
+        run_plant_teleop_for_slots(
+            port,
+            slots,
+            skip_home=args.skip_home,
+            hz=args.hz,
+            kd=args.kd,
+            arrow_vel=args.arrow_vel,
+            ramp_up_s=args.ramp_up,
+            ramp_down_s=args.ramp_down,
+            kp=args.kp,
+            home_kp=args.home_kp,
+            home_slew=args.home_slew,
+            debug_trace=args.debug_trace,
+            damiao_only=damiao_only,
+        )
+    except Exception as exc:
+        from control_hub.link import PlantRuntimeError
+
+        if isinstance(exc, PlantRuntimeError):
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        raise
+    return 0
+
+
 def cmd_calibrate(args: argparse.Namespace) -> int:
     if args.slot is not None:
         cfg = slot_config(args.slot)
@@ -306,6 +345,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List serial ports (STM32 USB CDC hint) and exit",
     )
+    ap.add_argument(
+        "--plant-teleop",
+        action="store_true",
+        help="500 Hz plant teleop (no RS2 bench PDU); use with --plant-slots",
+    )
+    ap.add_argument(
+        "--damiao-teleop",
+        action="store_true",
+        help="Damiao plant teleop on slot 2 (alias for --plant-teleop --plant-slots 2)",
+    )
+    ap.add_argument(
+        "--plant-slots",
+        default="0",
+        metavar="LIST",
+        help="Actuator slot indices for --plant-teleop (comma-separated, e.g. 0,1 or 2)",
+    )
+    ap.add_argument(
+        "--skip-home",
+        action="store_true",
+        help="Skip auto-homing at plant-teleop start",
+    )
+    ap.add_argument("--hz", type=float, default=None, help="Host command rate (plant teleop)")
+    ap.add_argument("--arrow-vel", type=float, default=None, dest="arrow_vel")
+    ap.add_argument("--ramp-up", type=float, default=None, dest="ramp_up")
+    ap.add_argument("--ramp-down", type=float, default=None, dest="ramp_down")
+    ap.add_argument("--kd", type=float, default=None)
+    ap.add_argument("--kp", type=float, default=None)
+    ap.add_argument("--home-kp", type=float, default=None, dest="home_kp")
+    ap.add_argument("--home-slew", type=float, default=None, dest="home_slew")
+    ap.add_argument("--debug-trace", type=str, default=None, dest="debug_trace")
     sub = ap.add_subparsers(dest="command", required=False)
 
     sub.add_parser("ports", help="List serial ports").set_defaults(func=cmd_ports)
@@ -354,7 +423,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_probe)
 
     p = sub.add_parser("teleop", parents=[port_parent], help="FDCAN plant teleop (562 B desires, no RS2 PDU)")
-    p.add_argument("--slot", type=int, default=None, help="Actuator slot (default 0; slot 1 = CH2 0x70)")
+    p.add_argument("--slot", type=int, default=None, help="Actuator slot (default 0; slot 2 = Damiao CH3)")
     p.add_argument("--servo", action="store_true", help="Dynamixel neck servos")
     p.add_argument(
         "--extremity",
@@ -484,6 +553,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.list_ports:
         list_serial_ports()
         return 0
+    if args.plant_teleop or args.damiao_teleop:
+        return cmd_plant_teleop(args)
     if args.command is None:
         ap.print_help()
         return 2

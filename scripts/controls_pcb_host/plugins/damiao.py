@@ -5,7 +5,7 @@ import time
 from typing import Optional
 
 from .. import commands as cmd
-from ..actuator_config import slot_config
+from ..actuator_config import Protocol, slot_config, slots_for_protocol
 from ..feedback import (
     dm_fault_found,
     parse_dm_from_actuator,
@@ -108,6 +108,20 @@ def send_probe(
     return wait_probe_response(session.reader, motor_id, timeout_s, probe_kind=pk, slot=slot)
 
 
+def _discover_id_order(bus: int, start: int, end: int) -> list[int]:
+    """Configured Damiao IDs on this bus first — probing wrong IDs first floods CH3."""
+    head: list[int] = []
+    for cfg in slots_for_protocol(Protocol.DAMIAO):
+        if cfg.bus == bus and start <= cfg.motor_id <= end:
+            head.append(cfg.motor_id & 0xFF)
+    for mid in (6,):
+        if start <= mid <= end and mid not in head:
+            head.append(mid)
+    full = list(range(start, end + 1))
+    seen = set(head)
+    return head + [mid for mid in full if mid not in seen]
+
+
 def format_hit(resp: dict, motor_id: int) -> str:
     kind = DM_PROBE_KIND_NAMES.get(resp.get("probe_kind"), str(resp.get("probe_kind")))
     esc = resp.get("discovered_id", resp.get("param_value", 0)) & 0xFF
@@ -127,17 +141,38 @@ def discover(
     *,
     listen_ms: int = 40,
 ) -> Optional[int]:
-    print(f"Damiao reg-scan discover on {can_bus_label(bus)}  IDs {start}..{end}")
+    print(f"Damiao discover on {can_bus_label(bus)}  IDs {start}..{end}")
+    span = max(1, end - start + 1)
+    sweep_listen = clamp_listen_ms(listen_ms, minimum=40)
     with session.rx_pump():
         session.dm_session_begin(bus)
         try:
-            for mid in range(start, end + 1):
+            sweep_timeout = probe_timeout_s(DM_PROBE_ID_SWEEP, sweep_listen, span)
+            resp = send_probe(
+                session,
+                start,
+                DM_PROBE_ID_SWEEP,
+                bus=bus,
+                listen_ms=sweep_listen,
+                end_id=end,
+                timeout_s=sweep_timeout,
+            )
+            if resp is not None and (resp.get("found") or dm_fault_found(resp.get("err", 0))):
+                hit = int(resp.get("discovered_id", resp.get("param_value", 0))) & 0xFF
+                if hit == 0:
+                    hit = int(resp.get("probe_id", start)) & 0xFF
+                print(format_hit(resp, hit))
+                return hit
+
+            per_timeout = probe_timeout_s(DM_PROBE_REG_SCAN, listen_ms)
+            for mid in _discover_id_order(bus, start, end):
                 resp = send_probe(
                     session,
                     mid,
                     DM_PROBE_REG_SCAN,
                     bus=bus,
                     listen_ms=listen_ms,
+                    timeout_s=per_timeout,
                 )
                 if resp is not None and (resp.get("found") or dm_fault_found(resp.get("err", 0))):
                     print(format_hit(resp, mid))

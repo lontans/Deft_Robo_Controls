@@ -531,7 +531,7 @@ static uint8_t damiao_probe_tx_burst(uint8_t probe_kind)
 		return 1u;
 	case DM_PROBE_READ_PARAM:
 	case DM_PROBE_REG_SCAN:
-		return 6u;
+		return 2u;
 	default:
 		return 1u;
 	}
@@ -744,7 +744,6 @@ if (probe_kind == DM_PROBE_ENABLE && listen_ms < 40u)
 			*out = esc_hit;
 			out->probe_kind = DM_PROBE_REG_SCAN;
 			out->param_rid = DM_REG_ESC_ID;
-			out->found = true;
 		}
 
 		return true;

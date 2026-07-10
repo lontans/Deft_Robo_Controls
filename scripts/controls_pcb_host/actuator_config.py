@@ -83,6 +83,10 @@ def host_table() -> List[ActuatorSlotConfig]:
     return list(_HOST_TABLE)
 
 
+def slots_for_protocol(protocol: Protocol) -> List[ActuatorSlotConfig]:
+    return [cfg for cfg in _HOST_TABLE if cfg.protocol == protocol and cfg.enabled]
+
+
 def slot_config(slot: int) -> ActuatorSlotConfig:
     if slot < 0 or slot >= ACTUATOR_COUNT:
         raise ValueError(f"slot must be 0..{ACTUATOR_COUNT - 1}, got {slot}")
