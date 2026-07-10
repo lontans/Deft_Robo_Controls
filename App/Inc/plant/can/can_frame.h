@@ -28,3 +28,10 @@ typedef struct {
 	uint8_t  dlc;
 	uint8_t  data[CAN_MAX_DATA_LEN];
 } can_frame_t;
+
+static inline uint32_t can_route_key(const can_frame_t *f)
+{
+	if (f->id_type == CAN_ID_EXT)
+		return 0x80000000u | (f->id & CAN_EXT_MASK);
+	return f->id & CAN_STD_ID_MASK;
+}

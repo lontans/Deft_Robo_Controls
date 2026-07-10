@@ -45,7 +45,7 @@ BUS_KEYS: Tuple[str, ...] = tuple(str(i) for i in range(MAX_CAN_BUS + 1))
 
 # Damiao slot 2
 DM_SLOT = 2
-DM_KP = 25.0
+DM_KP = 12.0
 DM_KD = 0.5
 DM_ARROW_VEL = 3.0
 DM_HOME_KP = 8.0

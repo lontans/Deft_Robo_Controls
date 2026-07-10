@@ -413,6 +413,16 @@ void damiao_reset_enable_latch(uint8_t slot)
 		damiao_enable_latched[slot] = false;
 }
 
+void damiao_post_rx_dispatch(uint8_t slot, bool had_rx)
+{
+	if (!had_rx || slot >= ACTUATOR_COUNT)
+		return;
+
+	uint8_t err = (uint8_t)(actuator_state_live[slot].fault & 0x0Fu);
+
+	damiao_enable_latched[slot] = (err == 1u);
+}
+
 void damiao_apply_cycle(const actuator_config_t *cfg,
                         const actuator_desire_t *desire,
                         actuator_state_t *state_out)
@@ -424,6 +434,8 @@ void damiao_apply_cycle(const actuator_config_t *cfg,
 	if (cfg == NULL || desire == NULL || !cfg->enabled ||
 	    cfg->protocol != PROTO_DAMIAO)
 		return;
+
+	(void)state_out;
 
 	slot = damiao_actuator_slot(cfg);
 	if (slot >= ACTUATOR_COUNT)
@@ -442,26 +454,6 @@ void damiao_apply_cycle(const actuator_config_t *cfg,
 	for (uint8_t i = 0; i < 3u; i++) {
 		if (damiao_pack_tx(cfg, desire, &frame) == PLUGIN_OK)
 			(void)can_tx_enqueue(bus, &frame);
-	}
-
-	can_router_poll_bus(bus);
-
-	{
-		bool got_fb = false;
-
-		while (can_rx_pop(bus, &frame) == CAN_OK) {
-			if (state_out != NULL) {
-				(void)damiao_parse_rx(cfg, &frame, state_out);
-				got_fb = true;
-			}
-		}
-
-		/* Re-arm enable only after fresh feedback (ERR 1 = enabled). */
-		if (got_fb && state_out != NULL) {
-			uint8_t err = (uint8_t)(state_out->fault & 0x0Fu);
-
-			damiao_enable_latched[slot] = (err == 1u);
-		}
 	}
 }
 

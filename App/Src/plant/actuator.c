@@ -113,6 +113,44 @@ static bool actuator_desire_is_blank(const actuator_desire_t *d)
 	return actuator_desire_is_idle(d) && d->position == 0.0f;
 }
 
+static void actuator_dispatch_bus_rx(can_bus_id_t bus)
+{
+	can_frame_t frame;
+	bool damiao_had_rx[ACTUATOR_COUNT];
+
+	memset(damiao_had_rx, 0, sizeof(damiao_had_rx));
+
+	while (can_rx_pop(bus, &frame) == CAN_OK) {
+		for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+			if (!actuator_table[i].enabled)
+				continue;
+			if (actuator_table[i].bus != bus)
+				continue;
+
+			if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
+				robstride_on_rx_frame(&actuator_table[i], i, &frame,
+				                      &actuator_state_live[i]);
+				continue;
+			}
+
+			if (actuator_table[i].protocol == PROTO_DAMIAO) {
+				(void)plugin_parse_rx(&actuator_table[i], &frame,
+				                      &actuator_state_live[i]);
+				damiao_had_rx[i] = true;
+				continue;
+			}
+
+			(void)plugin_parse_rx(&actuator_table[i], &frame,
+			                      &actuator_state_live[i]);
+		}
+	}
+
+	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		if (damiao_had_rx[i])
+			damiao_post_rx_dispatch(i, true);
+	}
+}
+
 void actuator_apply_desire(void)
 {
 	uint32_t poll_buses = 0u;
@@ -190,15 +228,9 @@ void actuator_apply_desire(void)
 			can_router_poll_bus(bus);
 	}
 
-	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
-		if (actuator_table[i].protocol == PROTO_ROBSTRIDE)
-			continue;
-		if (actuator_table[i].protocol == PROTO_DAMIAO)
-			continue;
-
-		can_frame_t rx;
-		while (can_rx_pop(actuator_table[i].bus, &rx) == CAN_OK)
-			plugin_parse_rx(&actuator_table[i], &rx, &actuator_state_live[i]);
+	for (can_bus_id_t bus = 0; bus < CAN_BACKEND_COUNT; bus++) {
+		if ((poll_buses & (1u << (unsigned)bus)) != 0u)
+			actuator_dispatch_bus_rx(bus);
 	}
 }
 

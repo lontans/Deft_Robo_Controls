@@ -50,11 +50,11 @@ class ActuatorSlotConfig:
 
 # Mirror plant_config.c defaults (update when C table changes).
 _DEFAULT_TABLE: Tuple[Tuple[int, Protocol, int, int, bool], ...] = (
-    (1, Protocol.ROBSTRIDE, 0x76, 0, True),   # slot 0
-    (2, Protocol.ROBSTRIDE, 0x70, 0, True),   # slot 1
-    (3, Protocol.DAMIAO, 0x06, 0, True),      # slot 2 — DM_MASTER_ID_AUTO on MCU
-    (4, Protocol.ROBSTRIDE, 0x73, 0, True),   # slot 3 — CH4 MCP
-    (5, Protocol.ROBSTRIDE, 0x70, 0, True),   # slot 4 — CH5 MCP
+    (1, Protocol.DAMIAO, 0x06, 0, True),      # slot 0
+    (2, Protocol.ROBSTRIDE, 0x70, 0, True),     # slot 1
+    (3, Protocol.ROBSTRIDE, 0x75, 0, True),     # slot 2
+    (4, Protocol.ROBSTRIDE, 0x73, 0, True),     # slot 3 — CH4 MCP
+    (5, Protocol.ROBSTRIDE, 0x73, 0, True),     # slot 4 — CH5 MCP
     (6, Protocol.ROBSTRIDE, 0x75, 0, True),   # slot 5 — CH6 MCP
 )
 

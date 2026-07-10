@@ -15,8 +15,15 @@ typedef enum {
 	CAN_ERR_BUSY, /* per-bus mutex contended; caller should skip and retry next tick */
 } can_status_t;
 
+typedef enum {
+	FDCAN_RX_EXT_ONLY = 0,
+	FDCAN_RX_STD_ONLY,
+	FDCAN_RX_STD_AND_EXT,
+} fdcan_rx_mode_t;
+
 void can_router_init(void);
 bool can_router_is_ready(void);
+fdcan_rx_mode_t can_router_fdcan_rx_mode(can_bus_id_t bus);
 void can_router_restart_fdcan(can_bus_id_t bus);
 void can_router_poll(void);
 void can_router_poll_bus(can_bus_id_t bus);

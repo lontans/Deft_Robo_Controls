@@ -630,48 +630,50 @@ static bool robstride_desire_blank(const actuator_desire_t *desire)
 	return robstride_desire_idle(desire) && desire->position == 0.0f;
 }
 
-static void robstride_apply_drain_rx(const actuator_config_t *cfg,
-                                     uint8_t slot,
-                                     uint8_t pararead_phase,
-                                     uint16_t last_pararead_idx,
-                                     actuator_state_t *state_out)
+static uint16_t s_rs02_last_pararead_idx[ACTUATOR_COUNT];
+
+static void robstride_try_pararead_capture(const actuator_config_t *cfg,
+                                           uint8_t slot,
+                                           const can_frame_t *frame,
+                                           actuator_state_t *state_out)
 {
-	can_frame_t frame;
-	can_bus_id_t bus = cfg->bus;
+	uint8_t mode, id_byte;
+	uint16_t data16;
 
-	while (can_rx_pop(bus, &frame) == CAN_OK) {
-		if (state_out == NULL)
-			continue;
-		if (plugin_parse_rx(cfg, &frame, state_out) == PLUGIN_OK)
-			continue;
-		if (frame.id_type != CAN_ID_EXT)
-			continue;
+	if (frame->id_type != CAN_ID_EXT)
+		return;
 
-		uint8_t mode, id_byte;
-		uint16_t data16;
+	robstride_unpack_ext_id(frame->id, &mode, &data16, &id_byte);
+	if (mode != RS02_COMM_PARAREAD)
+		return;
 
-		robstride_unpack_ext_id(frame.id, &mode, &data16, &id_byte);
-		if (mode != RS02_COMM_PARAREAD)
-			continue;
+	uint8_t motor_id = (uint8_t)(cfg->motor_id & 0xFF);
+	if (((data16 & 0xFF) != motor_id) && (id_byte != motor_id))
+		return;
 
-		uint8_t motor_id = (uint8_t)(cfg->motor_id & 0xFF);
-		if (((data16 & 0xFF) != motor_id) && (id_byte != motor_id))
-			continue;
+	float val;
+	uint32_t raw = (uint32_t)frame->data[4] |
+	               ((uint32_t)frame->data[5] << 8) |
+	               ((uint32_t)frame->data[6] << 16) |
+	               ((uint32_t)frame->data[7] << 24);
 
-		float val;
-		uint32_t raw = (uint32_t)frame.data[4] |
-		               ((uint32_t)frame.data[5] << 8) |
-		               ((uint32_t)frame.data[6] << 16) |
-		               ((uint32_t)frame.data[7] << 24);
+	memcpy(&val, &raw, sizeof(val));
+	if (s_rs02_last_pararead_idx[slot] == RS02_PARAM_MECH_POS)
+		state_out->position = val;
+	else if (s_rs02_last_pararead_idx[slot] == RS02_PARAM_MECH_VEL)
+		state_out->velocity = val;
+}
 
-		memcpy(&val, &raw, sizeof(val));
-		if (last_pararead_idx == RS02_PARAM_MECH_POS)
-			state_out->position = val;
-		else if (last_pararead_idx == RS02_PARAM_MECH_VEL)
-			state_out->velocity = val;
-		(void)slot;
-		(void)pararead_phase;
-	}
+void robstride_on_rx_frame(const actuator_config_t *cfg, uint8_t slot,
+                           const can_frame_t *frame, actuator_state_t *state_out)
+{
+	if (cfg == NULL || frame == NULL || state_out == NULL)
+		return;
+
+	if (plugin_parse_rx(cfg, frame, state_out) == PLUGIN_OK)
+		return;
+
+	robstride_try_pararead_capture(cfg, slot, frame, state_out);
 }
 
 #define RS02_HOST_INTERP_MAX_MS 200u
@@ -754,7 +756,6 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	static uint32_t last_maintain_ms[ACTUATOR_COUNT];
 	static uint32_t last_pararead_ms[ACTUATOR_COUNT];
 	static uint8_t pararead_phase[ACTUATOR_COUNT];
-	static uint16_t last_pararead_idx[ACTUATOR_COUNT];
 	can_frame_t frame;
 	can_bus_id_t bus;
 	uint8_t slot;
@@ -765,6 +766,8 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 
 	if (cfg == NULL || desire == NULL || !cfg->enabled)
 		return;
+
+	(void)state_out;
 
 	slot = robstride_actuator_slot(cfg);
 	if (slot >= ACTUATOR_COUNT)
@@ -798,17 +801,14 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 			if (last_pararead_ms[slot] == 0u ||
 			    (now - last_pararead_ms[slot]) >= 50u) {
 				last_pararead_ms[slot] = now;
-				last_pararead_idx[slot] = (pararead_phase[slot] == 0u) ?
-				                          RS02_PARAM_MECH_POS : RS02_PARAM_MECH_VEL;
+				s_rs02_last_pararead_idx[slot] = (pararead_phase[slot] == 0u) ?
+				                                 RS02_PARAM_MECH_POS : RS02_PARAM_MECH_VEL;
 				pararead_phase[slot] ^= 1u;
-				if (robstride_send_para_read(cfg, last_pararead_idx[slot],
+				if (robstride_send_para_read(cfg, s_rs02_last_pararead_idx[slot],
 				                             &frame) == PLUGIN_OK)
 					(void)can_tx_enqueue(bus, &frame);
 			}
 		}
-		can_router_poll_bus_rx(bus);
-		robstride_apply_drain_rx(cfg, slot, pararead_phase[slot],
-		                         last_pararead_idx[slot], state_out);
 		return;
 	}
 
@@ -836,17 +836,13 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 
 		if (last_pararead_ms[slot] == 0u || (now - last_pararead_ms[slot]) >= 50u) {
 			last_pararead_ms[slot] = now;
-			last_pararead_idx[slot] = (pararead_phase[slot] == 0u) ?
-			                          RS02_PARAM_MECH_POS : RS02_PARAM_MECH_VEL;
+			s_rs02_last_pararead_idx[slot] = (pararead_phase[slot] == 0u) ?
+			                                 RS02_PARAM_MECH_POS : RS02_PARAM_MECH_VEL;
 			pararead_phase[slot] ^= 1u;
-			if (robstride_send_para_read(cfg, last_pararead_idx[slot], &frame) == PLUGIN_OK)
+			if (robstride_send_para_read(cfg, s_rs02_last_pararead_idx[slot], &frame) == PLUGIN_OK)
 				(void)can_tx_enqueue(bus, &frame);
 		}
 	}
-
-	can_router_poll_bus(bus);
-	robstride_apply_drain_rx(cfg, slot, pararead_phase[slot],
-	                         last_pararead_idx[slot], state_out);
 }
 
 static void robstride_listen_rx(can_bus_id_t bus,

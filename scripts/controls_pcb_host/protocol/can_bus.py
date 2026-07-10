@@ -8,7 +8,9 @@ from .schema import MAX_CAN_BUS, MIN_CAN_BUS
 
 MCP_CAN_BUSES: FrozenSet[int] = frozenset({4, 5, 6})
 FDCAN_BUSES: FrozenSet[int] = frozenset({1, 2, 3})
-"""CH1–CH2: RS02 plant runtime at 500 Hz (FDCAN). CH3 is FDCAN but Damiao in default table."""
+"""CH1–CH3: on-board FDCAN. CH3 accepts mixed std+ext classic CAN."""
+FDCAN_MIXED_BUSES: FrozenSet[int] = frozenset({1, 3})
+"""CH1 (Damiao) and CH3 accept both standard and extended classic CAN."""
 FDCAN_RS02_PLANT_BUSES: FrozenSet[int] = frozenset({1, 2})
 MCP_RS02_PLANT_BUSES: FrozenSet[int] = frozenset({4, 5, 6})
 RS02_PLANT_BUSES: FrozenSet[int] = FDCAN_RS02_PLANT_BUSES | MCP_RS02_PLANT_BUSES
@@ -34,6 +36,14 @@ _ACTIVITY_LED: Dict[int, str] = {
 
 def is_mcp_bus(bus: int) -> bool:
     return normalize_can_bus(bus) in MCP_CAN_BUSES
+
+
+def is_fdcan_bus(bus: int) -> bool:
+    return normalize_can_bus(bus) in FDCAN_BUSES
+
+
+def is_fdcan_mixed_bus(bus: int) -> bool:
+    return normalize_can_bus(bus) in FDCAN_MIXED_BUSES
 
 
 def is_fdcan_rs02_plant_bus(bus: int) -> bool:

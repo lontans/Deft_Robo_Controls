@@ -10,7 +10,7 @@ Bench (`R/S/2` PDU → `plant_diag`) is for **calibrate / discover / probe** onl
 |------|-----|----------|--------------|
 | 0 | CH1 | FDCAN1 | RS02 runtime OK |
 | 1 | CH2 | FDCAN3 | RS02 runtime OK |
-| 2 | CH3 | FDCAN2 | Damiao (separate teleop) |
+| 2 | CH3 | FDCAN2 | Damiao default; **mixed** std+ext — RobStride OK when configured ([mixed-bus spec](fdcan-dual-id-mixed-bus.md)) |
 | 3–5 | CH4–6 | MCP2518 | RS02 plant teleop OK (slot 3 default) |
 
 ## Workflow

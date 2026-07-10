@@ -100,6 +100,8 @@ plugin_status_t robstride_send_proactive(const actuator_config_t *cfg,
 void robstride_apply_cycle(const actuator_config_t *cfg,
                            const actuator_desire_t *desire,
                            actuator_state_t *state_out);
+void robstride_on_rx_frame(const actuator_config_t *cfg, uint8_t slot,
+                           const can_frame_t *frame, actuator_state_t *state_out);
 void robstride_host_desire_updated(uint8_t slot, const actuator_desire_t *desire);
 void robstride_bench_note_rx(const can_frame_t *frame,
                              uint8_t motor_id,

@@ -65,11 +65,6 @@ static void can_bus_unlock(can_bus_id_t bus)
 #define CAN_LED_BLINK_MS    125u
 #define CAN_QUEUE_DEPTH     128u
 
-typedef enum {
-	FDCAN_FILTER_EXT_ALL = 0,
-	FDCAN_FILTER_STD_ALL,
-} fdcan_filter_mode_t;
-
 typedef struct {
 	GPIO_TypeDef *port;
 	uint16_t pin;
@@ -115,31 +110,41 @@ static void can_led_set_idle(uint8_t idx)
 	g_blink_on[idx] = true;
 }
 
-static void fdcan_bus_start(FDCAN_HandleTypeDef *h, fdcan_filter_mode_t mode)
+static void fdcan_bus_start(FDCAN_HandleTypeDef *h, fdcan_rx_mode_t mode)
 {
 	FDCAN_FilterTypeDef filter = {0};
 
-	if (mode == FDCAN_FILTER_STD_ALL) {
+	if (mode == FDCAN_RX_STD_AND_EXT) {
 		filter.IdType = FDCAN_STANDARD_ID;
 		filter.FilterIndex = 0;
 		filter.FilterType = FDCAN_FILTER_MASK;
 		filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
 		filter.FilterID1 = 0;
 		filter.FilterID2 = 0;
+		if (HAL_FDCAN_ConfigFilter(h, &filter) != HAL_OK)
+			Error_Handler();
 
-	} else {
 		filter.IdType = FDCAN_EXTENDED_ID;
+		filter.FilterIndex = 0;
+		if (HAL_FDCAN_ConfigFilter(h, &filter) != HAL_OK)
+			Error_Handler();
+
+		if (HAL_FDCAN_ConfigGlobalFilter(h,
+				FDCAN_ACCEPT_IN_RX_FIFO0,
+				FDCAN_ACCEPT_IN_RX_FIFO0,
+				FDCAN_FILTER_REMOTE,
+				FDCAN_FILTER_REMOTE) != HAL_OK)
+			Error_Handler();
+	} else if (mode == FDCAN_RX_STD_ONLY) {
+		filter.IdType = FDCAN_STANDARD_ID;
 		filter.FilterIndex = 0;
 		filter.FilterType = FDCAN_FILTER_MASK;
 		filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
 		filter.FilterID1 = 0;
 		filter.FilterID2 = 0;
-	}
+		if (HAL_FDCAN_ConfigFilter(h, &filter) != HAL_OK)
+			Error_Handler();
 
-	if (HAL_FDCAN_ConfigFilter(h, &filter) != HAL_OK)
-		Error_Handler();
-
-	if (mode == FDCAN_FILTER_STD_ALL) {
 		if (HAL_FDCAN_ConfigGlobalFilter(h,
 				FDCAN_ACCEPT_IN_RX_FIFO0,
 				FDCAN_REJECT,
@@ -147,8 +152,17 @@ static void fdcan_bus_start(FDCAN_HandleTypeDef *h, fdcan_filter_mode_t mode)
 				FDCAN_FILTER_REMOTE) != HAL_OK)
 			Error_Handler();
 	} else {
-		/* Match STD path permissiveness: with Cube ExtFiltersNbr=0 the mask
-		 * filter is inert — REJECT non-matching ext drops every RobStride frame. */
+		filter.IdType = FDCAN_EXTENDED_ID;
+		filter.FilterIndex = 0;
+		filter.FilterType = FDCAN_FILTER_MASK;
+		filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+		filter.FilterID1 = 0;
+		filter.FilterID2 = 0;
+		if (HAL_FDCAN_ConfigFilter(h, &filter) != HAL_OK)
+			Error_Handler();
+
+		/* With Cube ExtFiltersNbr=0 the mask filter is inert — REJECT
+		 * non-matching ext drops every RobStride frame. */
 		if (HAL_FDCAN_ConfigGlobalFilter(h,
 				FDCAN_REJECT, FDCAN_ACCEPT_IN_RX_FIFO0,
 				FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE) != HAL_OK)
@@ -156,12 +170,25 @@ static void fdcan_bus_start(FDCAN_HandleTypeDef *h, fdcan_filter_mode_t mode)
 	}
 
 	if (HAL_FDCAN_Start(h) != HAL_OK)
-			Error_Handler();
+		Error_Handler();
 }
 
-static fdcan_filter_mode_t fdcan_mode_for_bus(can_bus_id_t bus)
+static fdcan_rx_mode_t fdcan_rx_mode_for_bus(can_bus_id_t bus)
 {
-	return (bus == CAN_BUS_CH3) ? FDCAN_FILTER_STD_ALL : FDCAN_FILTER_EXT_ALL;
+	switch (bus) {
+	case CAN_BUS_CH1:
+	case CAN_BUS_CH3:
+		return FDCAN_RX_STD_AND_EXT;
+	default:
+		return FDCAN_RX_EXT_ONLY;
+	}
+}
+
+fdcan_rx_mode_t can_router_fdcan_rx_mode(can_bus_id_t bus)
+{
+	if (bus >= CAN_FDCAN_COUNT)
+		return FDCAN_RX_EXT_ONLY;
+	return fdcan_rx_mode_for_bus(bus);
 }
 
 void can_router_restart_fdcan(can_bus_id_t bus)
@@ -172,7 +199,7 @@ void can_router_restart_fdcan(can_bus_id_t bus)
 	FDCAN_HandleTypeDef *h = bus_handle[bus];
 
 	(void)HAL_FDCAN_Stop(h);
-	fdcan_bus_start(h, fdcan_mode_for_bus(bus));
+	fdcan_bus_start(h, fdcan_rx_mode_for_bus(bus));
 }
 
 static void can_led_mark_traffic(can_bus_id_t bus)
@@ -259,10 +286,10 @@ void can_router_init(void)
 		can_led_set_idle(i);
 	}
 
-	// CH1/CH2 RobStride (ext). CH3 Damiao (std) — bus_handle[2] is hfdcan2.
-	fdcan_bus_start(&hfdcan1, FDCAN_FILTER_EXT_ALL);
-	fdcan_bus_start(&hfdcan3, FDCAN_FILTER_EXT_ALL);
-	fdcan_bus_start(&hfdcan2, FDCAN_FILTER_STD_ALL);
+	// CH1 Damiao (std) + CH3 mixed. CH2 RobStride (ext).
+	fdcan_bus_start(&hfdcan1, fdcan_rx_mode_for_bus(CAN_BUS_CH1));
+	fdcan_bus_start(&hfdcan3, fdcan_rx_mode_for_bus(CAN_BUS_CH2));
+	fdcan_bus_start(&hfdcan2, fdcan_rx_mode_for_bus(CAN_BUS_CH3));
 
 	spi_can_router_init();
 	g_can_router_ready = true;

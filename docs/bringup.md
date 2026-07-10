@@ -22,16 +22,16 @@ Rebuild and flash from STM32CubeIDE (Debug).
 
 | Slot | Bus | Motor ID | Protocol |
 |------|-----|----------|----------|
-| 0 | CH1 | `0x76` | RobStride RS02 |
-| 1 | CH1 | `0x74` | RobStride RS01 (daisy on CH1) |
-| 2 | **CH3** | `0x01` (placeholder) | **Damiao** DM-J4310 |
-| 3 | CH4 | `0x70` | RobStride (MCP2518) |
-| 4 | CH5 | `0x70` | RobStride (MCP2518) |
-| 5 | CH6 | `0x70` | RobStride (MCP2518) |
+| 0 | CH1 | `0x06` | Damiao DM-J4310 |
+| 1 | CH2 | `0x70` | RobStride RS02 |
+| 2 | CH3 | `0x75` | RobStride RS02 |
+| 3 | CH4 | `0x73` | RobStride (MCP2518) |
+| 4 | CH5 | `0x73` | RobStride (MCP2518) |
+| 5 | CH6 | `0x75` | RobStride (MCP2518) |
 
 - FDCAN1/2/3 @ 1 Mbit/s, per-bus TX queue + RX ring (depth 128)
 - **CH1 / CH2:** extended CAN (RobStride)
-- **CH3:** **standard** CAN (Damiao) — `hfdcan2` @ PB12/PB13, accept-all std filter
+- **CH3:** **mixed** standard + extended classic CAN — `hfdcan2` @ PB12/PB13 (`StdFiltersNbr=1`, `ExtFiltersNbr=1`, accept-all dual filter). Damiao (std) and RobStride (ext) may share the branch when configured on different actuator slots. See [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md).
 - `can_router.c` maps schematic CH2 → `hfdcan3` (PA8/PA15), CH3 → `hfdcan2` (PB12/PB13)
 - Activity LEDs: PC7 (CH1), PC6 (CH2), PB15 (CH3)
 - **CH4–CH6:** MCP2518FD SPI-CAN — see [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md)
@@ -64,6 +64,26 @@ python scripts/damiao_scan.py --port COM5 --probe-id 6 --bus 3   # if prior hint
 Discovery uses **register read** (`DM_PROBE_REG_SCAN`): TX `0x7FF` read ESC_ID (`0x08`) + MST_ID (`0x07`). Works while motor is **disabled** (red LED). After FOUND, update slot 2 in `plant_config.c` with discovered `motor_id` and Master ID.
 
 Extended notes: local `docs/damiao-bringup.md` (gitignored). See [known-issues.md](known-issues.md).
+
+### Mixed std/ext on CH3 (Jul 2026)
+
+Firmware accepts **both** 11-bit and 29-bit classic CAN on schematic CH3 (`FDCAN_RX_STD_AND_EXT`). Plant teleop fans out RX to every enabled actuator slot on the bus so Damiao and RobStride can coexist when assigned to different slots on the same harness.
+
+```powershell
+python scripts/control_hub.py config set --port COM5 --slot 1 --protocol robstride --bus 3 --motor-id 0x75
+python scripts/control_hub.py config set --port COM5 --slot 2 --protocol damiao   --bus 3 --motor-id 0x06
+python scripts/control_hub.py recover --port COM5 --bus 3
+python scripts/control_hub.py --plant-teleop --plant-slots 1,2 --port COM5
+```
+
+**Bench verify (user-run):**
+
+1. `discover --protocol damiao --bus 3` → FOUND (std frames).
+2. `discover --protocol robstride --bus 3` → FOUND when RS motor on CH3 (ext frames).
+3. Mixed `--plant-slots`: both slots show feedback; arrow motion moves the selected motor only.
+4. Regression: Damiao-only CH3 teleop; RS CH1/CH2 teleop unchanged.
+
+All devices on a mixed branch must share **1 Mbps** nominal bit timing and proper **120 Ω** termination at each end.
 
 ## 3. Laptop USB bench (Windows / Linux)
 

@@ -8,7 +8,7 @@ from typing import Iterator, Optional
 from controls_pcb_host.feedback import parse_feedback_header
 from controls_pcb_host.feedback import parse_actuator_feedback
 from controls_pcb_host.actuator_config import slot_config
-from controls_pcb_host.protocol.can_bus import can_bus_label, is_rs02_plant_bus, normalize_can_bus
+from controls_pcb_host.protocol.can_bus import can_bus_label, is_fdcan_bus, is_mcp_bus, normalize_can_bus
 from controls_pcb_host.session import PcbSession
 
 # Bench reply tags in feedback pdu[0] — runtime should see actuator slots, not these.
@@ -164,6 +164,40 @@ def _arm_rs02_plant_slot(
     return got_fb
 
 
+def _arm_damiao_plant_slot(
+    session: PcbSession,
+    slot: int,
+    *,
+    listen_ms: int = 32,
+) -> bool:
+    """Clear fault + enable (0xFB/0xFC) before plant MIT stream; confirm ERR nibble 0x1."""
+    from controls_pcb_host.plugins import damiao as dm
+    from controls_pcb_host.protocol.diag_pdu import DM_PROBE_CLEAR_FAULT, DM_PROBE_ENABLE
+
+    cfg = slot_config(slot)
+    bus = cfg.bus
+    mid = cfg.motor_id & 0xFF
+    session.dm_session_begin(bus)
+    try:
+        dm.send_probe(session, mid, DM_PROBE_CLEAR_FAULT, bus=bus, listen_ms=listen_ms)
+        resp = dm.send_probe(session, mid, DM_PROBE_ENABLE, bus=bus, listen_ms=listen_ms)
+        if resp is not None and (resp.get("err", 0) & 0xF) == 1:
+            return True
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            session.send_plant()
+            time.sleep(0.04)
+            frame = session.reader.pop()
+            while frame is not None:
+                fb = parse_actuator_feedback(frame, slot=slot)
+                if fb is not None and (int(fb.get("fault", 0)) & 0xF) == 1:
+                    return True
+                frame = session.reader.pop()
+        return False
+    finally:
+        session.dm_session_end(bus)
+
+
 def warmup_plant_actuators(session: PcbSession, slots: list[int]) -> None:
     """Recover + brief plant MIT per teleop slot (arms drives without bench SESSION_END reset)."""
     if not slots:
@@ -172,11 +206,23 @@ def warmup_plant_actuators(session: PcbSession, slots: list[int]) -> None:
     release_bench_gates(session)
     for slot in slots:
         cfg = slot_config(slot)
-        if not cfg.enabled or cfg.protocol_name != "robstride":
-            continue
-        if not is_rs02_plant_bus(cfg.bus):
+        if not cfg.enabled:
             continue
         label = f"slot{slot} {can_bus_label(cfg.bus)} 0x{cfg.motor_id:02X}"
+        if cfg.protocol_name == "damiao":
+            ok = _arm_damiao_plant_slot(session, slot)
+            if ok:
+                print(f"  enable OK  {label}  (0xFB clear + 0xFC enable, ERR=0x1)")
+            else:
+                print(
+                    f"  WARNING: enable not confirmed {label} — "
+                    "motor may still arm on first MIT frame; check TIMEOUT / comms"
+                )
+            continue
+        if cfg.protocol_name != "robstride":
+            continue
+        if not (is_fdcan_bus(cfg.bus) or is_mcp_bus(cfg.bus)):
+            continue
         ok = _arm_rs02_plant_slot(session, slot)
         if ok:
             print(f"  arm OK  {label}")
@@ -189,17 +235,21 @@ def warmup_plant_actuators(session: PcbSession, slots: list[int]) -> None:
 
 
 def assert_plant_teleop_slot(slot: int, bus: int, protocol_name: str) -> None:
-    """Plant teleop: RS02 on FDCAN CH1–2 or MCP CH4–6; Damiao on CH3."""
+    """Plant teleop: protocol must match a supported bus class (config is source of truth)."""
+    bus = normalize_can_bus(bus)
     if protocol_name == "damiao":
-        if bus != 3:
-            raise PlantRuntimeError(f"slot {slot}: Damiao plant teleop expects CH3 (bus 3).")
+        if not is_fdcan_bus(bus):
+            raise PlantRuntimeError(
+                f"slot {slot}: Damiao plant teleop requires FDCAN CH1–3, got {can_bus_label(bus)}."
+            )
         return
-    if protocol_name != "robstride":
-        raise PlantRuntimeError(f"slot {slot}: protocol {protocol_name!r} has no plant teleop.")
-    if not is_rs02_plant_bus(bus):
-        raise PlantRuntimeError(
-            f"slot {slot} bus {bus}: RS02 plant teleop supports CH1–2 (FDCAN) or CH4–6 (MCP)."
-        )
+    if protocol_name == "robstride":
+        if not (is_fdcan_bus(bus) or is_mcp_bus(bus)):
+            raise PlantRuntimeError(
+                f"slot {slot}: RobStride plant teleop requires FDCAN CH1–3 or MCP CH4–6."
+            )
+        return
+    raise PlantRuntimeError(f"slot {slot}: protocol {protocol_name!r} has no plant teleop.")
 
 
 def assert_fdcan_rs02_slot(slot: int, bus: int, protocol_name: str) -> None:

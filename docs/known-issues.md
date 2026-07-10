@@ -40,6 +40,7 @@ RobStride CH1 bench is functional for plant teleop and per-bus RS2 calibrate/dis
 |-------|-------|--------|
 | **UART TX blocks main loop** | `host_transport_uart.c` | Blocking TX can delay RX on Jetson UART path; USB CDC bench is unaffected. |
 | **Silent CAN TX drop** | `actuator_apply_desire` | Full TX queue → frame skipped with no fault flag in feedback. |
+| **Mixed-bus bitrate** | CH3 std+ext | All nodes on a shared branch must use the same nominal bit timing (1 Mbps); mismatched devices will not decode each other. |
 | **Both transports always linked** | USB + UART objects in project | Duplicate RX ring BSS when only one mode is active. |
 | **3× MOTOR_CTRL per motor per 2 ms** | `robstride_apply_cycle` | Reliability repeat on 500 Hz path; increases CAN load with four motors. |
 | **RS2 session blocks plant loop** | `plant_diag_skip_actuator_can` | Intentional for bench probes; do not mix RS2 session with plant teleop. |
@@ -112,6 +113,7 @@ Bench verified: CH2 FDCAN (`teleop --slot 1`) and CH4 MCP (`teleop --slot 3`) wi
 | Out-of-range `protocol` index | `protocol >= PROTO_COUNT` guard |
 | Enable OK when enqueue fails | Fixed in `control_loop_init` |
 | FDCAN2/3 not routed | Three-bus `can_router` + CH2/CH3 actuators in `plant_config` |
+| CH3 mixed std+ext RX | `can_router.c` dual filters on `hfdcan2`; `actuator_dispatch_bus_rx` fan-out — see [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md) |
 | `ACTUATOR_COUNT = 1` only | Now **6** slots wired; 25 wire slots unchanged |
 | Damiao plugin + DM0 PDU | `damiao.c`, `plant_diag.c`, `scripts/damiao_scan.py` — USB path OK; CAN RX pending termination |
 | Cal timeout (`mms` stuck in cali) | Cal done on `mms=rest\|running`; per-bus probe routing via `pdu.data[11]` |

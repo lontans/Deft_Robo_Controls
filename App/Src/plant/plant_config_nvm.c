@@ -289,20 +289,20 @@ static void build_nvm_image(plant_cfg_nvm_image_t *img)
 void plant_config_load_factory_defaults(void)
 {
 	actuator_table[0] = (actuator_config_t){
-		.bus = CAN_BUS_CH1, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x76, .enabled = true,
+		.bus = CAN_BUS_CH1, .protocol = PROTO_DAMIAO, .motor_id = 0x06,
+		.master_id = 0u, .enabled = true,
 	};
 	actuator_table[1] = (actuator_config_t){
 		.bus = CAN_BUS_CH2, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x70, .enabled = true,
 	};
 	actuator_table[2] = (actuator_config_t){
-		.bus = CAN_BUS_CH3, .protocol = PROTO_DAMIAO, .motor_id = 0x06,
-		.master_id = DM_MASTER_ID_AUTO, .enabled = true,
+		.bus = CAN_BUS_CH3, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x75, .enabled = true,
 	};
 	actuator_table[3] = (actuator_config_t){
 		.bus = CAN_BUS_CH4, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x73, .enabled = true,
 	};
 	actuator_table[4] = (actuator_config_t){
-		.bus = CAN_BUS_CH5, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x70, .enabled = true,
+		.bus = CAN_BUS_CH5, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x73, .enabled = true,
 	};
 	actuator_table[5] = (actuator_config_t){
 		.bus = CAN_BUS_CH6, .protocol = PROTO_ROBSTRIDE, .motor_id = 0x75, .enabled = true,

@@ -158,6 +158,8 @@ void damiao_apply_cycle(const actuator_config_t *cfg,
 
 void damiao_reset_enable_latch(uint8_t slot);
 
+void damiao_post_rx_dispatch(uint8_t slot, bool had_rx);
+
 
 
 bool damiao_probe_id(can_bus_id_t bus,
