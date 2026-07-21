@@ -76,11 +76,31 @@ Full debug timeline + ranked bugs: [ch4-mcp2518-bringup-postmortem.md](ch4-mcp25
 
 ---
 
-## CubeMars (workstream — not motor-ready)
+## CubeMars (merged, not motor-ready)
 
-Draft under `2026-07-10 workstreams/` only. Live `cubemars.c` empty; `PROTO_CUBEMARS` = NULL in `plugin_table`.
+`cubemars.c`/`cubemars.h` merged into the live tree from the (now-deleted)
+`2026-07-10 workstreams/` draft; `PROTO_CUBEMARS` → `&cubemars_ops` in
+`plugin_table.c` (was `NULL`). AK-series Servo Mode, Position-Speed Loop
+(control mode 6) only — see `App/Inc/plant/plugins/cubemars.h`.
 
-Before trusting motion: sniff feedback CAN ID → CFG `master_id`; verify deg/eRPM vs mechanical rad scaling; accel=0 semantics unknown. Host tests are encode/decode only.
+**Before trusting motion — two unresolved P0s, both runtime-fixable via CFG
+SET (no firmware redeploy needed) once known:**
+
+1. Feedback CAN ID is undocumented in the vendor PDF — bench-sniff (motor in
+   servo mode, no host TX, observe the periodic broadcast ID) and set via CFG
+   `master_id`. Default `0` = never matches, safe no-op.
+2. `pos`/`speed` units are passed through as placeholders (deg/eRPM assumed
+   1:1 with `ActuatorDesire`'s rad/rad·s⁻¹) — needs the motor's pole-pair
+   count to verify real scaling. **Do not command a loaded joint** until
+   confirmed (see the P0 comment block in `cubemars.h`).
+
+Host tests (`scripts/legacy/tests/test_cubemars_wire.py`, against
+`scripts/legacy/controls_pcb_host/protocol/cubemars.py`) are encode/decode
+internal-consistency only — nothing about this protocol is verifiable
+without the motor. Not yet ported to `deft_controls_sdk` (the current
+canonical SDK, see `docs/api.md`) — CFG SET already exposes
+`protocol=2` (`PROTO_CUBEMARS`) generically via `hub.debug.cfg_set_slot()`,
+but there's no `deft_controls_sdk`-side CubeMars encode/decode helper yet.
 
 ---
 
