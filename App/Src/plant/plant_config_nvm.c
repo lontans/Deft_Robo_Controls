@@ -295,25 +295,40 @@ static void build_nvm_image(plant_cfg_nvm_image_t *img)
 
 void plant_config_load_factory_defaults(void)
 {
-	/* Dual YAM / Damiao daisy defaults — override via CFG SET after discover.
-	 * Arm 1: slots 0-6, CH1, ESC 0x01-0x07. Arm 2: slots 7-13, CH2, ESC 0x01-0x07
-	 * (IDs only need to be unique per-bus, not globally, so arm 2 reuses arm 1's IDs
-	 * on its own bus). Separate buses on purpose — 14 Damiao slots daisy-chained on
-	 * one CH1 branch would push traffic to ~7000 frames/sec at 500 Hz, right at the
-	 * ~7.7-9.3k frames/sec ceiling that already caused slot starvation at 7 (see
-	 * docs/bench-log-2026-07-10-gain-retest.md). */
-	static const uint8_t k_ids[7] = {
-		0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x07u,
+	/* Product-shaped table (25 slots): CH1×8, CH2×8, CH3×3, CH4–6×2 each.
+	 * motor_id unique per bus (reuse across buses). Override via CFG SET. */
+	static const struct {
+		uint8_t bus;
+		uint8_t count;
+	} k_layout[] = {
+		{ (uint8_t)CAN_BUS_CH1, 8u },
+		{ (uint8_t)CAN_BUS_CH2, 8u },
+		{ (uint8_t)CAN_BUS_CH3, 3u },
+		{ (uint8_t)CAN_BUS_CH4, 2u },
+		{ (uint8_t)CAN_BUS_CH5, 2u },
+		{ (uint8_t)CAN_BUS_CH6, 2u },
 	};
+	uint8_t slot = 0u;
 
-	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
-		bool arm2 = (i >= 7u);
-		actuator_table[i] = (actuator_config_t){
-			.bus = arm2 ? CAN_BUS_CH2 : CAN_BUS_CH1,
-			.protocol = PROTO_DAMIAO,
-			.motor_id = k_ids[arm2 ? (i - 7u) : i],
-			.master_id = DM_MASTER_ID_AUTO,
-			.enabled = true,
+	for (uint8_t g = 0u; g < (uint8_t)(sizeof(k_layout) / sizeof(k_layout[0])); g++) {
+		for (uint8_t n = 0u; n < k_layout[g].count && slot < ACTUATOR_COUNT; n++) {
+			actuator_table[slot] = (actuator_config_t){
+				.bus = (can_bus_id_t)k_layout[g].bus,
+				.protocol = PROTO_ROBSTRIDE,
+				.motor_id = (uint32_t)(0x01u + n),
+				.master_id = 0u,
+				.enabled = true,
+			};
+			slot++;
+		}
+	}
+	for (; slot < ACTUATOR_COUNT; slot++) {
+		actuator_table[slot] = (actuator_config_t){
+			.bus = CAN_BUS_CH1,
+			.protocol = PROTO_NONE,
+			.motor_id = 0u,
+			.master_id = 0u,
+			.enabled = false,
 		};
 	}
 }

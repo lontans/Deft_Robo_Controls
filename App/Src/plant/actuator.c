@@ -185,6 +185,8 @@ void actuator_apply_desire(void)
 			commanded_buses |= (1u << (unsigned)actuator_table[i].bus);
 	}
 
+	robstride_plant_tick_begin();
+
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		const actuator_desire_t *desire;
 		can_bus_id_t bus;
@@ -226,6 +228,9 @@ void actuator_apply_desire(void)
 		if (plugin_pack_tx(&actuator_table[i], desire, &tx) == PLUGIN_OK)
 			(void)can_tx_enqueue(bus, &tx);
 	}
+
+	/* One prepare_tx + flush per MCP bus that enqueued this tick. */
+	robstride_mcp_flush_pending();
 
 	for (can_bus_id_t bus = 0; bus < CAN_BACKEND_COUNT; bus++) {
 		if ((poll_buses & (1u << (unsigned)bus)) != 0u)

@@ -1,12 +1,9 @@
-"""Lean COM5 timing probe: blank vs MCP hold — fb_hz, ack_lag, lap_ms.
+"""Plant hold matrix: fb_hz, ack_lag, lap_ms across bus groups.
 
-Run from scripts/ after flashing the plant MCP non-block fix:
+Product CFG (25 slots): CH1x8, CH2x8, CH3x3, CH4-6x2 each.
+
+  cd scripts
   python _tmp_mcp_timing_probe.py --port COM5
-
-Success criteria:
-  blank:   ack_lag max ~0, raw fb_hz hundreds+
-  mcp x1:  ack_lag max ~0..2, fb_hz not collapsed to ~2
-  mcp x3:  ack_lag not climbing to 29+; LEDs keep updating
 """
 from __future__ import annotations
 
@@ -15,13 +12,25 @@ import statistics
 import sys
 import time
 from collections import deque
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, ".")
 
 from deft_controls_sdk import ActuatorDesire, ControlsPcbHub
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT
 from deft_controls_sdk.link.exchange.parse import parse_feedback_header
+
+PROTO_ROBSTRIDE = 1
+
+# (schematic_bus, count) — matches plant_config_load_factory_defaults().
+PRODUCT_LAYOUT: Tuple[Tuple[int, int], ...] = (
+    (1, 8),
+    (2, 8),
+    (3, 3),
+    (4, 2),
+    (5, 2),
+    (6, 2),
+)
 
 
 def _pct(xs: List[float], p: float) -> Optional[float]:
@@ -46,6 +55,79 @@ def _drain_latest(hub: ControlsPcbHub):
     return raw
 
 
+def _row_bus_en_proto_mid(row) -> Tuple[int, bool, int, int]:
+    if isinstance(row, dict):
+        return (
+            int(row.get("bus", 0)),
+            bool(row.get("enabled", True)),
+            int(row.get("protocol", 0)),
+            int(row.get("motor_id", 0)),
+        )
+    return (
+        int(getattr(row, "bus", 0)),
+        bool(getattr(row, "enabled", True)),
+        int(getattr(row, "protocol", 0)),
+        int(getattr(row, "motor_id", 0)),
+    )
+
+
+def _expected_product_rows() -> List[Tuple[int, bool, int, int]]:
+    """(bus, enabled, protocol, motor_id) per slot."""
+    rows: List[Tuple[int, bool, int, int]] = []
+    for bus, count in PRODUCT_LAYOUT:
+        for n in range(count):
+            rows.append((bus, True, PROTO_ROBSTRIDE, 0x01 + n))
+    while len(rows) < ACTUATOR_COUNT:
+        rows.append((1, False, PROTO_ROBSTRIDE, 1))
+    return rows
+
+
+def table_by_bus(table: List) -> Dict[int, List[int]]:
+    by_bus: Dict[int, List[int]] = {b: [] for b in range(1, 7)}
+    for slot, row in enumerate(table):
+        bus, enabled, _proto, _mid = _row_bus_en_proto_mid(row)
+        if enabled and 1 <= bus <= 6:
+            by_bus[bus].append(slot)
+    return by_bus
+
+
+def ensure_product_cfg(hub: ControlsPcbHub, *, force: bool = False) -> Dict[int, List[int]]:
+    """Use flash/RAM table if it already matches product layout; else CFG SET."""
+    table = hub.debug.cfg_get_table()
+    expect = _expected_product_rows()
+    matches = (
+        len(table) >= ACTUATOR_COUNT
+        and all(
+            _row_bus_en_proto_mid(table[i]) == expect[i] for i in range(ACTUATOR_COUNT)
+        )
+    )
+    if matches and not force:
+        print(f"CFG already matches product layout ({ACTUATOR_COUNT} slots) — skip SET")
+    else:
+        if len(table) < ACTUATOR_COUNT:
+            print(
+                f"CFG has {len(table)} slots (need {ACTUATOR_COUNT}) — applying product layout"
+            )
+        else:
+            print("CFG differs from product layout — applying RAM SET")
+        for slot, (bus, enabled, proto, mid) in enumerate(expect):
+            hub.debug.cfg_set_slot(
+                slot=slot,
+                bus=bus,
+                protocol=proto,
+                motor_id=mid,
+                enabled=enabled,
+                persist=False,
+            )
+        table = hub.debug.cfg_get_table()
+
+    by_bus = table_by_bus(table)
+    print(f"CFG total_slots={len(table)} (expect {ACTUATOR_COUNT})")
+    for b in range(1, 7):
+        print(f"  CH{b}: {len(by_bus[b])} slots -> {by_bus[b]}")
+    return by_bus
+
+
 def measure(
     hub: ControlsPcbHub,
     label: str,
@@ -64,26 +146,19 @@ def measure(
     reader = _conn(hub).reader
     tf0 = reader.total_frames
 
-    fb_times: Deque[float] = deque()
     ack_lags: List[int] = []
     lap_ms: List[int] = []
     lap_max: List[int] = []
     ticks_pend: List[int] = []
     ticks_svc: List[int] = []
-    tx_gaps: List[float] = []
     send_ms: List[float] = []
-    last_tx: Optional[float] = None
     last_ack: Optional[int] = None
     last_sent: Optional[int] = None
     pdu_tags: Dict[str, int] = {}
 
     while time.perf_counter() < t_end:
         raw = _drain_latest(hub)
-        now = time.perf_counter()
         if raw is not None:
-            fb_times.append(now)
-            while fb_times and (now - fb_times[0]) > 1.0:
-                fb_times.popleft()
             hdr = parse_feedback_header(raw)
             if hdr:
                 tag = str(hdr.get("pdu_tag", "?"))
@@ -108,10 +183,6 @@ def measure(
         send_ms.append((time.perf_counter() - t0) * 1000.0)
         sent = _conn(hub)._last_sent_seq  # noqa: SLF001
         last_sent = (sent & 0xFF) if sent is not None else None
-        now_tx = time.perf_counter()
-        if last_tx is not None:
-            tx_gaps.append((now_tx - last_tx) * 1000.0)
-        last_tx = now_tx
 
         next_t += dt
         sleep_for = next_t - time.perf_counter()
@@ -124,107 +195,108 @@ def measure(
     while _drain_latest(hub) is not None:
         pass
 
-    wall = seconds
     raw_fb = reader.total_frames - tf0
-    raw_fb_hz = raw_fb / wall if wall > 0 else None
+    raw_fb_hz = raw_fb / seconds if seconds > 0 else None
 
     def istat(xs: List[int]) -> str:
         if not xs:
             return "n/a"
         return (
             f"n={len(xs)} mean={statistics.mean(xs):.1f} "
-            f"p50={_pct([float(x) for x in xs], 50):.0f} "
             f"p95={_pct([float(x) for x in xs], 95):.0f} max={max(xs)}"
         )
 
-    def fstat(xs: List[float]) -> str:
-        if not xs:
-            return "n/a"
-        return (
-            f"n={len(xs)} mean={statistics.mean(xs):.1f} "
-            f"p95={_pct(xs, 95):.1f} max={max(xs):.1f}"
-        )
-
     print(f"\n=== {label} ===")
-    print(f"  desires: { {k: (v.position, v.kp, v.kd) for k, v in desires.items()} }")
-    print(f"  raw_fb_hz~{raw_fb_hz:.1f}" if raw_fb_hz is not None else "  raw_fb_hz=n/a",
-          f"  frames={raw_fb}")
+    print(f"  held_slots={len(desires)}  ids={sorted(desires.keys())}")
+    print(
+        f"  raw_fb_hz~{raw_fb_hz:.1f}" if raw_fb_hz is not None else "  raw_fb_hz=n/a",
+        f"  frames={raw_fb}",
+    )
     print(f"  ack_lag: {istat(ack_lags)}")
     print(f"  lap_ms:  {istat(lap_ms)}")
     print(f"  lap_max: {istat(lap_max)}")
     print(f"  ticks_pending: {istat(ticks_pend)}")
     print(f"  ticks_svc:     {istat(ticks_svc)}")
-    print(f"  send_ms: {fstat(send_ms)}")
-    print(f"  tx_gap:  {fstat(tx_gaps)}")
     print(f"  pdu_tags: {pdu_tags}")
-    print(f"  last_sent={last_sent} last_ack={last_ack}")
 
     ok_lag = (not ack_lags) or (max(ack_lags) <= 2)
-    print(f"  PASS_ack_lag<={2}: {ok_lag}")
+    fb_ok = raw_fb_hz is not None and raw_fb_hz >= 20.0
+    print(f"  PASS_ack_lag<=2: {ok_lag}  PASS_fb_hz>=20: {fb_ok}")
     return {
         "label": label,
+        "n_slots": len(desires),
         "raw_fb_hz": raw_fb_hz,
         "ack_lag_max": max(ack_lags) if ack_lags else None,
-        "ok": ok_lag,
+        "ok_lag": ok_lag,
+        "ok_fb": fb_ok,
     }
 
 
-def find_mcp_slots(hub: ControlsPcbHub) -> List[Tuple[int, int, int]]:
-    out: List[Tuple[int, int, int]] = []
-    try:
-        table = hub.debug.cfg_get_table()
-    except Exception as exc:
-        print(f"CFG get failed ({exc}); assuming slots 3,4,5 are MCP")
-        return [(3, 4, 0), (4, 5, 0), (5, 6, 0)]
-
-    for slot, row in enumerate(table):
-        if isinstance(row, dict):
-            enabled = row.get("enabled", True)
-            bus = int(row.get("bus", 0))
-            mid = int(row.get("motor_id", 0))
-        else:
-            enabled = getattr(row, "enabled", True)
-            bus = int(getattr(row, "bus", 0))
-            mid = int(getattr(row, "motor_id", 0))
-        if enabled and 4 <= bus <= 6:
-            out.append((slot, bus, mid))
+def slots_for(by_bus: Dict[int, List[int]], buses: Sequence[int]) -> List[int]:
+    out: List[int] = []
+    for b in buses:
+        out.extend(by_bus[b])
     return out
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="COM5")
-    ap.add_argument("--seconds", type=float, default=4.0)
+    ap.add_argument("--seconds", type=float, default=3.0)
     ap.add_argument("--hz", type=float, default=40.0)
+    ap.add_argument(
+        "--force-cfg",
+        action="store_true",
+        help="Always CFG SET product layout (default: skip if table already matches)",
+    )
     args = ap.parse_args()
 
-    print(f"Opening {args.port} ...")
-    results = []
-    with ControlsPcbHub.connect(args.port, persist_telemetry=False) as hub:
-        mcp = find_mcp_slots(hub)
-        print(f"MCP candidates: {mcp}")
-        if not mcp:
-            print("No MCP slots found — abort")
-            return 2
+    hold = ActuatorDesire(position=0.01, velocity=0.0, kp=2.0, kd=0.5, torque=0.0)
+    results: List[dict] = []
 
-        results.append(measure(hub, "0_blank_all", {}, seconds=2.0, hz=args.hz))
-        s0 = mcp[0][0]
-        hold = ActuatorDesire(position=1e-6, velocity=0.0, kp=6.0, kd=0.5, torque=0.0)
-        results.append(
-            measure(hub, f"1_single_mcp_slot{s0}", {s0: hold}, seconds=args.seconds, hz=args.hz)
-        )
-        if len(mcp) >= 3:
-            triple = {mcp[i][0]: hold for i in range(3)}
-            results.append(measure(hub, "2_triple_mcp", triple, seconds=args.seconds, hz=args.hz))
-        results.append(measure(hub, "3_blank_after", {}, seconds=2.0, hz=args.hz))
+    print(f"Opening {args.port} ... ACTUATOR_COUNT={ACTUATOR_COUNT}")
+    with ControlsPcbHub.connect(args.port, persist_telemetry=False) as hub:
+        by_bus = ensure_product_cfg(hub, force=args.force_cfg)
+
+        def desire_map(*buses: int) -> Dict[int, ActuatorDesire]:
+            return {s: hold for s in slots_for(by_bus, buses)}
+
+        phases = [
+            ("0_blank", {}),
+            ("1_CH1_x8", desire_map(1)),
+            ("2_CH2_x8", desire_map(2)),
+            ("3_CH3_x3", desire_map(3)),
+            ("4_CH1-3_fdcan", desire_map(1, 2, 3)),
+            ("5_CH4-6_mcp", desire_map(4, 5, 6)),
+            ("6_all_CH1-6_x25", desire_map(1, 2, 3, 4, 5, 6)),
+            ("7_CH4_x2", desire_map(4)),
+            ("8_blank_after", {}),
+        ]
+
+        for label, desires in phases:
+            sec = 2.0 if "blank" in label else args.seconds
+            results.append(measure(hub, label, desires, seconds=sec, hz=args.hz))
 
         for slot in range(ACTUATOR_COUNT):
             hub.set_actuator(slot, ActuatorDesire(), send=False)
         hub.send_once()
 
-    mcp_ok = all(r["ok"] for r in results if "mcp" in r["label"])
-    print("\nOVERALL MCP ack_lag OK:" , mcp_ok)
-    return 0 if mcp_ok else 1
+    print("\n=== SUMMARY ===")
+    all_lag_ok = True
+    for r in results:
+        fb = r["raw_fb_hz"]
+        fb_s = f"{fb:.0f}" if fb is not None else "n/a"
+        lag = r["ack_lag_max"]
+        lag_s = str(lag) if lag is not None else "n/a"
+        print(
+            f"  {r['label']:18s}  n={r['n_slots']:2d}  fb_hz={fb_s:>5s}  "
+            f"ack_lag_max={lag_s:>3s}  lag_ok={r['ok_lag']}  fb_ok={r['ok_fb']}"
+        )
+        if not r["ok_lag"]:
+            all_lag_ok = False
+
+    print(f"\nOVERALL ack_lag OK: {all_lag_ok}")
+    return 0 if all_lag_ok else 1
 
 
 if __name__ == "__main__":

@@ -757,6 +757,31 @@ static void robstride_interp_desire(uint8_t slot,
 		out->velocity = v_impl;
 }
 
+/* MCP MIT decimation: plant 500 Hz / 4 = 125 Hz per slot, staggered by slot. */
+#define RS02_MCP_APPLY_DIV 4u
+
+static uint32_t s_robstride_plant_tick;
+static uint32_t s_mcp_flush_buses;
+
+void robstride_plant_tick_begin(void)
+{
+	s_robstride_plant_tick++;
+	s_mcp_flush_buses = 0u;
+}
+
+void robstride_mcp_flush_pending(void)
+{
+	for (can_bus_id_t bus = CAN_BUS_CH4; bus <= CAN_BUS_CH6; bus++) {
+		if ((s_mcp_flush_buses & (1u << (unsigned)bus)) == 0u)
+			continue;
+		mcp2518_prepare_tx(bus);
+		/* One try_send per bus per apply — second flush mostly hit TXQ busy
+		 * and kicked another config reclaim (SPI) without helping throughput. */
+		(void)spi_can_router_tx_flush(bus);
+	}
+	s_mcp_flush_buses = 0u;
+}
+
 void robstride_apply_cycle(const actuator_config_t *cfg,
                            const actuator_desire_t *desire,
                            actuator_state_t *state_out)
@@ -797,7 +822,7 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 		robstride_interp_desire(slot, desire, &work);
 	else
 		work = *desire;
-	/* MCP: 1 immediate MIT per 500 Hz tick (even spacing); FDCAN: 3× enqueue + HW FIFO. */
+	/* MCP: 1 MIT when decimated-in; FDCAN: 3× enqueue + HW FIFO. */
 	tx_burst = mcp ? 1u : 3u;
 
 	if (idle) {
@@ -820,24 +845,21 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 		return;
 	}
 
+	/* Enable maintain keeps its own ms cadence even on decimated-out ticks. */
 	robstride_maintain_enable(cfg, desire, &last_maintain_ms[slot]);
+
+	if (mcp && ((s_robstride_plant_tick + (uint32_t)slot) % RS02_MCP_APPLY_DIV) != 0u)
+		return;
 
 	for (uint8_t i = 0; i < tx_burst; i++) {
 		if (plugin_pack_tx(cfg, &work, &frame) != PLUGIN_OK)
 			continue;
 		(void)can_tx_enqueue(bus, &frame);
+		if (mcp)
+			s_mcp_flush_buses |= (1u << (unsigned)bus);
 	}
 
-	if (mcp) {
-		/* Non-blocking plant MIT — probe_tx/send waits up to 50 ms and with
-		 * CONTROL_TICK_BURST_MAX=8 that pegs lap≈320 ms / pend=255. Enable
-		 * still uses probe_tx once in maintain_enable. */
-		mcp2518_prepare_tx(bus);
-		for (uint8_t n = 0; n < 2u; n++) {
-			if (spi_can_router_tx_flush(bus) != CAN_OK)
-				break;
-		}
-	}
+	/* MCP SPI flush coalesced in robstride_mcp_flush_pending() after all slots. */
 
 	if (!mcp) {
 		uint32_t now = HAL_GetTick();

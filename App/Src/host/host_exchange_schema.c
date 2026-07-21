@@ -13,6 +13,7 @@ _Static_assert(sizeof(host_pdu_command_t)       == 32u, "pdu cmd");
 _Static_assert(sizeof(host_pdu_feedback_t)      == 32u, "pdu fb");
 
 _Static_assert(HOST_EXCHANGE_ACTUATOR_SLOTS == 25u, "slot count");
+/* plant/actuator.h: ACTUATOR_COUNT == HOST_EXCHANGE_ACTUATOR_SLOTS */
 _Static_assert(HOST_ACTUATOR_CMD_BYTES == 500u, "actuator cmd block");
 _Static_assert(HOST_ACTUATOR_FB_BYTES  == 500u, "actuator fb block");
 _Static_assert(HOST_ACTUATOR_CMD_BYTES == HOST_ACTUATOR_FB_BYTES,

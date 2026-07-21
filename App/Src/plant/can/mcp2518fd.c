@@ -106,8 +106,13 @@
 	(((uint32_t)(brp) << 24) | ((uint32_t)(tseg1) << 16) | \
 	 ((uint32_t)(tseg2) << 8) | (uint32_t)(sjw))
 
-/* TXQ: PLSIZE=0 (8 B), FSIZE=0 (1 slot), TXEN=1. */
-#define MCP_TXQ_1X8      ((0u << 29) | (0u << 24) | FIFO_TXEN)
+/* CiTXQCON.TXAT[1:0] @ bits 22:21 (DS20006027) — only honored when CiCON.RTXAT=1. */
+#define FIFO_TXAT_DISABLE (0u << 21) /* one attempt; NACK/err → TXATIF, TXREQ clr */
+#define FIFO_TXAT_THREE   (1u << 21)
+#define FIFO_TXAT_UNLIMITED (3u << 21)
+
+/* TXQ: PLSIZE=0 (8 B), FSIZE=0 (1 slot), TXEN=1, TXAT=disable (plant fire-and-forget). */
+#define MCP_TXQ_1X8      ((0u << 29) | (0u << 24) | FIFO_TXAT_DISABLE | FIFO_TXEN)
 /* RX FIFO1 @ CiFIFOCON(0)/0x05C: 4×8 B receive-only (MCP channel 1). */
 #define MCP_RX_FIFO_4X8  ((0u << 29) | (3u << 24))
 
@@ -123,6 +128,8 @@ typedef struct {
 	uint8_t tx_ok;
 	uint8_t tx_fail;
 	uint8_t tx_nack;
+	uint8_t try_ok;
+	uint8_t try_busy;
 	mcp2518_init_diag_t init_diag;
 } mcp2518_dev_t;
 
@@ -137,6 +144,10 @@ static mcp2518_dev_t g_dev[MCP2518_RAIL_COUNT];
 static bool mcp_read_buf(mcp2518_dev_t *d, uint16_t addr, uint8_t *out, uint16_t len);
 static void mcp_read_trec(mcp2518_dev_t *d, uint8_t *tec, uint8_t *rec);
 static bool mcp_trec_read(mcp2518_dev_t *d, uint8_t *tec, uint8_t *rec);
+static bool mcp_txq_has_space(mcp2518_dev_t *d);
+static void mcp_config_txq(mcp2518_dev_t *d);
+static void mcp_config_c1con_classic(mcp2518_dev_t *d);
+static void mcp_txq_clear_atif(mcp2518_dev_t *d);
 
 /* -------------------------------------------------------------------------- */
 /* Low-level SPI                                                              */
@@ -440,9 +451,120 @@ static void mcp_txq_hard_reset(mcp2518_dev_t *d)
 {
 	if (mcp_enter_config(d)) {
 		mcp_config_txq(d);
+		mcp_config_c1con_classic(d);
 		(void)mcp_enter_normal_can20(d);
 	}
 	mcp_txq_clear_atif(d);
+}
+
+/* Non-blocking TXQ free for plant (no HAL_Delay). Spreads
+ * ABAT → config → FRESET → normal across try_send calls. */
+typedef enum {
+	MCP_TXQ_RST_IDLE = 0,
+	MCP_TXQ_RST_WAIT_ABORT,
+	MCP_TXQ_RST_WAIT_CFG,
+	MCP_TXQ_RST_WAIT_NORMAL,
+} mcp_txq_rst_t;
+
+static mcp_txq_rst_t s_txq_rst[MCP2518_RAIL_COUNT];
+
+static void mcp_reqop_nowait(mcp2518_dev_t *d, uint8_t reqop)
+{
+	uint32_t con = mcp_read32(d, REG_C1CON);
+
+	con &= ~C1CON_REQOP_MASK;
+	con |= C1CON_REQOP(reqop);
+	mcp_write32(d, REG_C1CON, con);
+}
+
+/* Cap config reclaim starts — UINC/ABAT first; FRESET when still busy.
+ * ~20 ms keeps LED strobe (~50 Hz try_ok/rail) without pegging all-25 laps. */
+#define MCP_TXQ_CFG_RESET_MIN_MS 20u
+
+static uint32_t s_txq_rst_last_ms[MCP2518_RAIL_COUNT];
+
+static void mcp_txq_reset_kick(mcp2518_dev_t *d)
+{
+	uint8_t rail = (uint8_t)(d - &g_dev[0]);
+	uint32_t now;
+
+	if (rail >= MCP2518_RAIL_COUNT)
+		return;
+	if (s_txq_rst[rail] != MCP_TXQ_RST_IDLE)
+		return;
+
+	now = HAL_GetTick();
+	if (s_txq_rst_last_ms[rail] != 0u &&
+	    (now - s_txq_rst_last_ms[rail]) < MCP_TXQ_CFG_RESET_MIN_MS)
+		return;
+	s_txq_rst_last_ms[rail] = (now == 0u) ? 1u : now;
+
+	{
+		uint32_t con = mcp_read32(d, REG_C1CON);
+
+		con |= C1CON_ABAT;
+		mcp_write32(d, REG_C1CON, con);
+	}
+	/* Wait for TXREQ clear before REQOP CFG — chip ignores CFG mid-TX. */
+	s_txq_rst[rail] = MCP_TXQ_RST_WAIT_ABORT;
+}
+
+/* Returns true when TXQ is usable for a new load. */
+static bool mcp_txq_reset_poll(mcp2518_dev_t *d)
+{
+	uint8_t rail = (uint8_t)(d - &g_dev[0]);
+	uint8_t con_b1 = 0u;
+
+	if (rail >= MCP2518_RAIL_COUNT)
+		return false;
+
+	switch (s_txq_rst[rail]) {
+	case MCP_TXQ_RST_IDLE:
+		return mcp_txq_has_space(d);
+
+	case MCP_TXQ_RST_WAIT_ABORT:
+		(void)mcp_read_buf(d, (uint16_t)(REG_C1TXQCON + 1u), &con_b1, 1u);
+		if ((con_b1 & TXQ_CON_TXREQ) != 0u) {
+			uint32_t con = mcp_read32(d, REG_C1CON);
+
+			mcp_write32(d, REG_C1CON, con | C1CON_ABAT);
+			return false;
+		}
+		mcp_reqop_nowait(d, C1CON_OPMOD_CFG);
+		s_txq_rst[rail] = MCP_TXQ_RST_WAIT_CFG;
+		return false;
+
+	case MCP_TXQ_RST_WAIT_CFG:
+		if (mcp_opmod_read(d) != C1CON_OPMOD_CFG) {
+			mcp_reqop_nowait(d, C1CON_OPMOD_CFG);
+			return false;
+		}
+		mcp_enable_txq(d);
+		mcp_config_txq(d);
+		mcp_config_c1con_classic(d);
+		mcp_reqop_nowait(d, C1CON_OPMOD_CAN20);
+		s_txq_rst[rail] = MCP_TXQ_RST_WAIT_NORMAL;
+		return false;
+
+	case MCP_TXQ_RST_WAIT_NORMAL:
+		if (mcp_opmod_read(d) != C1CON_OPMOD_CAN20) {
+			mcp_reqop_nowait(d, C1CON_OPMOD_CAN20);
+			return false;
+		}
+		{
+			uint32_t con = mcp_read32(d, REG_C1CON);
+
+			if ((con & C1CON_ABAT) != 0u)
+				mcp_write32(d, REG_C1CON, con & ~C1CON_ABAT);
+		}
+		mcp_txq_clear_atif(d);
+		s_txq_rst[rail] = MCP_TXQ_RST_IDLE;
+		return mcp_txq_has_space(d);
+
+	default:
+		s_txq_rst[rail] = MCP_TXQ_RST_IDLE;
+		return false;
+	}
 }
 
 static void mcp_txq_release_after_tx(mcp2518_dev_t *d)
@@ -587,6 +709,98 @@ static void mcp_txq_force_ready(mcp2518_dev_t *d)
 		return;
 
 	mcp_txq_release_after_tx(d);
+}
+
+/*
+ * Plant-safe TXQ housekeeping (no HAL_Delay).
+ *
+ * Primary: TXREQ clear + object still present → UINC (one-shot / ABAT done).
+ * If TXREQ sticks ≥1 ms → ABAT; after abort, UINC. Config FRESET last resort.
+ */
+static void mcp_txq_service_nonblock(mcp2518_dev_t *d)
+{
+	static uint32_t s_busy_since_ms[MCP2518_RAIL_COUNT];
+	static bool s_aborting[MCP2518_RAIL_COUNT];
+	uint8_t rail = (uint8_t)(d - &g_dev[0]);
+	uint8_t sta = 0u;
+	uint8_t con_b1 = 0u;
+	uint8_t txatif = 0u;
+	uint32_t now;
+	bool txreq;
+	bool attempt_done;
+
+	if (rail >= MCP2518_RAIL_COUNT)
+		return;
+
+	if (s_txq_rst[rail] != MCP_TXQ_RST_IDLE) {
+		(void)mcp_txq_reset_poll(d);
+		return;
+	}
+
+	if (!mcp_read_buf(d, REG_C1TXQSTA, &sta, 1u))
+		return;
+
+	if ((sta & TXQ_STA_TXQEIF) != 0u) {
+		s_busy_since_ms[rail] = 0u;
+		s_aborting[rail] = false;
+		{
+			uint32_t con = mcp_read32(d, REG_C1CON);
+
+			if ((con & C1CON_ABAT) != 0u)
+				mcp_write32(d, REG_C1CON, con & ~C1CON_ABAT);
+		}
+		return;
+	}
+
+	(void)mcp_read_buf(d, (uint16_t)(REG_C1TXQCON + 1u), &con_b1, 1u);
+	(void)mcp_read_buf(d, REG_C1TXATIF, &txatif, 1u);
+
+	txreq = (con_b1 & TXQ_CON_TXREQ) != 0u;
+	attempt_done = ((sta & TXQ_STA_TXATIF) != 0u) ||
+	               ((txatif & 0x01u) != 0u) ||
+	               ((sta & TXQ_STA_TXABT) != 0u) ||
+	               ((sta & TXQ_STA_TXERR) != 0u);
+
+	now = HAL_GetTick();
+	if (s_busy_since_ms[rail] == 0u)
+		s_busy_since_ms[rail] = (now == 0u) ? 1u : now;
+
+	/* Completion flags → UINC now. Orphaned (!TXREQ, still full) after ≥1 ms
+	 * so we do not race a same-tick load whose TXREQ has not latched yet. */
+	if (attempt_done ||
+	    (!txreq && (now - s_busy_since_ms[rail]) >= 1u)) {
+		mcp_txq_uinc(d);
+		mcp_txq_clear_atif(d);
+		s_busy_since_ms[rail] = 0u;
+		s_aborting[rail] = false;
+		{
+			uint32_t con = mcp_read32(d, REG_C1CON);
+
+			if ((con & C1CON_ABAT) != 0u)
+				mcp_write32(d, REG_C1CON, con & ~C1CON_ABAT);
+		}
+		return;
+	}
+
+	if (!txreq)
+		return; /* same-ms post-load; wait for TXREQ or next tick orphan UINC */
+
+	/* Mid-TXREQ (empty bus / no ACK): ABAT, then UINC on next service. */
+	if (!s_aborting[rail] && (now - s_busy_since_ms[rail]) >= 1u) {
+		uint32_t con = mcp_read32(d, REG_C1CON);
+
+		mcp_write32(d, REG_C1CON, con | C1CON_ABAT);
+		s_aborting[rail] = true;
+		return;
+	}
+
+	/* ABAT did not clear TXREQ — rate-limited config reclaim. */
+	if (s_aborting[rail] && (now - s_busy_since_ms[rail]) >= 5u) {
+		mcp_txq_reset_kick(d);
+		(void)mcp_txq_reset_poll(d);
+		s_busy_since_ms[rail] = 0u;
+		s_aborting[rail] = false;
+	}
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1010,9 +1224,10 @@ static bool mcp_rail_init_hw(mcp2518_dev_t *d)
 		/* Non-fatal for bench — continue to real bus. */
 	}
 
-	/* Re-apply TXQ/RX after loopback returned to config. */
+	/* Re-apply TXQ/RX + RTXAT after loopback returned to config. */
 	mcp_enable_txq(d);
 	mcp_config_txq(d);
+	mcp_config_c1con_classic(d); /* RTXAT must stick — else TXAT=disable is ignored */
 	mcp_config_rx_fifo(d);
 	mcp_config_filters_accept_all(d);
 	mcp_config_iocon(d);
@@ -1189,27 +1404,36 @@ bool mcp2518_try_send(can_bus_id_t bus, const can_frame_t *frame)
 		return false;
 
 	/*
-	 * Plant 500 Hz path — must never HAL_Delay.
-	 * mcp_txq_force_ready()/mcp_recover_bus_off() spin with HAL_Delay(1) and
-	 * were still reachable here; under non-blank MCP that stretched app_run
-	 * laps to ~250 ms+ (USB FB ~4 Hz, LED look frozen) while TIM6 kept ticking.
-	 * If TXQ is busy or bus-off, fail soft; rate-limited recover lives in
-	 * mcp2518_prepare_tx(). Probes use mcp2518_send().
+	 * Plant fire-and-forget. Prefer UINC/ABAT; if the 1-deep TXQ is still
+	 * full (empty-bus / no-ACK), advance non-blocking config FRESET so the
+	 * latest frame can load — same "keep emitting" behavior as FDCAN.
+	 * TEC is not read every try (SPI cost); bus-off handled in prepare_tx.
 	 */
-	uint8_t tec = 0u;
+	if (s_txq_rst[rail] != MCP_TXQ_RST_IDLE) {
+		if (!mcp_txq_reset_poll(d)) {
+			d->try_busy++;
+			return false;
+		}
+	} else {
+		mcp_txq_service_nonblock(d);
+	}
 
-	mcp_read_trec(d, &tec, NULL);
-	if (tec >= 128u)
+	if (!mcp_txq_has_space(d)) {
+		mcp_txq_reset_kick(d);
+		(void)mcp_txq_reset_poll(d);
+		if (!mcp_txq_has_space(d)) {
+			d->try_busy++;
+			return false;
+		}
+	}
+
+	if (!mcp_hw_txq_load(d, frame)) {
+		d->try_busy++;
 		return false;
+	}
 
-	if (!mcp_txq_has_space(d))
-		return false;
-
-	if (!mcp_hw_txq_load(d, frame))
-		return false;
-
-	if (d->tx_ok < 0xFFu)
-		d->tx_ok++;
+	d->tx_ok++;
+	d->try_ok++;
 	can_router_mark_traffic(bus);
 	return true;
 }
@@ -1280,8 +1504,6 @@ void mcp2518_reset_tx_stats(can_bus_id_t bus)
 
 void mcp2518_prepare_tx(can_bus_id_t bus)
 {
-	static uint32_t s_last_busoff_recover_ms[MCP2518_RAIL_COUNT];
-
 	if (bus < CAN_BUS_CH4)
 		return;
 
@@ -1295,19 +1517,14 @@ void mcp2518_prepare_tx(can_bus_id_t bus)
 
 	mcp_read_trec(d, &tec, NULL);
 	if (tec >= 128u) {
-		/* At most one blocking recover per rail per 100 ms — not every plant tick. */
-		uint32_t now = HAL_GetTick();
-
-		if (s_last_busoff_recover_ms[rail] == 0u ||
-		    (now - s_last_busoff_recover_ms[rail]) >= 100u) {
-			s_last_busoff_recover_ms[rail] = now;
-			(void)mcp_recover_bus_off(d);
-		}
+		/* Non-blocking config reclaim — avoid HAL_Delay recover on plant path. */
+		mcp_txq_reset_kick(d);
+		(void)mcp_txq_reset_poll(d);
 		return;
 	}
 
-	/* Cheap W1C only. Do not force_ready() here — that can HAL_Delay up to ~32 ms. */
-	mcp_txq_clear_atif(d);
+	/* Drain finished/stuck attempt (UINC on TXATIF). No ATIF W1C without UINC. */
+	mcp_txq_service_nonblock(d);
 }
 
 void mcp2518_get_tx_stats(uint8_t rail, uint8_t *tx_ok, uint8_t *tx_fail, uint8_t *tx_nack)
@@ -1321,6 +1538,25 @@ void mcp2518_get_tx_stats(uint8_t rail, uint8_t *tx_ok, uint8_t *tx_fail, uint8_
 		*tx_fail = g_dev[rail].tx_fail;
 	if (tx_nack != NULL)
 		*tx_nack = g_dev[rail].tx_nack;
+}
+
+void mcp2518_get_try_send_counts(uint8_t rail, uint8_t *ok, uint8_t *busy)
+{
+	if (rail >= MCP2518_RAIL_COUNT)
+		return;
+
+	if (ok != NULL)
+		*ok = g_dev[rail].try_ok;
+	if (busy != NULL)
+		*busy = g_dev[rail].try_busy;
+}
+
+void mcp2518_reset_try_send_counts(void)
+{
+	for (uint8_t r = 0; r < MCP2518_RAIL_COUNT; r++) {
+		g_dev[r].try_ok = 0u;
+		g_dev[r].try_busy = 0u;
+	}
 }
 
 void mcp2518_rail_trec(uint8_t rail, uint8_t *tec, uint8_t *rec)

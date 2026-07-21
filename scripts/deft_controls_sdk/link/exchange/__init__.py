@@ -57,6 +57,7 @@ from .parse import (
     parse_actuator_feedback,
     parse_feedback_header,
     parse_svd_plant_timing,
+    parse_thermo_led_debug,
 )
 from .transport import (
     FrameReader,
@@ -140,6 +141,7 @@ __all__ = [
     "parse_feedback_header",
     "parse_probe_pdu",
     "parse_svd_plant_timing",
+    "parse_thermo_led_debug",
     "patch_actuator_desire",
     "patch_system_mcu_state",
     "probe_kind_matches",

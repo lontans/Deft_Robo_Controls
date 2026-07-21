@@ -1,4 +1,6 @@
 #include "plant/plant_timing.h"
+#include "plant/can/can_router.h"
+#include "plant/can/mcp2518fd.h"
 #include "main.h"
 #include <string.h>
 
@@ -60,11 +62,36 @@ void plant_timing_svd_fill(host_pdu_feedback_t *pdu)
 
 void plant_timing_thermo_fill(host_pdu_feedback_t *pdu)
 {
+	uint8_t mark[CAN_BACKEND_COUNT];
+	uint8_t toggle[CAN_BACKEND_COUNT];
+	uint8_t try_ok = 0u;
+	uint8_t try_busy = 0u;
+
 	if (pdu == NULL)
 		return;
 	if (pdu->data[0] != (uint8_t)'t')
 		return;
 
-	/* Thermo payload uses 0..15; 16..21 carry the same 6 timing bytes as SVD. */
+	/* Thermo payload uses 0..15; 16..21 carry the same 6 timing bytes as SVD.
+	 * 22..31: MCP ACT LED / try_send debug (wrap 255):
+	 *   22..24  mark_count[CH4..CH6]
+	 *   25..27  toggle_count[CH4..CH6]
+	 *   28..30  try_ok[CH4..CH6]
+	 *   31      try_busy[CH4] (hold CH4 alone; CH5/6 ≈ stalled Δmark/Δtry_ok)
+	 * mark is +2 per successful plant try_send (driver + spi_backend). */
 	plant_timing_pack6(&pdu->data[16]);
+
+	can_router_led_debug_counts(mark, toggle);
+	pdu->data[22] = mark[CAN_BUS_CH4];
+	pdu->data[23] = mark[CAN_BUS_CH5];
+	pdu->data[24] = mark[CAN_BUS_CH6];
+	pdu->data[25] = toggle[CAN_BUS_CH4];
+	pdu->data[26] = toggle[CAN_BUS_CH5];
+	pdu->data[27] = toggle[CAN_BUS_CH6];
+	for (uint8_t r = 0; r < 3u; r++) {
+		mcp2518_get_try_send_counts(r, &try_ok, &try_busy);
+		pdu->data[28u + r] = try_ok;
+	}
+	mcp2518_get_try_send_counts(0u, &try_ok, &try_busy);
+	pdu->data[31] = try_busy;
 }

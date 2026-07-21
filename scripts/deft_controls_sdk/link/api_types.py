@@ -48,10 +48,9 @@ IDLE = ActuatorDesire()
 def validate_slot(slot: int) -> None:
     if not (0 <= slot < ACTUATOR_COUNT):
         raise InvalidSlotError(
-            f"slot must be 0..{ACTUATOR_COUNT - 1} (firmware ACTUATOR_COUNT); got {slot}. "
-            f"The wire image carries {HOST_EXCHANGE_ACTUATOR_SLOTS} actuator slots but "
-            f"actuator_command_mount() only reads the first {ACTUATOR_COUNT} — the rest "
-            f"are dead on the wire."
+            f"slot must be 0..{ACTUATOR_COUNT - 1} "
+            f"(ACTUATOR_COUNT={ACTUATOR_COUNT}, wire={HOST_EXCHANGE_ACTUATOR_SLOTS}); "
+            f"got {slot}."
         )
 
 
