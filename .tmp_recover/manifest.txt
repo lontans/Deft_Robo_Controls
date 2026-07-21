@@ -1,0 +1,42 @@
+﻿Recovery source commit: 2a35cfe17652bd5bab52ff4196d631bfc31811df
+Alias: HEAD / 2a35cfe
+Context: Jul 20 consolidation shortened docs/bringup.md in the working tree only (uncommitted). Postmortem and notes were deleted in WT. Long versions still present at HEAD, so no older commit needed.
+
+bringup_old.md
+  git_path: docs/bringup.md
+  commit: 2a35cfe17652bd5bab52ff4196d631bfc31811df
+  approx_lines: 316
+  bytes: 26703
+
+ch4-mcp2518-bringup-postmortem.md
+  git_path: docs/ch4-mcp2518-bringup-postmortem.md
+  commit: 2a35cfe17652bd5bab52ff4196d631bfc31811df
+  approx_lines: 133
+  bytes: 7954
+
+ch4-mcp2518-bringup-notes.txt
+  git_path: docs/ch4-mcp2518-bringup-notes.txt
+  commit: 2a35cfe17652bd5bab52ff4196d631bfc31811df
+  approx_lines: 155
+  bytes: 9506
+
+free_rtos-bringup.md
+  git_path: docs/free_rtos-bringup.md
+  commit: 2a35cfe17652bd5bab52ff4196d631bfc31811df
+  approx_lines: 266
+  bytes: 18878
+
+handoff-plant-superloop-regression.md
+  git_path: docs/handoff-plant-superloop-regression.md
+  commit: 2a35cfe17652bd5bab52ff4196d631bfc31811df
+  approx_lines: 21
+  bytes: 1471
+
+known-issues.md
+  git_path: docs/known-issues.md
+  commit: 2a35cfe17652bd5bab52ff4196d631bfc31811df
+  approx_lines: 95
+  bytes: 10174
+
+Primary targets: bringup_old.md, ch4-mcp2518-bringup-postmortem.md, ch4-mcp2518-bringup-notes.txt
+Extra related (MCP2518/CH4 mentions, also deleted or at risk in WT): free_rtos-bringup.md, handoff-plant-superloop-regression.md, known-issues.md

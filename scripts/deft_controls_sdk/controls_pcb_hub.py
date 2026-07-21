@@ -1,0 +1,144 @@
+"""ControlsPcbHub — the one import surface for software.
+
+    from deft_controls_sdk import ControlsPcbHub
+
+    with ControlsPcbHub.connect("COM5") as hub:
+        hub.start_streaming()
+        print(hub.telemetry.snapshot())
+
+    with ControlsPcbHub.connect("COM5") as hub:
+        with hub.debug.lease(bus=2):
+            hit = hub.debug.discover_robstride(bus=2)
+
+Owns COM via link.Connection. Publishes TelemetryCache for scripts and
+debug_dashboard. Never imports debug_dashboard.
+
+hub.debug.* is DEBUG mode — see deft_controls_sdk/bench/ and
+docs/architecture.md#host-api-modes. It borrows this same Connection under a
+lease (tagged-pdu bench PDU) rather than opening a second serial port; plant
+apply may be gated (plant_block=BENCH_SESSION) while a lease is held.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Optional, Union
+
+from deft_controls_sdk.bench import DebugAPI
+from deft_controls_sdk.link import ActuatorDesire, Connection, McuState
+from deft_controls_sdk.link.exchange import DEFAULT_BAUD
+from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
+
+
+class ControlsPcbHub:
+    def __init__(self, connection: Connection, telemetry: TelemetryCache) -> None:
+        self._connection = connection
+        self._telemetry = telemetry
+        self._debug = DebugAPI(connection, telemetry)
+
+    @classmethod
+    def connect(
+        cls,
+        port: str,
+        *,
+        baud: int = DEFAULT_BAUD,
+        session_dir: Optional[Union[str, os.PathLike[str]]] = None,
+        persist_telemetry: bool = False,
+        telemetry: Optional[TelemetryCache] = None,
+    ) -> "ControlsPcbHub":
+        """Connect and attach telemetry.
+
+        ``persist_telemetry`` defaults **False** — scripts do not rewrite
+        ``state.json`` unless asked. The dashboard passes ``True`` (or its own
+        cache) for the live UI mirror. Accurate logs are opt-in via
+        ``hub.telemetry.start_recording()`` / ``hub.log_feedback()``.
+
+        Pass an existing ``telemetry`` to keep fault history across reconnects
+        (see debug_dashboard AppState).
+        """
+        connection = Connection.connect(port, baud=baud)
+        if telemetry is None:
+            telemetry = TelemetryCache(session_dir=session_dir or default_session_dir(), persist=persist_telemetry)
+        connection.attach_telemetry(telemetry)
+        return cls(connection, telemetry)
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def __enter__(self) -> "ControlsPcbHub":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    @property
+    def telemetry(self) -> TelemetryCache:
+        return self._telemetry
+
+    @property
+    def debug(self) -> DebugAPI:
+        """DEBUG mode: discover / calibrate / config, under a bench lease.
+        See deft_controls_sdk/bench/README or DebugAPI's docstring."""
+        return self._debug
+
+    @property
+    def port(self) -> str:
+        return self._connection.port
+
+    @property
+    def state_path(self) -> Path:
+        return self.telemetry.state_path
+
+    def start_streaming(self, hz: float = 40.0, *, telemetry_hz: float = 10.0) -> None:
+        """Background plant stream — keeps HOST_STALE clear and feeds telemetry.
+
+        Plant TX runs at ``hz`` on its own thread (send→sleep, legacy-shaped).
+        TelemetryCache / UI publish runs on a *side* thread at ``telemetry_hz``
+        so dashboard disk/json cannot stretch plant TX gaps.
+        """
+        self._connection.start_streaming(hz=hz, telemetry_hz=telemetry_hz)
+
+    def log_feedback(self, raw: Optional[bytes] = None, *, include_raw: bool = True) -> None:
+        """Append one compact feedback record to an open recording (opt-in).
+
+        If ``raw`` is omitted, uses the latest feedback image held by the
+        connection (from the plant stream). No-op unless
+        ``telemetry.start_recording()`` was called.
+        """
+        if raw is None:
+            raw = self._connection._latest_fb_raw
+        if raw is None:
+            return
+        self._telemetry.log_feedback(raw, include_raw=include_raw)
+
+    def stop_streaming(self) -> None:
+        self._connection.stop_streaming()
+
+    def recover(self) -> None:
+        self._connection.recover()
+
+    def set_actuator(self, slot: int, desire: ActuatorDesire, *, send: bool = True) -> None:
+        self._connection.set_actuator(slot, desire, send=send)
+
+    def held_desire(self, slot: int) -> Optional[ActuatorDesire]:
+        """Currently-held desire for one slot — what the background stream is
+        actually resending, not just what the last set_actuator() call asked
+        for (a controller UI needs this to show *commanded* state distinctly
+        from measured feedback and from an unapplied input box)."""
+        return self._connection.held_desire(slot)
+
+    def held_desires(self) -> dict:
+        return self._connection.held_desires()
+
+    @property
+    def is_streaming(self) -> bool:
+        return self._connection.is_streaming
+
+    def send_once(self) -> None:
+        self._connection.send_once()
+        fb = self._connection.poll_feedback()
+        if fb is not None:
+            self._connection.publish_feedback(fb)
+
+    def set_mcu_state(self, state: McuState, *, send: bool = True) -> None:
+        self._connection.set_mcu_state(state, send=send)

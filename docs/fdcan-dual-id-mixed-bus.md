@@ -1,6 +1,6 @@
 # FDCAN dual ID-type (11-bit + 29-bit) on one physical bus
 
-**Status (Jul 2026):** Implemented and bench-verified. CH1 + CH3 run `FDCAN_RX_STD_AND_EXT`; CH2 remains ext-only. Plant teleop with Damiao (std) + RobStride (ext) on the same harness works; `lap≈0–1 ms` with three FDCAN motors including one mixed daisy on CH1. See §0 for the as-built FIFO / filter / demux model. Historical agent prompt and design notes follow for context.
+**Status (Jul 2026):** Implemented and bench-verified. **CH1, CH2, and CH3** use mixed std+ext when Damiao (std) and RobStride (ext) may share a branch. Older notes that said “CH2 remains ext-only” are **obsolete** (dual-arm Damiao on CH2 required mixed filters). Short summary: [lessons.md](lessons.md). Detailed FIFO / filter / demux model follows.
 
 ---
 
@@ -173,7 +173,7 @@ Deliverables:
    firmware path works; allow --plant-teleop --plant-slots with mixed protocols on
    different buses AND same bus (after fan-out).
 5. Unit-style firmware tests if feasible; otherwise document bench commands in spec.
-6. Update docs/known-issues.md or bringup.md with mixed-bus bringup notes.
+6. Update docs/lessons.md / bringup.md with mixed-bus bringup notes.
 
 Constraints:
 - Minimize scope: classic CAN only (FDCAN_FRAME_CLASSIC), no CAN-FD changes.
@@ -583,9 +583,9 @@ Pass criteria:
 
 | Doc | Update |
 |-----|--------|
-| `docs/bringup.md` | New subsection: mixed std/ext on CH3, config examples |
-| `docs/known-issues.md` | Remove or soften “CH3 = Damiao only” if fixed; note bitrate / termination |
-| `docs/fdcan-plant-teleop.md` | Cross-link mixed-bus spec |
+| `docs/bringup.md` | Dual-arm map; mixed std/ext on CH1–CH3 |
+| `docs/lessons.md` | Mixed-bus + bitrate / termination lessons |
+| `docs/fdcan-dual-id-mixed-bus.md` | This spec (as-built §0) |
 
 ---
 

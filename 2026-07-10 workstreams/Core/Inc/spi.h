@@ -36,7 +36,10 @@ extern SPI_HandleTypeDef hspi1;
 
 extern SPI_HandleTypeDef hspi3;
 
-/* 2026-07-10 workstreams: MAX31855 thermocouple (half-duplex, MOSI-as-RX
+/* SUPERSEDED — do not merge. Live thermo support uses hspi3 (shared role
+ * with SK9822), not a dedicated hspi4. See Core/Src/spi.c in this folder
+ * and ../../README.md.
+ * 2026-07-10 workstreams: MAX31855 thermocouple (half-duplex, MOSI-as-RX
  * since the MW BA017 breakout only exposes SO, not a separate MISO). SPI2
  * vs SPI4 and the exact SCK/CS pins are unconfirmed — see thermo.h's
  * THERMO_SPI_* placeholders before merging this into Core/. */

@@ -13,6 +13,63 @@ Two execution contexts share data through **staging buffers** — no malloc on t
 
 The host publishes **desire** commands at its own rate (hold-last-command). The plant runs at 500 Hz independently.
 
+## Host API modes
+
+One physical link (USB CDC or UART), one 562 B cyclic frame in each direction — but two jobs share it: soft-realtime plant control and bench diagnostics. App code should choose a **mode**, never a `pdu` tag directly. See Host API modes below and [bringup.md](bringup.md).
+
+| Mode | Wire behavior (today, under the hood) | Host API surface |
+|------|----------------------------------------|------------------|
+| **PLANT** | Cyclic 562 B, `pdu=0`, stream ~30–100 Hz | Top-level hub: `set_actuator`, `start_streaming`, `recover`, … |
+| **DEBUG** | Same link, tagged PDU / diag sessions; plant apply gated | `hub.debug.*` (exclusive lease) |
+| **HEALTH** | Derived from feedback system word + link metrics | Feedback / status fields (no separate `hub.health` yet) |
+| **LOG** | Host-side events / snapshots — `state.json` + NDJSON fault/manual recording (`telemetry/recorder.py`) | `hub.telemetry.start_recording()` / `stop_recording()`, auto on fault |
+
+```mermaid
+flowchart TB
+  subgraph apps["App layer"]
+    Teleop["Teleop / AI joint"]
+    Bench["Discover / Cal / CFG"]
+    UI["Viewer TUI/GUI"]
+    Log["Logger / black box"]
+  end
+
+  subgraph api["ControlsPcbHub API"]
+    Plant["set_actuator / stream / recover"]
+    Debug["debug.*"]
+    Telemetry["telemetry.*"]
+    Lease["single writer lease"]
+  end
+
+  subgraph link["Link owner — process or future hubd"]
+    Mux["Mode: PLANT | DEBUG"]
+    Ser["USB CDC / UART"]
+  end
+
+  subgraph mcu["MCU"]
+    PlantPath["500 Hz plant apply"]
+    DiagPath["plant_diag / CFG / probes"]
+    Gates["plant_block gates"]
+  end
+
+  Teleop --> Plant
+  Bench --> Debug
+  UI --> Telemetry
+  Log --> Telemetry
+  Plant --> Lease
+  Debug --> Lease
+  Lease --> Mux
+  Mux -->|PLANT frames pdu=0| Ser
+  Mux -->|DEBUG frames tagged pdu| Ser
+  Ser --> PlantPath
+  Ser --> DiagPath
+  DiagPath --> Gates
+  Gates --> PlantPath
+```
+
+`scripts/deft_controls_sdk/ControlsPcbHub` is the live host API — plant control is **top-level** (`set_actuator`, `start_streaming`, `recover`, …); there is no `hub.plant` namespace. `hub.debug` is a bench lease (`deft_controls_sdk/bench/`) for discover/CFG. `hub.telemetry` reads the shared feedback cache (`TelemetryCache` → `state.json`). RobStride/Damiao discover are ported (fabricated-frame tests); RS02 calibrate is not ported yet (`scripts/deft_controls_sdk/README.md`). `python -m deft_controls_sdk.debug_dashboard` opens a `ControlsPcbHub` from the browser and becomes the sole COM owner on Connect. Until a future `hubd` mux exists, **one process owns COM** — do not open a second dashboard or legacy CLI against the same port. Frozen predecessors live under `scripts/legacy/`.
+
+**Legacy tangle** (what this replaces as the primary story): *teleop / dashboard / CLI / plugins → all open COM → same 562 B → pdu tag?* — every app had to know wire/pdu details to pick a mode. The mode table + diagram above is the target story; `docs/host-exchange-v1.md` remains the byte-level source of truth underneath it.
+
 ## Plant runtime gates (firmware)
 
 `plant_runtime.c` is the single gate for the 500 Hz actuator path:
@@ -37,31 +94,31 @@ Host: `controls_pcb_host status` shows `plant_block=…`. Plugins call `bench_yi
 
 ## Host stack (Python)
 
-Canonical package: **`scripts/control_hub/`** (entry: `python scripts/control_hub.py`).
+Canonical package: **`scripts/deft_controls_sdk/`** (`from deft_controls_sdk import ControlsPcbHub`).
 
 | Layer | Role |
 |-------|------|
-| `control_hub/protocol/rs02.py` | RS02 datasheet comm types, params, ext_id decode |
-| `control_hub/rs02/calibrate.py` | Encoder cal sequence (comm 0x04→0x702D→0x05→0x06→0x16) |
-| `control_hub/teleop/plant.py` | 500 Hz plant teleop (`actuator_commands[]`, no RS2 PDU) |
-| `control_hub/link.py` | USB heal / release between bench and plant modes |
-| `controls_pcb_host/` | Wire image builders, `PcbSession`, CLI, Damiao/DXL plugins |
+| `ControlsPcbHub` | Sole COM owner; plant methods + `debug` + `telemetry` |
+| `link/` | USB/UART exchange, image encode/decode |
+| `bench/` | Discover / CFG / probe lease (`hub.debug`) |
+| `telemetry/` | Feedback cache, `state.json`, fault/manual NDJSON |
+| `debug_dashboard` | Browser UI that owns a hub session |
 
-`controls_pcb_host.py` and `control_hub.py` are equivalent entrypoints. Legacy scripts (`host_teleop_laptop_usb.py`, `rs02_can_scan.py`) remain for expert `--bench-cmds` / MCP smoke; new work goes through `control_hub`.
+Legacy teleop/joint CLI: `scripts/legacy/` (`PYTHONPATH=legacy;.`). See [bringup.md](bringup.md).
 
-See [fdcan-plant-teleop.md](fdcan-plant-teleop.md) for FDCAN RS02 teleop workflow and tuning flags.
+## PLANT vs DEBUG modes (firmware detail)
 
-## Dual host paths (firmware)
+How the two [Host API modes](#host-api-modes) above are actually realized on the wire today — `pdu` tags are the DEBUG transport's implementation detail, not something app code should key off directly.
 
 | Path | Trigger | MCU behavior | Host |
 |------|---------|--------------|------|
-| **Plant teleop** | `pdu` all zero (no RS2/DM tag) | `actuator_command_mount` → 500 Hz `actuator_apply_desire` on **all** `ACTUATOR_COUNT` slots | `control_hub teleop` |
-| **RS2 PDU bench** | `pdu.data[0..2] = 'R','S','2'` | `plant_diag_on_command` — blocking probes, cal, session; **skips** 500 Hz CAN while session active | `control_hub calibrate`, `controls_pcb_host probe` |
-| **DM0 PDU bench** | `pdu.data[0..2] = 'D','M','0'` + `DIAG_ONLY` | `plant_diag_on_dm_command` — Damiao probe on selected bus | `controls_pcb_host` Damiao plugins |
+| **PLANT** | `pdu` all zero (no RS2/DM tag) | `actuator_command_mount` → 500 Hz `actuator_apply_desire` on **all** `ACTUATOR_COUNT` slots | Hub plant methods, legacy `control_hub teleop` |
+| **DEBUG — RS2 PDU bench** | `pdu.data[0..2] = 'R','S','2'` | `plant_diag_on_command` — blocking probes, cal, session; **skips** 500 Hz CAN while session active | `hub.debug.*`, legacy calibrate/probe |
+| **DEBUG — DM0 PDU bench** | `pdu.data[0..2] = 'D','M','0'` + `DIAG_ONLY` | `plant_diag_on_dm_command` — Damiao probe on selected bus | `hub.debug.discover_damiao`, legacy Damiao plugins |
 
 RS2 ctrl probes (`PROBE_CTRL_FAST`, etc.) may mount `actuator_commands[0]` desires. Cal / pararead / session kinds do **not** mount desires.
 
-**Bus routing:** `pdu.data[11]` = schematic branch `1` (CH1) … `6` (CH6). FDCAN: CH1→`hfdcan1`, CH2→`hfdcan3`, CH3→`hfdcan2`. CH4–6: MCP2518 SPI-CAN (unchanged bringup — see `docs/ch4-mcp2518-bringup-postmortem.md`).
+**Bus routing:** `pdu.data[11]` = schematic branch `1` (CH1) … `6` (CH6). FDCAN: CH1→`hfdcan1`, CH2→`hfdcan3`, CH3→`hfdcan2`. CH4–6: MCP2518 SPI-CAN — see [lessons.md](lessons.md).
 
 ## Naming (command / feedback)
 
@@ -72,7 +129,9 @@ RS2 ctrl probes (`PROBE_CTRL_FAST`, etc.) may mount `actuator_commands[0]` desir
 | Actuator | `actuator_command_mount` | `actuator_feedback_snapshot` |
 | TIM6 | `actuator_apply_desire` | `actuator_capture_state` |
 
-## Data flow
+## Data flow (MCU staging detail)
+
+Lower-level realization of the `Mux`/`Ser`/`PlantPath`/`DiagPath`/`Gates` boxes in the [Host API modes](#host-api-modes) diagram above — same story, buffer-level detail.
 
 ```mermaid
 flowchart LR
@@ -89,8 +148,8 @@ flowchart LR
   end
 
   subgraph staging["Staging RAM"]
-    DS["actuator_desire_stage[6]"]
-    SS["actuator_state_stage[6]"]
+    DS["actuator_desire_stage[14]"]
+    SS["actuator_state_stage[14]"]
   end
 
   subgraph tim6["TIM6 500 Hz"]
@@ -114,14 +173,14 @@ flowchart LR
 | Buffer | Size / type | Writer | Reader | Notes |
 |--------|-------------|--------|--------|-------|
 | Wire command image | 562 B | Host | `host_link` | Magic + layout v1 |
-| `actuator_desire_stage[]` | 6 × command | Main | TIM6 `actuator_apply_desire` | `actuator_desire_pending` |
+| `actuator_desire_stage[]` | 14 × command | Main | TIM6 `actuator_apply_desire` | `actuator_desire_pending` |
 | `actuator_desire_live[]` | Plant RAM | TIM6 | plugin `apply_cycle` | Hold-last between host updates |
 | `actuator_state_live[]` | Plant RAM | Plugins / CAN parse | TIM6 `actuator_capture_state` | Per-motor feedback |
-| `actuator_state_stage[]` | 6 × feedback | TIM6 | `host_feedback_image_fetch` | Snapshot for host |
+| `actuator_state_stage[]` | 14 × feedback | TIM6 | `host_feedback_image_fetch` | Snapshot for host |
 | Wire feedback image | 562 B | `host_link` | Host | Magic + tick + ack seq |
 | CAN RX rings | 128 frames / bus | ISR | `can_router_poll` | Drop-oldest on overflow |
 
-**Wire vs plant:** Exchange structs define **25 actuator slots** on the wire. Firmware uses `ACTUATOR_COUNT` (**6**) ≤ `HOST_EXCHANGE_ACTUATOR_SLOTS`. Slots 0–5 map to `plant_config.c` (host mirror: `controls_pcb_host/actuator_config.py`).
+**Wire vs plant:** Exchange structs define **25 actuator slots** on the wire. Firmware uses `ACTUATOR_COUNT` (**14**, dual YAM) ≤ `HOST_EXCHANGE_ACTUATOR_SLOTS`. Slots 0–6 map to arm1 (CH1), 7–13 to arm2 (CH2) in `plant_config.c`.
 
 ## Module map
 
@@ -133,9 +192,8 @@ App/
   plant/                       config, actuator, control_loop, plant_diag, can/, plugins/
 
 scripts/
-  control_hub/                 RS02 cal, plant teleop, protocol
-  controls_pcb_host/           session, CLI, wire builders, plugins
-  control_hub.py                 unified CLI entry
+  deft_controls_sdk/           Preferred host API (ControlsPcbHub)
+  legacy/                      Frozen teleop / CLI / old packages
 ```
 
 | Module | Role | Key files |
@@ -143,7 +201,7 @@ scripts/
 | `plant_diag` | RS2/DM/DXL bench dispatch, MCP smoke/wake (CH4–6 only) | `App/Src/plant/plant_diag.c` |
 | `robstride` | RS02 extended-frame protocol + `robstride_probe_id` | `App/Src/plant/plugins/robstride.c` |
 | `mcp2518fd` / `spi_can_router` | SPI-CAN rails — **do not reorder init priority** | `App/Src/plant/can/` |
-| `plant_config` | Six-actuator table | `App/Src/plant/plant_config.c` |
+| `plant_config` | Actuator table (`ACTUATOR_COUNT=14`, dual YAM) | `App/Src/plant/plant_config.c` |
 
 `plant_diag.h` probe kinds `0–19` alias `robstride.h` (`RS02_PROBE_*`). MCP-only kinds `20–22` stay in `plant_diag.h`.
 
@@ -151,10 +209,10 @@ scripts/
 
 | `can_bus_id_t` | MCU peripheral | Pins | Typical slot (see `plant_config.c`) |
 |----------------|----------------|------|-------------------------------------|
-| `CAN_BUS_CH1` | FDCAN1 | PB8 / PB9 | RS02 `0x76` |
-| `CAN_BUS_CH2` | FDCAN3 | PA8 / PA15 | RS02 `0x70` |
-| `CAN_BUS_CH3` | FDCAN2 | PB12 / PB13 | Damiao |
-| `CAN_BUS_CH4`–`CH6` | MCP2518 | PB11 / PB1 / PA4 | RS02 bench |
+| `CAN_BUS_CH1` | FDCAN1 | PB8 / PB9 | Dual-arm Damiao slots 0–6; RS02 also OK |
+| `CAN_BUS_CH2` | FDCAN3 | PA8 / PA15 | Dual-arm Damiao slots 7–13; RS02 also OK |
+| `CAN_BUS_CH3` | FDCAN2 | PB12 / PB13 | Mixed / spare (historical Damiao bench) |
+| `CAN_BUS_CH4`–`CH6` | MCP2518 | PB11 / PB1 / PA4 | SPI-CAN bench |
 
 ## RS02 encoder cal (datasheet)
 
@@ -189,9 +247,47 @@ On each TIM6 period:
 - Plant teleop: idle **kp=0 kd=0** (backdrivable); RS2 teleop via PDU uses separate path.
 - RS2 teleop exit does **not** call `RECOVERY` (avoids all-bus reset / LED flood). Damiao teleop may use `RECOVERY` on exit.
 
+## Wire contracts: current vs target
+
+| | Current (shipped) | Target (implement later) |
+|--|-------------------|--------------------------|
+| USB host image | **562 B**, [host-exchange-v1.md](host-exchange-v1.md) | **672 B** — see [decisions.md](decisions.md) ADR-001 |
+| System block | 4 B (health partly via USB `pdu` / SVD) | **32 B** dedicated health + soft-kill mirror |
+| Actuator slot | 20 B | **22 B** (20 MIT + 2 B meta; fb = identity, cmd = reserved zeros) |
+| USB `pdb[]` | none | **64 B** power-board mirror for host |
+| Plant USB debug mailbox | 32 B tagged `pdu` | Unused on PLANT path; DEBUG via lease / separate path |
+| Controls ↔ PDB UART | (TBD / not in tree) | **64 B** frames; soft-kill in-band; hard ESTOP = active-low wire |
+| Host stream rate | ~30–50 Hz typical | ~30 Hz product loop; USB FS has headroom at 672 B |
+
+**Do not change v1 offsets in place.** When implementing, bump `layout_version`, add `host-exchange-v2.md`, and update firmware + `deft_controls_sdk` together.
+
+### Target USB image (672 B)
+
+```text
+header       12
+system       32
+actuators   550   (25 × 22)
+servos       12
+leds          2
+pdb          64
+───────────────
+total       672
+```
+
+Three-layer power path: **host ↔ controls (USB) ↔ PDB (UART + ESTOP wire)**. Soft-kill is staged on UART/status so actuators can reach a safe pose under power before the controls board asserts hard ESTOP.
+
+Full decision text, kill-state intent, USB bandwidth notes, and implementation checklist: **[decisions.md](decisions.md)**.
+
+## Deferred (other host API — document only)
+
+1. **`hubd`**: sole COM owner as a standalone process; WebSocket/`/state` for UI; writer lease in code; JSON/NDJSON as log sink, not control plane.
+2. **DEBUG** as a distinct message type/magic (vs tagged USB `pdu` forever).
+3. Telemetry log *selectors* (filter fields/rate); fault/recording ring already exists under `.deft_session/`.
+
 ## Related docs
 
-- [host-exchange-v1.md](host-exchange-v1.md) — byte layout, PDU RS2 fields
-- [bringup.md](bringup.md) — flash, motor map, scripts
-- [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md) — SPI-CAN constraints
-- [known-issues.md](known-issues.md) — bench backlog
+- [decisions.md](decisions.md) — ADR-001 host 672 B + PDB UART 64 B
+- [bringup.md](bringup.md) — current how-to (SDK + dual-arm)
+- [lessons.md](lessons.md) — open bugs + durable bring-up lessons
+- [host-exchange-v1.md](host-exchange-v1.md) — **current** 562 B layout
+- [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md) — mixed std/ext FDCAN detail

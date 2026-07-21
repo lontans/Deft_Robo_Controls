@@ -36,6 +36,16 @@ void plant_timing_note_pending_at_lap(uint8_t pending)
 	s_pending_at_lap_start = pending;
 }
 
+static void plant_timing_pack6(uint8_t *dst)
+{
+	dst[0] = (uint8_t)(s_lap_delta_ms & 0xFFu);
+	dst[1] = (uint8_t)((s_lap_delta_ms >> 8) & 0xFFu);
+	dst[2] = s_ticks_serviced_lap;
+	dst[3] = s_pending_at_lap_start;
+	dst[4] = (uint8_t)(s_lap_max_ms & 0xFFu);
+	dst[5] = (uint8_t)((s_lap_max_ms >> 8) & 0xFFu);
+}
+
 void plant_timing_svd_fill(host_pdu_feedback_t *pdu)
 {
 	if (pdu == NULL)
@@ -45,10 +55,16 @@ void plant_timing_svd_fill(host_pdu_feedback_t *pdu)
 	    pdu->data[2] != (uint8_t)'D')
 		return;
 
-	pdu->data[23] = (uint8_t)(s_lap_delta_ms & 0xFFu);
-	pdu->data[24] = (uint8_t)((s_lap_delta_ms >> 8) & 0xFFu);
-	pdu->data[25] = s_ticks_serviced_lap;
-	pdu->data[26] = s_pending_at_lap_start;
-	pdu->data[27] = (uint8_t)(s_lap_max_ms & 0xFFu);
-	pdu->data[28] = (uint8_t)((s_lap_max_ms >> 8) & 0xFFu);
+	plant_timing_pack6(&pdu->data[23]);
+}
+
+void plant_timing_thermo_fill(host_pdu_feedback_t *pdu)
+{
+	if (pdu == NULL)
+		return;
+	if (pdu->data[0] != (uint8_t)'t')
+		return;
+
+	/* Thermo payload uses 0..15; 16..21 carry the same 6 timing bytes as SVD. */
+	plant_timing_pack6(&pdu->data[16]);
 }

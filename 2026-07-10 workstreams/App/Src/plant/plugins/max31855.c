@@ -1,3 +1,4 @@
+/* SUPERSEDED — do not merge. See max31855.h in this workstream folder. */
 #include "plant/plugins/max31855.h"
 
 static void cs_assert(GPIO_TypeDef *port, uint16_t pin)

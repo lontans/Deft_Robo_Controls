@@ -1,6 +1,7 @@
 #include "plant/thermo.h"
 #include "plant/plugins/max31855.h"
 #include "plant/spi3_role.h"
+#include "plant/plant_timing.h"
 #include "spi.h"
 #include "main.h"
 #include <string.h>
@@ -80,4 +81,5 @@ void thermo_feedback_fill(host_pdu_feedback_t *pdu)
 	memcpy(&pdu->data[4], &s_last_reading.thermocouple_c, sizeof(float));
 	memcpy(&pdu->data[8], &s_last_reading.cold_junction_c, sizeof(float));
 	memcpy(&pdu->data[12], &age_ms, sizeof(uint32_t));
+	plant_timing_thermo_fill(pdu);
 }

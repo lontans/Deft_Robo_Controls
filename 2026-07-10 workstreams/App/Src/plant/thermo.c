@@ -1,3 +1,6 @@
+/* SUPERSEDED — do not merge. See thermo.h in this same folder for why;
+ * the live App/Src/plant/thermo.c uses SPI3 (shared with SK9822 via
+ * spi3_role) + PB7 CS, not the dedicated SPI4 this draft assumed. */
 #include "plant/thermo.h"
 #include "plant/plugins/max31855.h"
 #include "spi.h"

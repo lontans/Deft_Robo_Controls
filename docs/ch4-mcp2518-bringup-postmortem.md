@@ -200,7 +200,7 @@ MCP2518 rule: **FIFO channel 0 = TXQ**; first RX FIFO = **channel 1** @ SFR 0x05
 ## Related docs
 
 - [bringup.md](bringup.md) — flash, teleop, calibrate
-- [known-issues.md](known-issues.md) — operational quirks
+- [lessons.md](lessons.md) — operational quirks
 - [architecture.md](architecture.md) — RS2 PDU vs plant loop
 
 ## Copy-paste personal notes

@@ -11,3 +11,7 @@ Release/
 Thumbs.db
 Desktop.ini
 docs/damiao-bringup.md
+
+# deft_controls_sdk live telemetry mirror
+.deft_session/
+scripts/.deft_session/

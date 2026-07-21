@@ -1,4 +1,17 @@
 #pragma once
+/*
+ * SUPERSEDED — do not merge this file. Kept for reference only.
+ *
+ * The live tree already has a real, working App/Inc/plant/thermo.h that
+ * resolved these placeholders differently: SPI3 shared with SK9822 via
+ * spi3_role.h (exclusive role arbitration), CS on PB7, full-duplex
+ * HAL_SPI_TransmitReceive with dummy TX bytes — not the dedicated
+ * half-duplex SPI4 this draft assumed. Verified by diff 2026-07-20:
+ * plant_command.c/plant_feedback.c/app.c dispatch already wires thermo_*
+ * end to end live. Only the CubeMars-specific files in this workstream
+ * (cubemars.h/.c, plugin_table.c's cubemars_ops registration) are still
+ * unmerged and relevant — see ../../README.md.
+ */
 #include <stdint.h>
 #include <stdbool.h>
 #include "host/host_exchange_schema.h"

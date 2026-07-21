@@ -1,4 +1,7 @@
 #pragma once
+/* SUPERSEDED — do not merge. Live App/Inc/plant/plugins/max31855.h uses
+ * full-duplex HAL_SPI_TransmitReceive on shared SPI3, not this half-duplex
+ * SPI4 assumption. See ../../../plant/thermo.h in this workstream folder. */
 #include <stdint.h>
 #include <stdbool.h>
 #include "main.h"

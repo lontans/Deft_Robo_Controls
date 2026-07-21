@@ -1188,14 +1188,19 @@ bool mcp2518_try_send(can_bus_id_t bus, const can_frame_t *frame)
 	if (!d->initialized)
 		return false;
 
-	uint8_t tec_before = 0u;
+	/*
+	 * Plant 500 Hz path — must never HAL_Delay.
+	 * mcp_txq_force_ready()/mcp_recover_bus_off() spin with HAL_Delay(1) and
+	 * were still reachable here; under non-blank MCP that stretched app_run
+	 * laps to ~250 ms+ (USB FB ~4 Hz, LED look frozen) while TIM6 kept ticking.
+	 * If TXQ is busy or bus-off, fail soft; rate-limited recover lives in
+	 * mcp2518_prepare_tx(). Probes use mcp2518_send().
+	 */
+	uint8_t tec = 0u;
 
-	mcp_read_trec(d, &tec_before, NULL);
-	if (tec_before >= 128u)
-		(void)mcp_recover_bus_off(d);
-
-	mcp_txq_clear_atif(d);
-	mcp_txq_force_ready(d);
+	mcp_read_trec(d, &tec, NULL);
+	if (tec >= 128u)
+		return false;
 
 	if (!mcp_txq_has_space(d))
 		return false;
@@ -1203,8 +1208,6 @@ bool mcp2518_try_send(can_bus_id_t bus, const can_frame_t *frame)
 	if (!mcp_hw_txq_load(d, frame))
 		return false;
 
-	/* Fire-and-forget for plant 500 Hz — do not spin on TXQEIF (that was
-	 * pegging lap≈320 ms with CONTROL_TICK_BURST_MAX). Probes use mcp2518_send. */
 	if (d->tx_ok < 0xFFu)
 		d->tx_ok++;
 	can_router_mark_traffic(bus);
@@ -1277,6 +1280,8 @@ void mcp2518_reset_tx_stats(can_bus_id_t bus)
 
 void mcp2518_prepare_tx(can_bus_id_t bus)
 {
+	static uint32_t s_last_busoff_recover_ms[MCP2518_RAIL_COUNT];
+
 	if (bus < CAN_BUS_CH4)
 		return;
 
@@ -1287,12 +1292,22 @@ void mcp2518_prepare_tx(can_bus_id_t bus)
 		return;
 
 	uint8_t tec = 0u;
-	mcp_read_trec(d, &tec, NULL);
-	if (tec >= 128u)
-		(void)mcp_recover_bus_off(d);
 
+	mcp_read_trec(d, &tec, NULL);
+	if (tec >= 128u) {
+		/* At most one blocking recover per rail per 100 ms — not every plant tick. */
+		uint32_t now = HAL_GetTick();
+
+		if (s_last_busoff_recover_ms[rail] == 0u ||
+		    (now - s_last_busoff_recover_ms[rail]) >= 100u) {
+			s_last_busoff_recover_ms[rail] = now;
+			(void)mcp_recover_bus_off(d);
+		}
+		return;
+	}
+
+	/* Cheap W1C only. Do not force_ready() here — that can HAL_Delay up to ~32 ms. */
 	mcp_txq_clear_atif(d);
-	mcp_txq_force_ready(d);
 }
 
 void mcp2518_get_tx_stats(uint8_t rail, uint8_t *tx_ok, uint8_t *tx_fail, uint8_t *tx_nack)

@@ -2,7 +2,9 @@
 
 Fixed **562-byte** binary images in both directions. Same layout on USB CDC and UART; only the Linux/Windows device path differs.
 
-**Source of truth:** `App/Inc/host/host_exchange_schema.h` (C structs + `_Static_assert`), `scripts/host_teleop_laptop_usb.py`, and `scripts/rs02_can_scan.py` (Python pack/parse).
+**Target successor (not implemented):** **672 B** layout (system 32, actuators 25×22, `pdb[64]`) — see [decisions.md](decisions.md) ADR-001 and [architecture.md](architecture.md#wire-contracts-current-vs-target). Do not silently edit this v1 doc to match; ship `host-exchange-v2.md` when implementing.
+
+**Source of truth (current firmware):** `App/Inc/host/host_exchange_schema.h` (C structs + `_Static_assert`), `scripts/deft_controls_sdk/link/exchange/wire_layout.py`, and legacy mirrors under `scripts/legacy/`.
 
 ## Identifiers
 

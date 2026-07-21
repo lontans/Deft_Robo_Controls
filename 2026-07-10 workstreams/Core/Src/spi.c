@@ -22,6 +22,13 @@
 
 /* USER CODE BEGIN 0 */
 /*
+ * SUPERSEDED — do not merge this MX_SPI4_Init()/hspi4 addition. The live
+ * tree's thermocouple support rides the existing SPI3 (shared with SK9822
+ * via spi3_role.h exclusive arbitration) instead of a dedicated SPI4 — no
+ * spi.c/spi.h changes were needed there at all. Only merge the CubeMars
+ * pieces of this workstream (cubemars.h/.c, plugin_table.c) — see
+ * ../../README.md. Kept below for reference only.
+ *
  * 2026-07-10 workstreams: SPI4 added for the MAX31855 K-type thermocouple
  * (MW BA017 breakout). SPI1=MCP2518 CAN (CH4-6), SPI3=SK9822 LEDs — both
  * already claimed, so SPI4 (unconfigured/free in the live tree) was picked

@@ -586,16 +586,24 @@ static void robstride_maintain_enable(const actuator_config_t *cfg,
 
 	*last_ms = now;
 	if (robstride_set_run_mode(cfg, RS02_RUN_MODE_MOVE, &frame) == PLUGIN_OK) {
-		if (mcp)
-			(void)robstride_probe_tx(bus, &frame);
-		else
+		if (mcp) {
+			/* Non-blocking: probe_tx → mcp2518_send can wait 50 ms ×2 and freeze
+			 * the superloop/LEDs on every first Apply into a slot. */
 			(void)can_tx_enqueue(bus, &frame);
+			mcp2518_prepare_tx(bus);
+			(void)spi_can_router_tx_flush(bus);
+		} else {
+			(void)can_tx_enqueue(bus, &frame);
+		}
 	}
 	if (robstride_send_enable(cfg, &frame) == PLUGIN_OK) {
-		if (mcp)
-			(void)robstride_probe_tx(bus, &frame);
-		else
+		if (mcp) {
 			(void)can_tx_enqueue(bus, &frame);
+			mcp2518_prepare_tx(bus);
+			(void)spi_can_router_tx_flush(bus);
+		} else {
+			(void)can_tx_enqueue(bus, &frame);
+		}
 	}
 }
 
