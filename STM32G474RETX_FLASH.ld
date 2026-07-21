@@ -334,6 +334,30 @@ SECTIONS
 
 
 
+  /* Soft-DFU signature: outside the _sbss.._ebss range Reset_Handler's
+
+     LoopFillZerobss zeroes, so it survives a warm reset untouched. Written
+
+     by soft_dfu_on_command(), read by soft_dfu_check_and_jump() at the top
+
+     of main(). NOLOAD -- takes no space in the flash image, just reserves
+
+     a fixed RAM address. */
+
+  .dfu_sig (NOLOAD) :
+
+  {
+
+    . = ALIGN(4);
+
+    _sdfu_sig = .;
+
+    KEEP(*(.dfu_sig))
+
+  } >RAM
+
+
+
   /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
 
   ._user_heap_stack :

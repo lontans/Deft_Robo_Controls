@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, List, Optional, Sequence
 from . import config as _config
 from . import damiao as _damiao
 from . import robstride as _robstride
+from . import soft_dfu as _soft_dfu
 from .lease import lease
 
 if TYPE_CHECKING:
@@ -123,3 +124,11 @@ class DebugAPI:
             persist=persist,
             timeout_s=timeout_s,
         )
+
+    # -- Soft-DFU (reboot into ROM bootloader, no ST-Link needed) --------------------
+
+    def enter_bootloader(self, *, confirm: bool = False) -> None:
+        """Resets the board straight into the ROM bootloader over USB CDC —
+        see bench/soft_dfu.py and App/Inc/host/soft_dfu.h. UNVERIFIED WITHOUT
+        HARDWARE as of this writing; keep the ST-Link handy the first time."""
+        _soft_dfu.enter_bootloader(self._connection, confirm=confirm)
