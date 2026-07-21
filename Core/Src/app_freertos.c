@@ -36,6 +36,25 @@ void MX_FREERTOS_Init(void)
 		Error_Handler();
 }
 
+/* configCHECK_FOR_STACK_OVERFLOW=2 / configUSE_MALLOC_FAILED_HOOK=1
+ * (FreeRTOSConfig.h) call these on detection instead of continuing to run
+ * with a corrupted stack or a task that silently never got created. Reuse
+ * the existing fault convention (main.c Error_Handler(): disable IRQs, spin
+ * toggling PC2/PC3 at a distinct rate) rather than inventing a new one --
+ * it needs almost no stack itself, which matters here since the stack may
+ * already be the thing that's damaged. */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+	(void)xTask;
+	(void)pcTaskName;
+	Error_Handler();
+}
+
+void vApplicationMallocFailedHook(void)
+{
+	Error_Handler();
+}
+
 void ControlTask(void const *argument)
 {
 	(void)argument;

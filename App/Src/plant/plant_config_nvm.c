@@ -98,18 +98,41 @@ static PLANT_CFG_RAMFUNC void ramfunc_flash_lock(void)
 
 static PLANT_CFG_RAMFUNC bool ramfunc_flash_erase_page(uint32_t page)
 {
+	uint32_t bker;
+
 	if (!ramfunc_flash_wait_ready())
 		return false;
 
 	ramfunc_flash_cache_invalidate();
-	MODIFY_REG(FLASH->CR, FLASH_CR_PNB, (page & 0xFFu) << FLASH_CR_PNB_Pos);
+
+	/* STM32G4 FLASH_CR_PNB is only 7 bits wide (pages 0-127) -- FLASH_CR_BKER
+	 * (bit 11) supplies bit 7 of the page index. This is true regardless of
+	 * the DBANK option bit: with DBANK=1 (dual bank) BKER selects bank 0/1
+	 * and PNB is the page within that bank; with DBANK=0 (single 256-page
+	 * bank) BKER is simply the MSB of a flat 0-255 page number. Either way,
+	 * PLANT_CFG_NVM_PAGE=255 (the last page, see PLANT_CFG_NVM_ADDR above)
+	 * needs BKER=1. This was previously never set, so MODIFY_REG's mask
+	 * silently truncated page 255 -> 127 (0x807F800 -> 0x803F800): every
+	 * erase hit the wrong physical page, so the post-write verify against
+	 * PLANT_CFG_NVM_ADDR always failed and CFG SAVE always reported
+	 * PLANT_CFG_STATUS_FLASH_ERR even though the erase/program sequence
+	 * itself "succeeded" (just on the wrong page) -- matches the documented
+	 * symptom exactly (docs/lessons.md: "NVM --persist flash_err, RAM config
+	 * OK until power cycle"). Note reads are unaffected by this bug: plain
+	 * memory-mapped reads (plant_config_nvm_load(), flash_image_matches())
+	 * address the full 512 KiB linearly regardless of BKER/PNB -- only the
+	 * page-erase control operation needed it, which is why this was purely a
+	 * save-side bug and never corrupted a load. */
+	bker = (page >> 7) & 0x1u;
+	MODIFY_REG(FLASH->CR, FLASH_CR_PNB | FLASH_CR_BKER,
+	           ((page & 0x7Fu) << FLASH_CR_PNB_Pos) | (bker << FLASH_CR_BKER_Pos));
 	FLASH->CR |= FLASH_CR_PER;
 	FLASH->CR |= FLASH_CR_STRT;
 
 	if (!ramfunc_flash_wait_ready())
 		return false;
 
-	FLASH->CR &= ~(FLASH_CR_PER | FLASH_CR_PNB);
+	FLASH->CR &= ~(FLASH_CR_PER | FLASH_CR_PNB | FLASH_CR_BKER);
 	return true;
 }
 

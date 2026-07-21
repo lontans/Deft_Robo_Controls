@@ -26,15 +26,26 @@ void control_loop_init(void)
 
 void control_loop_service(void)
 {
-	uint8_t n = g_control_ticks_pending;
+	uint32_t primask;
+	uint8_t n;
+
+	/* g_control_ticks_pending is also written (increment only) from the
+	 * priority-0 TIM6 ISR (control_loop_tick()). Reading it and clearing the
+	 * serviced count with a plain "-=" is two separate accesses -- if the ISR
+	 * fires between this function's load and store, its increment would be
+	 * silently overwritten by our stale-based store. Short critical section,
+	 * same pattern already used for other main<->TIM6 shared state. */
+	primask = __get_PRIMASK();
+	__disable_irq();
+	n = g_control_ticks_pending;
+	if (n > CONTROL_TICK_BURST_MAX)
+		n = CONTROL_TICK_BURST_MAX;
+	g_control_ticks_pending -= n;
+	__set_PRIMASK(primask);
 
 	if (n == 0u)
 		return;
 
-	if (n > CONTROL_TICK_BURST_MAX)
-		n = CONTROL_TICK_BURST_MAX;
-
-	g_control_ticks_pending -= n;
 	plant_timing_note_service(n);
 
 	while (n-- > 0u) {
