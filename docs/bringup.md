@@ -8,7 +8,9 @@
 
 This file keeps **how to run** plus the **bench stories** worth not losing
 (Damiao daisy, dual-arm firmware fixes, plant-cadence regression, CH4 MCP2518FD +
-MCP2562 timeline). Full CH4 postmortem: [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md).
+MCP2562 timeline, USB FB rate on the 25-slot CH1–6 plant). Full CH4 postmortem:
+[ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md). USB FB
+matrix: §7a.
 
 ---
 
@@ -32,7 +34,8 @@ Rebuild/flash from STM32CubeIDE (Debug). PC3 ≈ 2 Hz heartbeat when the plant i
 | Arm1 | 0–6 | J1–J7 | CH1 (FDCAN1) |
 | Arm2 | 7–13 | J8–J14 | CH2 (FDCAN3) |
 
-- Firmware `ACTUATOR_COUNT=14`. Wire image still has 25 actuator slots.
+- Firmware `ACTUATOR_COUNT` matches host exchange (**25** slots today). Dual-arm
+  Damiao maps below still use slots 0–13; unused slots stay disabled in CFG.
 - Soft limits: `yam_limits.py` / `yam.xml` (J1–J6); J7 provisional. Absolute goto needs `--i-know-zeros` until encoder↔model zeros exist.
 - Nominal Damiao ESC `0x01`…`0x07`, Master `0x11`…`0x17` — **confirm with discover** before trusting CFG.
 - CH1–CH3: mixed std+ext when Damiao + RobStride share a branch. Detail: [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md).
@@ -206,6 +209,92 @@ python legacy/control_hub.py --port COM5 teleop --slot 3   # CH4 MCP — expect 
 
 ---
 
+## 7a. USB feedback rate (CH1–6 × 25) — Jul 2026
+
+Product stress case is **not** MCP alone — it is **all commanded buses sharing one
+superloop** with USB CMD/FB. Measured `raw_fb_hz` is how often the MCU finishes a
+lap and ships feedback; plant MIT can be slower than host TX.
+
+### Target CFG (factory / timing matrix)
+
+| Bus | Slots | Backend |
+|-----|-------|---------|
+| CH1 | 8 | FDCAN |
+| CH2 | 8 | FDCAN |
+| CH3 | 3 | FDCAN |
+| CH4–6 | 2 each | MCP2518 SPI-CAN |
+
+RobStride on all enabled slots. Probe skips CFG SET if the table already matches.
+
+### How to measure
+
+```powershell
+cd scripts
+# Host plant TX 40 Hz (dashboard default)
+python _tmp_mcp_timing_probe.py --port COM5 --seconds 3.0 --hz 40
+
+# Stress host TX
+python _tmp_mcp_timing_probe.py --port COM5 --seconds 3.0 --hz 200
+
+# GUI (same COM — not concurrent with the probe)
+python -m deft_controls_sdk.debug_dashboard --port COM5 --http-port 8766 --hz 40
+```
+
+Watch: `raw_fb_hz`, `ack_lag_max`, `lap_ms`, `ticks_pending`. CH4–6 ACT LEDs should
+strobe under hold (empty bus / no ACK included).
+
+### Acceptance (bench Jul 2026)
+
+| Hold | Host TX | Expect |
+|------|---------|--------|
+| CH4–6 MCP ×6 | 40 Hz | `fb_hz` ≥ 100 (typically ~600+) , `ack_lag` ≤ 2 |
+| all CH1–6 ×25 | 40 Hz | `fb_hz` ≥ 100 (typically ~600–750), pending not pegged |
+| CH1–3 FDCAN ×19 | 40 Hz | ~800–1000 Hz FB |
+| all ×25 | 200 Hz host | FB still hundreds Hz; lag max may spike (host denser than FB) |
+
+### What raised FB (stacked)
+
+| Step | Change | Effect |
+|------|--------|--------|
+| Non-blocking plant MCP TX | No `HAL_Delay` in `try_send` / prepare | Stops ~2 Hz USB starvation |
+| One-shot TXQ | `RTXAT` + `TXAT=disable` | Empty-bus attempt can finish |
+| Reclaim | UINC/ABAT first; rate-limited config FRESET if still full | LEDs keep strobing without pegging laps |
+| Coalesce MCP flush | One `prepare_tx` + flush **per rail** per apply | Cuts duplicate SPI |
+| Decimate MCP MIT | Every 4 plant ticks (~125 Hz/slot), staggered | MCP apply may be &lt; 500 Hz; host holds last |
+| Drop hot-path TEC | Bus-off in `prepare_tx` only | Less SPI per try |
+| **Heavy multi-domain** | When FDCAN **and** MCP commanded: FDCAN burst 1 + ÷2 MIT | Shrinks CH1–3 work under all-25 |
+| Stagger poll/RX | At most 3 buses serviced per plant tick (RR) | Bounds lap when 6 buses active |
+| Global MCP FRESET budget | ≥8 ms between **any** rail starting config reclaim | Stops 3 rails mode-switching together |
+
+MCP flush/reclaim still runs on every apply that enqueues. Heavy mode does **not**
+skip MCP TX — it lightens FDCAN and spreads poll/RX. Host desires update every USB
+CMD; plant holds last between decimated applies.
+
+### Rough FB history (all-25 hold, host ~40 Hz)
+
+| Era | `fb_hz` | Notes |
+|-----|---------|-------|
+| Blocking TXQ / bus-off recover | ~2 | Superloop stuck in SPI/`HAL_Delay` |
+| FRESET on every busy try | ~26–66 | TX alive; SPI mode-switch tax |
+| UINC-only (no kick) | ~500+ | FB OK; TXQ stuck → one LED blink |
+| Reclaim + coalesce + MCP decimate | ~289 | LEDs OK; all-25 still SPI-heavy |
+| + heavy FDCAN + poll stagger + global FRESET budget | **~600–750** | Product all-25 target met |
+
+MCP-alone can look **slower** than all-25 on `fb_hz`: MCP-only polls all three SPI
+rails every tick; all-25 rotates poll/RX across six buses so average MCP SPI/lap drops.
+
+### Code map
+
+| Piece | Where |
+|-------|--------|
+| TXQ service / FRESET SM | `App/Src/plant/can/mcp2518fd.c` |
+| MCP decimate + coalesce flush | `App/Src/plant/plugins/robstride.c` |
+| Heavy-load FDCAN + bus poll RR | `robstride.c`, `App/Src/plant/actuator.c` |
+| Timing matrix | `scripts/_tmp_mcp_timing_probe.py` |
+| Lap timing in thermo PDU | `plant_timing_thermo_fill` bytes 16..21 |
+
+---
+
 ## 8. CH4 MCP2518FD + MCP2562 — debug timeline (preserve)
 
 Hardware: MCP2518FD controller + **MCP2562** transceiver on SPI (CS **PB11**, INT **PB10**, ACT **PB14**). Reference path: FDCAN1 CH1. Motor: RS02 `0x70` @ 1 Mbps classic extended.
@@ -273,7 +362,7 @@ Expect `... cali listen` and shaft spin. Cold cali fail (no prior teleop) → ha
 |-------|--------|
 | PC3 blink | Plant alive |
 | CAN ACT LEDs | Traffic (MCP needs non-blank desire or probe) |
-| `cfg_get_table` / `config show` | 14 slots on dual-arm FW |
+| `cfg_get_table` / `config show` | 25 slots; dual-arm uses 0–13 enabled |
 | Damiao discover | FOUND + esc/master |
 | CH4 smoke | `tx_ok`, TEC, probe HIT (see §8) |
 

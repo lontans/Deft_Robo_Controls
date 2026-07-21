@@ -97,7 +97,8 @@ plugin_status_t robstride_send_para_write(const actuator_config_t *cfg,
 plugin_status_t robstride_send_proactive(const actuator_config_t *cfg,
                                          uint8_t enable,
                                          can_frame_t *frame_out);
-void robstride_plant_tick_begin(void);
+/* commanded_buses: bit N set ⇒ schematic CH(N+1) has a non-blank hold this tick. */
+void robstride_plant_tick_begin(uint32_t commanded_buses);
 void robstride_apply_cycle(const actuator_config_t *cfg,
                            const actuator_desire_t *desire,
                            actuator_state_t *state_out);

@@ -103,9 +103,6 @@ void mcp2518_drain_rx(can_bus_id_t bus);
 void mcp2518_poll_rx(can_bus_id_t bus);
 void mcp2518_get_tx_stats(uint8_t rail, uint8_t *tx_ok, uint8_t *tx_fail, uint8_t *tx_nack);
 void mcp2518_reset_tx_stats(can_bus_id_t bus);
-/* Plant try_send path: ok vs no-space/bus-off/tec (wrap 255). */
-void mcp2518_get_try_send_counts(uint8_t rail, uint8_t *ok, uint8_t *busy);
-void mcp2518_reset_try_send_counts(void);
 void mcp2518_prepare_tx(can_bus_id_t bus);
 void mcp2518_rail_trec(uint8_t rail, uint8_t *tec, uint8_t *rec);
 bool mcp2518_recover_bus(can_bus_id_t bus);

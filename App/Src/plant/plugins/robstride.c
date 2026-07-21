@@ -757,29 +757,37 @@ static void robstride_interp_desire(uint8_t slot,
 		out->velocity = v_impl;
 }
 
-/* MCP MIT decimation: plant 500 Hz / 4 = 125 Hz per slot, staggered by slot. */
+/* MCP MIT: plant 500 Hz / N ≈ 125 Hz per slot, staggered by slot index. */
 #define RS02_MCP_APPLY_DIV 4u
+/* FDCAN under FDCAN+MCP hold: 250 Hz MIT, burst 1 — frees lap for USB FB. */
+#define RS02_FDCAN_APPLY_DIV_HEAVY 2u
 
 static uint32_t s_robstride_plant_tick;
-static uint32_t s_mcp_flush_buses;
+static uint8_t s_mcp_flush_rails; /* bit0=CH4 … bit2=CH6 */
+static bool s_heavy_multi_domain; /* FDCAN and MCP both commanded */
 
-void robstride_plant_tick_begin(void)
+void robstride_plant_tick_begin(uint32_t commanded_buses)
 {
+	bool fdcan = (commanded_buses & 0x07u) != 0u; /* CH1..3 */
+	bool mcp = (commanded_buses & 0x38u) != 0u;   /* CH4..6 */
+
 	s_robstride_plant_tick++;
-	s_mcp_flush_buses = 0u;
+	s_mcp_flush_rails = 0u;
+	s_heavy_multi_domain = fdcan && mcp;
 }
 
 void robstride_mcp_flush_pending(void)
 {
-	for (can_bus_id_t bus = CAN_BUS_CH4; bus <= CAN_BUS_CH6; bus++) {
-		if ((s_mcp_flush_buses & (1u << (unsigned)bus)) == 0u)
+	for (uint8_t rail = 0u; rail < 3u; rail++) {
+		can_bus_id_t bus;
+
+		if ((s_mcp_flush_rails & (1u << rail)) == 0u)
 			continue;
+		bus = (can_bus_id_t)(CAN_BUS_CH4 + rail);
 		mcp2518_prepare_tx(bus);
-		/* One try_send per bus per apply — second flush mostly hit TXQ busy
-		 * and kicked another config reclaim (SPI) without helping throughput. */
 		(void)spi_can_router_tx_flush(bus);
 	}
-	s_mcp_flush_buses = 0u;
+	s_mcp_flush_rails = 0u;
 }
 
 void robstride_apply_cycle(const actuator_config_t *cfg,
@@ -815,15 +823,14 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	if (mcp && robstride_desire_blank(desire))
 		return;
 
-	/* Host position interp is for slow MCP USB/SPI only. FDCAN at 500 Hz
-	 * must use the host desire directly (5df1f04) — extrapolating across
-	 * stalled laps produced the teleop jolt (cmd flip / lead blowout). */
+	/* Host position interp is for slow MCP USB/SPI only. FDCAN must use the
+	 * host desire directly (5df1f04) — extrapolating stalled laps jolted teleop. */
 	if (mcp)
 		robstride_interp_desire(slot, desire, &work);
 	else
 		work = *desire;
-	/* MCP: 1 MIT when decimated-in; FDCAN: 3× enqueue + HW FIFO. */
-	tx_burst = mcp ? 1u : 3u;
+	/* MCP: 1 MIT. FDCAN: burst 3 alone; burst 1 when FDCAN+MCP share the lap. */
+	tx_burst = mcp ? 1u : (s_heavy_multi_domain ? 1u : 3u);
 
 	if (idle) {
 		/* Next non-idle entry must re-arm run/enable (e.g. after recover). */
@@ -848,18 +855,22 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	/* Enable maintain keeps its own ms cadence even on decimated-out ticks. */
 	robstride_maintain_enable(cfg, desire, &last_maintain_ms[slot]);
 
-	if (mcp && ((s_robstride_plant_tick + (uint32_t)slot) % RS02_MCP_APPLY_DIV) != 0u)
-		return;
+	if (mcp) {
+		if (((s_robstride_plant_tick + (uint32_t)slot) % RS02_MCP_APPLY_DIV) != 0u)
+			return;
+	} else if (s_heavy_multi_domain) {
+		if (((s_robstride_plant_tick + (uint32_t)slot) %
+		     RS02_FDCAN_APPLY_DIV_HEAVY) != 0u)
+			return;
+	}
 
 	for (uint8_t i = 0; i < tx_burst; i++) {
 		if (plugin_pack_tx(cfg, &work, &frame) != PLUGIN_OK)
 			continue;
 		(void)can_tx_enqueue(bus, &frame);
 		if (mcp)
-			s_mcp_flush_buses |= (1u << (unsigned)bus);
+			s_mcp_flush_rails |= (uint8_t)(1u << (uint8_t)(bus - CAN_BUS_CH4));
 	}
-
-	/* MCP SPI flush coalesced in robstride_mcp_flush_pending() after all slots. */
 
 	if (!mcp) {
 		uint32_t now = HAL_GetTick();

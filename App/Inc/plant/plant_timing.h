@@ -5,8 +5,7 @@
 
 /* Superloop / plant timing — packed into SVD PDU bytes 23..28 on feedback.
  * Also overlaid on thermo 't' PDU bytes 16..21 so timing is visible while
- * SPI3_ROLE_THERMO owns the mailbox (otherwise lap_ms is stuck at n/a).
- * Thermo 't' bytes 22..31 also carry MCP ACT LED / try_send debug counters. */
+ * SPI3_ROLE_THERMO owns the mailbox (otherwise lap_ms is stuck at n/a). */
 void plant_timing_lap_begin(void);
 void plant_timing_lap_end(void);
 void plant_timing_note_pending_at_lap(uint8_t pending);

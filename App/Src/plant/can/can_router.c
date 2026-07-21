@@ -102,8 +102,6 @@ static can_tx_queue_t tx_queues[CAN_FDCAN_COUNT];
 static uint32_t g_last_traffic_ms[CAN_BACKEND_COUNT];
 static uint32_t g_blink_last_ms[CAN_BACKEND_COUNT];
 static bool g_blink_on[CAN_BACKEND_COUNT];
-static uint8_t g_led_mark_count[CAN_BACKEND_COUNT];
-static uint8_t g_led_toggle_count[CAN_BACKEND_COUNT];
 
 /* All channels: idle ON (high); blink on TX/RX. CH4–6 start low in gpio.c until can_router_init(). */
 static void can_led_set_idle(uint8_t idx)
@@ -216,32 +214,13 @@ void can_router_restart_fdcan(can_bus_id_t bus)
 
 static void can_led_mark_traffic(can_bus_id_t bus)
 {
-	if (bus < CAN_BACKEND_COUNT) {
+	if (bus < CAN_BACKEND_COUNT)
 		g_last_traffic_ms[bus] = HAL_GetTick();
-		g_led_mark_count[bus]++;
-	}
 }
 
 void can_router_mark_traffic(can_bus_id_t bus)
 {
 	can_led_mark_traffic(bus);
-}
-
-void can_router_led_debug_counts(uint8_t mark_out[CAN_BACKEND_COUNT],
-                                 uint8_t toggle_out[CAN_BACKEND_COUNT])
-{
-	for (uint8_t i = 0; i < CAN_BACKEND_COUNT; i++) {
-		if (mark_out != NULL)
-			mark_out[i] = g_led_mark_count[i];
-		if (toggle_out != NULL)
-			toggle_out[i] = g_led_toggle_count[i];
-	}
-}
-
-void can_router_led_debug_reset(void)
-{
-	memset(g_led_mark_count, 0, sizeof(g_led_mark_count));
-	memset(g_led_toggle_count, 0, sizeof(g_led_toggle_count));
 }
 
 static void can_led_poll(void)
@@ -254,7 +233,6 @@ static void can_led_poll(void)
 			if ((now - g_blink_last_ms[i]) >= CAN_LED_BLINK_MS) {
 				g_blink_last_ms[i] = now;
 				g_blink_on[i] = !g_blink_on[i];
-				g_led_toggle_count[i]++;
 				HAL_GPIO_WritePin(can_act_led[i].port, can_act_led[i].pin,
 				                  g_blink_on[i] ? GPIO_PIN_SET : GPIO_PIN_RESET);
 			}

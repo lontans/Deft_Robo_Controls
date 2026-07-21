@@ -31,11 +31,6 @@ void can_router_poll_bus_rx(can_bus_id_t bus);
 void can_router_discard_pending_tx(void);
 void can_router_mark_traffic(can_bus_id_t bus);
 
-/* Debug counters (wrap at 255) — packed into thermo PDU bytes 22..31. */
-void can_router_led_debug_counts(uint8_t mark_out[CAN_BACKEND_COUNT],
-                                 uint8_t toggle_out[CAN_BACKEND_COUNT]);
-void can_router_led_debug_reset(void);
-
 can_status_t can_tx_enqueue(can_bus_id_t bus, const can_frame_t *frame);
 can_status_t can_tx_flush(can_bus_id_t bus);
 

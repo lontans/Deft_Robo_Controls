@@ -185,7 +185,7 @@ void actuator_apply_desire(void)
 			commanded_buses |= (1u << (unsigned)actuator_table[i].bus);
 	}
 
-	robstride_plant_tick_begin();
+	robstride_plant_tick_begin(commanded_buses);
 
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		const actuator_desire_t *desire;
@@ -232,14 +232,31 @@ void actuator_apply_desire(void)
 	/* One prepare_tx + flush per MCP bus that enqueued this tick. */
 	robstride_mcp_flush_pending();
 
-	for (can_bus_id_t bus = 0; bus < CAN_BACKEND_COUNT; bus++) {
-		if ((poll_buses & (1u << (unsigned)bus)) != 0u)
-			can_router_poll_bus(bus);
-	}
+	/* Bound per-lap bus service: with many rails commanded, rotate poll/RX so
+	 * USB FB is not starved by servicing CH1–6 every tick. */
+	{
+		uint8_t buses[CAN_BACKEND_COUNT];
+		uint8_t n = 0u;
+		static uint8_t s_bus_svc_rr;
+		uint8_t max_svc;
 
-	for (can_bus_id_t bus = 0; bus < CAN_BACKEND_COUNT; bus++) {
-		if ((poll_buses & (1u << (unsigned)bus)) != 0u)
+		for (can_bus_id_t bus = 0; bus < CAN_BACKEND_COUNT; bus++) {
+			if ((poll_buses & (1u << (unsigned)bus)) != 0u)
+				buses[n++] = (uint8_t)bus;
+		}
+
+		max_svc = n;
+		if (max_svc > 3u)
+			max_svc = 3u;
+
+		for (uint8_t i = 0; i < max_svc; i++) {
+			can_bus_id_t bus = (can_bus_id_t)buses[(s_bus_svc_rr + i) % n];
+
+			can_router_poll_bus(bus);
 			actuator_dispatch_bus_rx(bus);
+		}
+		if (n > 0u)
+			s_bus_svc_rr = (uint8_t)((s_bus_svc_rr + max_svc) % n);
 	}
 }
 
