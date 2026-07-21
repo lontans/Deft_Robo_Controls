@@ -170,6 +170,7 @@ Protocol enum for CFG (firmware `actuator_protocol_t`):
 | 1 | `PROTO_ROBSTRIDE` |
 | 2 | `PROTO_CUBEMARS` |
 | 3 | `PROTO_DAMIAO` |
+| 4 | `PROTO_ZEROERR` (CiA 402 PP; `motor_id` = CANopen node ID; bus @ 1 Mbps) |
 
 Bus numbers are schematic branches **1..6** (CH1..CH6). CH1–3 = FDCAN; CH4–6 = MCP2518 SPI-CAN.
 

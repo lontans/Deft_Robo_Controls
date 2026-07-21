@@ -1,6 +1,6 @@
 # ZeroErr (eRob / eDriver) — firmware bringup plan
 
-**Status:** plan only — no production `PROTO_ZEROERR` in live `App/` yet.  
+**Status:** Phase 2–3 first code drop on `main` — `PROTO_ZEROERR=4`, CANopen helpers + PP plant path. Not yet bench-proven on hardware.
 **Sources used (2026-07-21):**
 
 | Source | Role |
@@ -456,11 +456,13 @@ Fill empty `canopen.h` / `canopen.c` as the façade or delete and use the split 
 
 ## 9. First code drop checklist (when implementation starts)
 
-1. Vendor EDS under `External_Documentation/ZeroErr/ZeroErr Driver_V1.5.eds`
-2. `canopen_sdo` expedited client + unit test with recorded frames
-3. `canopen_nmt` start/stop/reset
-4. `zeroerr` PDO1 6-byte pack/parse + count↔rad helpers (`524288` provisional)
-5. DEBUG discover reading `0x1018`
-6. Only then: `PROTO_ZEROERR` in live `plugin_table` / CFG
+1. [x] Vendor EDS under `External_Documentation/ZeroErr/ZeroErr_Driver_V1.5.eds`
+2. [x] `canopen` expedited SDO client + NMT + PDO1 pack/parse (`App/.../plant/can/canopen.*`)
+3. [x] `zeroerr` PDO1 6-byte pack/parse + count↔rad helpers (`524288` provisional)
+4. [ ] DEBUG discover reading `0x1018` (helpers exist: `zeroerr_read_identity` / `zeroerr_boot_blocking`; PDU wiring TBD)
+5. [x] `PROTO_ZEROERR=4` in live `plugin_table` / CFG / host `Protocol.ZEROERR`
 
-Until step 6, keep the protocol enum clean — empty `canopen.c` is fine as a parking spot.
+Plant path notes (Phase 3):
+- Boot FSM runs one SDO/NMT step per apply while desire is non-idle (SDO wait ≤30 ms — boot only).
+- Operational path is RxPDO1 only (`cw` + target counts); TxPDO1 → `position` rad + statusword in `fault`.
+- Prefer FDCAN CH1–3 @ 1 Mbps; MCP later.

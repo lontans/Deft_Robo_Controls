@@ -17,10 +17,12 @@ from the actual EDS file (link below) or the real PDF before using any of
 this to command real hardware — same posture this repo already takes with
 CubeMars's own unverified placeholders (see `../2026-07-10 workstreams/`).
 
-No firmware or host code in this repo currently uses any of this — see
-`App/Inc/plant/plugins/zeroerr.h` in the `2026-07-10 workstreams/` folder,
-which stubs `PROTO_ZEROERR` as an intentionally-unimplemented reserved slot
-pending real protocol confirmation.
+**Live implementation (not the workstream stub):** `PROTO_ZEROERR=4` in
+`App/Inc/plant/plugins/zeroerr.h` + `App/Src/plant/plugins/zeroerr.c`, with
+CANopen helpers in `App/.../plant/can/canopen.*`. Bringup plan / acceptance:
+[`docs/zeroerr-firmware-bringup.md`](../docs/zeroerr-firmware-bringup.md).
+EDS on disk: [`ZeroErr/ZeroErr_Driver_V1.5.eds`](ZeroErr/ZeroErr_Driver_V1.5.eds).
+The `2026-07-10 workstreams/` zeroerr files are archive pointers only.
 
 ## Sources (fetched 2026-07-20)
 

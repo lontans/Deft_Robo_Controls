@@ -19,13 +19,16 @@ from . import config as _config
 from . import damiao as _damiao
 from . import robstride as _robstride
 from . import soft_dfu as _soft_dfu
+from . import zeroerr as _zeroerr
 from .lease import lease
 
 if TYPE_CHECKING:
     from deft_controls_sdk.link import Connection
     from deft_controls_sdk.telemetry import TelemetryCache
 
-__all__ = ["DebugAPI", "lease"]
+__all__ = ["DebugAPI", "lease", "PROTO_ZEROERR"]
+
+PROTO_ZEROERR = _zeroerr.PROTO_ZEROERR
 
 
 class DebugAPI:
@@ -132,3 +135,17 @@ class DebugAPI:
         see bench/soft_dfu.py and App/Inc/host/soft_dfu.h. UNVERIFIED WITHOUT
         HARDWARE as of this writing; keep the ST-Link handy the first time."""
         _soft_dfu.enter_bootloader(self._connection, confirm=confirm)
+
+    # -- ZeroErr (CiA 402 PP) --------------------------------------------------------
+
+    def discover_zeroerr(self, *, bus: int = 1, start: int = 1, end: int = 127) -> Optional[int]:
+        """NOT WIRED — firmware SDO identity helpers exist; DEBUG PDU TBD.
+
+        Configure via CFG with protocol=4 (PROTO_ZEROERR) and motor_id=node_id.
+        See docs/zeroerr-firmware-bringup.md and bench/zeroerr.py.
+        """
+        raise NotImplementedError(
+            "discover_zeroerr DEBUG PDU not wired yet. "
+            f"Use cfg_set_slot(..., bus={bus}, protocol={PROTO_ZEROERR}, motor_id=<node_id>). "
+            f"(scan range would be {start}..{end})"
+        )
