@@ -1,5 +1,8 @@
 # ZeroErr eRob — CANopen notes (assembled from public sources, NOT the full vendor manual)
 
+**Firmware bringup plan (CAN frames, PDO maps, phases):**  
+[`docs/zeroerr-firmware-bringup.md`](../docs/zeroerr-firmware-bringup.md) — written against the byte-exact EDS + ZeroErr Python PP example.
+
 **Read this caveat before trusting anything below.** The official manual
 (*"eRob CANopen and EtherCAT User Manual V1.9"*, 219 pages) lives behind a
 lead-capture form at `https://book.zeroerr.com/view/chd` — it would not
@@ -145,3 +148,47 @@ names generically.
 - The EDS file itself was only read through a summarizing fetch, not
   byte-exact — re-download and open it directly before trusting index
   numbers for real register writes.
+
+## Reserved-slot design note (from the now-deleted `2026-07-10 workstreams/` draft)
+
+A prior pass sketched (but never merged, never compiled) a `PROTO_ZEROERR`
+reserved slot so the generic actuator dispatch has somewhere safe to land
+once real work starts:
+
+- `zeroerr.h` / `zeroerr.c` as a normal `plugin_ops_t` pair (`zeroerr_pack_tx`
+  / `zeroerr_parse_rx`), both unconditionally returning `PLUGIN_ERR_UNSUPPORTED`
+  — deliberately, not a stub to quietly fill in. `plugin_pack_tx`/
+  `plugin_parse_rx` (`plugin_table.c`) already treat that as "do nothing to
+  this slot," same as an empty `PROTO_NONE` slot.
+- `PROTO_ZEROERR` added to `protocol_t` (`actuator.h`) and `zeroerr_ops`
+  registered in the `handlers[]` table (`plugin_table.c`), so the enum value
+  becomes CFG-SET-selectable without crashing or misbehaving.
+
+**This was never merged into the live tree** (deleted along with the rest of
+the workstream folder once CubeMars was integrated) — it's recorded here so
+a future ZeroErr branch doesn't have to rediscover the shape. Net effect of
+merging just the reserved slot, independent of any real protocol work: cheap
+and safe, one enum value + one all-`UNSUPPORTED` `plugin_ops_t`.
+
+**But per the CANopen finding above, that shape is very likely the wrong
+integration point for real ZeroErr work.** `plugin_ops_t.pack_tx`/`parse_rx`
+assumes "one CAN frame in, one CAN frame out" (matches RobStride/Damiao/
+CubeMars). CANopen needs SDO (config/setup), PDO (cyclic control, itself
+requiring PDO mapping configuration), and an NMT state machine — none of
+which is "pack one frame." A real integration will likely need:
+
+1. A CANopen sub-layer sitting above (or beside) `can_router.c`'s RX
+   dispatch — PDO frames are just CAN frames with COB-IDs, but demuxing
+   SDO responses / NMT state / heartbeat needs more than exact-ID match.
+2. An explicit init/handshake sequence (NMT → pre-operational → SDO-configure
+   PDO mapping → operational → cyclic PDO), unlike the stateless single-frame
+   plugins today.
+3. Resolving the "what's still unknown" list above on real hardware first
+   (bitrate, node ID, which eRob/eDriver variant) — CANopen's SDO layer can
+   at least make some of that runtime-discoverable (read `0x1018` Identity
+   Object) instead of needing a firmware redeploy per guess, which is a real
+   advantage over CubeMars's "bench-sniff and hardcode" situation.
+
+Treat `PROTO_ZEROERR` as unclaimed until that design pass happens — don't
+force it through the existing `plugin_ops_t` shape just because the reserved
+slot was easy to sketch.
