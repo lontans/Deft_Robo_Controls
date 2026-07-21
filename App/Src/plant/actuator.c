@@ -4,6 +4,7 @@
 #include "plant/can/spi_can_router.h"
 #include "plant/plugins/robstride.h"
 #include "plant/plugins/damiao.h"
+#include "plant/plugins/zeroerr.h"
 #include "plant/plant_diag.h"
 #include "plant/plant_command.h"
 #include "host/host_link.h"
@@ -91,6 +92,13 @@ void plant_recovery_all(void)
 			damiao_reset_enable_latch(i);
 			if (damiao_send_disable(&actuator_table[i], &frame) == PLUGIN_OK)
 				(void)can_tx_enqueue(actuator_table[i].bus, &frame);
+			continue;
+		}
+
+		if (actuator_table[i].protocol == PROTO_ZEROERR) {
+			zeroerr_reset_slot(i);
+			if (zeroerr_send_shutdown(&actuator_table[i], &frame))
+				(void)can_tx_enqueue(actuator_table[i].bus, &frame);
 		}
 	}
 
@@ -141,6 +149,12 @@ static void actuator_dispatch_bus_rx(can_bus_id_t bus)
 				if (plugin_parse_rx(&actuator_table[i], &frame,
 				                    &actuator_state_live[i]) == PLUGIN_OK)
 					damiao_had_rx[i] = true;
+				continue;
+			}
+
+			if (actuator_table[i].protocol == PROTO_ZEROERR) {
+				zeroerr_on_rx_frame(&actuator_table[i], i, &frame,
+				                    &actuator_state_live[i]);
 				continue;
 			}
 
@@ -219,6 +233,12 @@ void actuator_apply_desire(void)
 		if (actuator_table[i].protocol == PROTO_DAMIAO) {
 			damiao_apply_cycle(&actuator_table[i], desire,
 			                   &actuator_state_live[i]);
+			continue;
+		}
+
+		if (actuator_table[i].protocol == PROTO_ZEROERR) {
+			zeroerr_apply_cycle(&actuator_table[i], desire,
+			                    &actuator_state_live[i]);
 			continue;
 		}
 

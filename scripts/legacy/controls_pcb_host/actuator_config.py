@@ -32,6 +32,7 @@ class Protocol(IntEnum):
     ROBSTRIDE = 1
     CUBEMARS = 2
     DAMIAO = 3
+    ZEROERR = 4
 
 
 PROTOCOL_NAMES = {
@@ -39,6 +40,7 @@ PROTOCOL_NAMES = {
     Protocol.ROBSTRIDE: "robstride",
     Protocol.CUBEMARS: "cubemars",
     Protocol.DAMIAO: "damiao",
+    Protocol.ZEROERR: "zeroerr",
 }
 
 NAME_TO_PROTOCOL = {v: k for k, v in PROTOCOL_NAMES.items()}

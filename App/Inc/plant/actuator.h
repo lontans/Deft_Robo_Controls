@@ -9,6 +9,7 @@ typedef enum {
 	PROTO_ROBSTRIDE,
 	PROTO_CUBEMARS,
 	PROTO_DAMIAO,
+	PROTO_ZEROERR,
 	PROTO_COUNT,
 } protocol_t;
 

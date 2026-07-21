@@ -4,12 +4,14 @@
 
 extern const plugin_ops_t robstride_ops;
 extern const plugin_ops_t damiao_ops;
+extern const plugin_ops_t zeroerr_ops;
 
 static const plugin_ops_t *const handlers[PROTO_COUNT] = {
 	[PROTO_NONE]      = NULL,
 	[PROTO_ROBSTRIDE] = &robstride_ops,
 	[PROTO_DAMIAO]    = &damiao_ops,
-	[PROTO_CUBEMARS]  = NULL,
+	[PROTO_CUBEMARS]  = NULL, /* reserved — empty cubemars.c on main */
+	[PROTO_ZEROERR]   = &zeroerr_ops,
 };
 
 plugin_status_t plugin_pack_tx(const actuator_config_t *cfg,
