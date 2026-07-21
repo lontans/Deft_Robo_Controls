@@ -7,6 +7,7 @@
 #include "plant/plugins/robstride.h"
 #include "plant/thermo.h"
 #include "host/host_uart_bridge.h"
+#include "host/soft_dfu.h"
 #include <stdbool.h>
 
 /*
@@ -27,6 +28,13 @@ void plant_command_image_dispatch(const host_command_image_t *cmd)
 {
 	if (cmd == NULL)
 		return;
+
+	/* Reboot-into-bootloader backdoor: checked first and unconditionally --
+	 * if matched, this resets the board and never returns. See soft_dfu.h. */
+	if (soft_dfu_is_command(cmd)) {
+		soft_dfu_on_command(cmd);
+		return;
+	}
 
 	uint8_t mcu_state = (uint8_t)cmd->system.mcu_state;
 	g_mcu_state_readback = mcu_state;

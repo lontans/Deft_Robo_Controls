@@ -30,6 +30,7 @@
 #include "app.h"
 #include "plant/control_loop.h"
 #include "usb_device.h"
+#include "host/soft_dfu.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -105,6 +106,11 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+
+  /* Checks a RAM signature left by a prior soft_dfu_on_command() call and,
+   * if present, jumps into the ROM bootloader instead of continuing boot.
+   * Must run before HAL_Init()/SystemClock_Config() -- see soft_dfu.h. */
+  soft_dfu_check_and_jump();
 
   /* USER CODE END 1 */
 
