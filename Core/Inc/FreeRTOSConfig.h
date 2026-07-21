@@ -60,8 +60,13 @@
 #define configSUPPORT_STATIC_ALLOCATION          0
 #define configSUPPORT_DYNAMIC_ALLOCATION         1
 #define configUSE_IDLE_HOOK                      0
-#define configUSE_MALLOC_FAILED_HOOK             0
+#define configUSE_MALLOC_FAILED_HOOK             1
 #define configUSE_TICK_HOOK                      0
+/* Method 2 (watermark + pattern fill on unused stack) -- catches overflow at
+ * the point of the offending context switch/task-check instead of leaving it
+ * as silent corruption that surfaces later as an unrelated-looking bug.
+ * See vApplicationStackOverflowHook() in Core/Src/app_freertos.c. */
+#define configCHECK_FOR_STACK_OVERFLOW            2
 #define configCPU_CLOCK_HZ                       ( SystemCoreClock )
 #define configTICK_RATE_HZ                       ((TickType_t)1000)
 #define configMAX_PRIORITIES                     ( 7 )
