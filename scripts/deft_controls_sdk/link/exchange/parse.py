@@ -52,31 +52,6 @@ def parse_svd_plant_timing(pdu: bytes) -> Optional[dict]:
     }
 
 
-def parse_thermo_led_debug(pdu: bytes) -> Optional[dict]:
-    """MCP ACT LED / try_send counters from thermo 't' PDU bytes 22..31.
-
-    Layout (wrap 255):
-      22..24  mark_count[CH4..CH6]
-      25..27  toggle_count[CH4..CH6]
-      28..30  try_ok[CH4..CH6]
-      31      try_busy[CH4]
-    """
-    if len(pdu) < 32 or pdu[0:1] != b"t":
-        return None
-    return {
-        "mark_ch4": pdu[22],
-        "mark_ch5": pdu[23],
-        "mark_ch6": pdu[24],
-        "toggle_ch4": pdu[25],
-        "toggle_ch5": pdu[26],
-        "toggle_ch6": pdu[27],
-        "try_ok_ch4": pdu[28],
-        "try_ok_ch5": pdu[29],
-        "try_ok_ch6": pdu[30],
-        "try_busy_ch4": pdu[31],
-    }
-
-
 def parse_feedback_header(frame: bytes) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
@@ -88,7 +63,6 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     tag = chr(pdu[0]) if 32 <= pdu[0] < 127 else f"0x{pdu[0]:02X}"
     plant_block = (sys_word >> 25) & 0x7F
     timing = parse_svd_plant_timing(pdu)
-    led = parse_thermo_led_debug(pdu)
     out = {
         "magic_ok": True,
         "magic_hex": f"0x{magic:08X}",
@@ -106,8 +80,6 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     }
     if timing is not None:
         out.update(timing)
-    if led is not None:
-        out["led_debug"] = led
     return out
 
 
