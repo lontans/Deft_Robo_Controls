@@ -29,7 +29,7 @@ from .exchange import (
     open_serial,
     parse_feedback_header,
 )
-from .api_types import ActuatorDesire, CommandImage, FeedbackImage, McuState, validate_slot
+from .api_types import ActuatorDesire, CommandImage, FeedbackImage, LedDesire, McuState, ServoDesire, validate_slot
 
 if TYPE_CHECKING:
     from deft_controls_sdk.telemetry import TelemetryCache
@@ -100,7 +100,10 @@ class Connection:
         different threads without this can interleave on the wire and corrupt
         the frame the MCU sees."""
         self._mcu_state = McuState.NORMAL
+        self._rx_sim_mask = 0
         self._desires: Dict[int, ActuatorDesire] = {}
+        self._servos: Dict[int, ServoDesire] = {}
+        self._led: Optional[LedDesire] = None
         self._next_tick: Optional[float] = None
         self._telemetry: Optional["TelemetryCache"] = None
         self._stream_thread: Optional[threading.Thread] = None
@@ -212,8 +215,19 @@ class Connection:
             self._mcu_state = state
             if state in (McuState.RECOVERY, McuState.ESTOP):
                 self._desires.clear()
+                self._servos.clear()
+                self._led = LedDesire(mode=0, master_brightness=0, led_count=0)
         if send and self._ser is not None:
             self.send_once()
+
+    def set_rx_sim(self, enable: bool) -> None:
+        """Enable ACTUATOR rx_sim only (bit0). Use set_rx_sim_mask for fine control."""
+        self.set_rx_sim_mask(0x1 if enable else 0)
+
+    def set_rx_sim_mask(self, mask: int) -> None:
+        """bits0..3: ACTUATOR|SERVO|LED|PDU. Soft-servo (bit1) off for real DXL."""
+        with self._state_lock:
+            self._rx_sim_mask = int(mask) & 0xF
 
     @property
     def mcu_state(self) -> McuState:
@@ -228,8 +242,16 @@ class Connection:
         with self._state_lock:
             mcu_state = self._mcu_state
             desires = dict(self._desires)  # snapshot — don't hold the lock during CommandImage packing
+            servos = dict(self._servos)
+            led = self._led
+            rx_sim_mask = getattr(self, "_rx_sim_mask", 0)
         img = CommandImage(seq=self._next_seq(), mcu_state=mcu_state)
         img.set_actuators(desires)
+        if servos:
+            img.set_servos(servos)
+        if led is not None:
+            img.set_led(led)
+        img.set_rx_sim_mask(rx_sim_mask)
         return img
 
     def write_command(self, image: CommandImage) -> None:
@@ -294,6 +316,41 @@ class Connection:
             validate_slot(slot)
         with self._state_lock:
             self._desires.update(desires)
+        if send:
+            self.send_once()
+
+    def set_servo(self, slot: int, desire: ServoDesire, *, send: bool = True) -> None:
+        if slot not in (0, 1):
+            raise ValueError(f"servo slot must be 0..1, got {slot}")
+        with self._state_lock:
+            self._servos[slot] = desire
+        if send:
+            self.send_once()
+
+    def set_servos(self, desires: Mapping[int, ServoDesire], *, send: bool = True) -> None:
+        for slot in desires:
+            if slot not in (0, 1):
+                raise ValueError(f"servo slot must be 0..1, got {slot}")
+        with self._state_lock:
+            self._servos.update(desires)
+        if send:
+            self.send_once()
+
+    def clear_servos(self, *, send: bool = True) -> None:
+        with self._state_lock:
+            self._servos.clear()
+        if send:
+            self.send_once()
+
+    def set_led(self, desire: LedDesire, *, send: bool = True) -> None:
+        with self._state_lock:
+            self._led = desire
+        if send:
+            self.send_once()
+
+    def clear_led(self, *, send: bool = True) -> None:
+        with self._state_lock:
+            self._led = LedDesire(mode=0, master_brightness=0, led_count=0)
         if send:
             self.send_once()
 
@@ -463,7 +520,7 @@ class Connection:
         not run on the plant thread (that coupling caused Windows GUI lag).
 
         Does **not** auto-recover: RECOVERY mounts plant_recovery_all on the MCU
-        (blocking MCP reset TX on every RobStride slot). Use hub.recover()
+        (non-blocking MCP enqueue+flush; plant tick drains remainder). Use hub.recover()
         explicitly when needed.
         """
         if self._stream_thread is not None and self._stream_thread.is_alive():

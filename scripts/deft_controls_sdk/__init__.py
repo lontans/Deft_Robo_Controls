@@ -23,14 +23,16 @@ from .bench import (
     leave_bootloader,
     list_cdc_ports,
 )
-from .link import ActuatorDesire, McuState
+from .link import ActuatorDesire, LedDesire, McuState, ServoDesire
 from .telemetry import SessionState, TelemetryCache
 
 __all__ = [
     "ActuatorDesire",
     "ControlsPcbHub",
     "DebugAPI",
+    "LedDesire",
     "McuState",
+    "ServoDesire",
     "SessionState",
     "TelemetryCache",
     "enter_bootloader",

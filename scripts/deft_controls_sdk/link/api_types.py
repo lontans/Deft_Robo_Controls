@@ -16,7 +16,11 @@ from .exchange import (
     parse_actuator_feedback,
     parse_feedback_header,
     patch_actuator_desire,
+    patch_led_command,
+    patch_servo_command,
     patch_system_mcu_state,
+    patch_system_rx_sim,
+    patch_system_rx_sim_mask,
 )
 
 
@@ -45,6 +49,27 @@ class ActuatorDesire:
 IDLE = ActuatorDesire()
 
 
+@dataclass(frozen=True)
+class ServoDesire:
+    """One DXL host command (6 B). servo_id==0 clears the slot / ends session when both clear."""
+
+    servo_id: int = 0
+    native_step_position: int = 0
+    native_speed_unit: int = 0
+    torque_enable: bool = True
+    led_control: bool = False
+    operating_mode: int = 3  # position control
+
+
+@dataclass(frozen=True)
+class LedDesire:
+    """SK9822 host command (2 B). mode 0=OFF, 1=TEST chase, 2=FLASH. led_count 0 ⇒ max (300)."""
+
+    mode: int = 0
+    master_brightness: int = 8
+    led_count: int = 0
+
+
 def validate_slot(slot: int) -> None:
     if not (0 <= slot < ACTUATOR_COUNT):
         raise InvalidSlotError(
@@ -64,6 +89,9 @@ class CommandImage:
         )
         patch_system_mcu_state(self._buf, int(mcu_state))
         self._desires: Dict[int, ActuatorDesire] = {}
+        self._servos: Dict[int, ServoDesire] = {}
+        self._led: Optional[LedDesire] = None
+        self._rx_sim_mask = 0
 
     @property
     def seq(self) -> int:
@@ -78,6 +106,16 @@ class CommandImage:
         patch_system_mcu_state(self._buf, int(state))
         return self
 
+    def set_rx_sim(self, enable: bool) -> "CommandImage":
+        """True → ACTUATOR rx_sim only (bit0). Prefer set_rx_sim_mask for children."""
+        return self.set_rx_sim_mask(0x1 if enable else 0)
+
+    def set_rx_sim_mask(self, mask: int) -> "CommandImage":
+        """system.reserved bits0..3: ACTUATOR|SERVO|LED|PDU."""
+        self._rx_sim_mask = int(mask) & 0xF
+        patch_system_rx_sim_mask(self._buf, self._rx_sim_mask)
+        return self
+
     def set_actuator(self, slot: int, desire: ActuatorDesire) -> "CommandImage":
         validate_slot(slot)
         patch_actuator_desire(
@@ -89,6 +127,37 @@ class CommandImage:
     def set_actuators(self, desires: Mapping[int, ActuatorDesire]) -> "CommandImage":
         for slot, desire in desires.items():
             self.set_actuator(slot, desire)
+        return self
+
+    def set_servo(self, slot: int, desire: ServoDesire) -> "CommandImage":
+        if slot not in (0, 1):
+            raise InvalidSlotError(f"servo slot must be 0..1, got {slot}")
+        patch_servo_command(
+            self._buf,
+            slot,
+            servo_id=desire.servo_id,
+            native_step_position=desire.native_step_position,
+            native_speed_unit=desire.native_speed_unit,
+            torque_enable=desire.torque_enable,
+            led_control=desire.led_control,
+            operating_mode=desire.operating_mode,
+        )
+        self._servos[slot] = desire
+        return self
+
+    def set_servos(self, desires: Mapping[int, ServoDesire]) -> "CommandImage":
+        for slot, desire in desires.items():
+            self.set_servo(slot, desire)
+        return self
+
+    def set_led(self, desire: LedDesire) -> "CommandImage":
+        patch_led_command(
+            self._buf,
+            mode=desire.mode,
+            master_brightness=desire.master_brightness,
+            led_count=desire.led_count,
+        )
+        self._led = desire
         return self
 
     def desire(self, slot: int) -> ActuatorDesire:

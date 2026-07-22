@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from deft_controls_sdk.bench import DebugAPI, find_cdc_port
-from deft_controls_sdk.link import ActuatorDesire, Connection, FeedbackImage, McuState
+from deft_controls_sdk.link import ActuatorDesire, Connection, FeedbackImage, LedDesire, McuState, ServoDesire
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD
 from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
 
@@ -113,8 +113,22 @@ class ControlsPcbHub:
     def recover(self) -> None:
         self._connection.recover()
 
+    def set_rx_sim(self, enable: bool) -> None:
+        """Bench: ACTUATOR rx_sim only (synthetic RS02 FB into CAN rings)."""
+        self._connection.set_rx_sim(enable)
+
+    def set_rx_sim_mask(self, mask: int) -> None:
+        """bits0..3: ACTUATOR|SERVO|LED|PDU."""
+        self._connection.set_rx_sim_mask(mask)
+
     def set_actuator(self, slot: int, desire: ActuatorDesire, *, send: bool = True) -> None:
         self._connection.set_actuator(slot, desire, send=send)
+
+    def set_servo(self, slot: int, desire: ServoDesire, *, send: bool = True) -> None:
+        self._connection.set_servo(slot, desire, send=send)
+
+    def set_led(self, desire: LedDesire, *, send: bool = True) -> None:
+        self._connection.set_led(desire, send=send)
 
     def held_desire(self, slot: int) -> Optional[ActuatorDesire]:
         """Currently-held desire for one slot — what the background stream is

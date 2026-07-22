@@ -10,7 +10,10 @@ from .wire_layout import (
     HOST_COMMAND_MAGIC,
     HOST_LAYOUT_VERSION,
     IMAGE_BYTES,
+    LED_CMD_OFF,
     PLANT_MCU_STATE_NORMAL,
+    SERVO0_CMD_OFF,
+    SERVO_SLOT_BYTES,
     SYSTEM_CMD_OFF,
 )
 
@@ -23,6 +26,65 @@ def patch_system_mcu_state(buf: bytearray, mcu_state: int) -> None:
     word, = struct.unpack_from("<I", buf, SYSTEM_CMD_OFF)
     word = (word & ~0x0E) | ((int(mcu_state) & 7) << 1)
     struct.pack_into("<I", buf, SYSTEM_CMD_OFF, word)
+
+
+def patch_system_rx_sim(buf: bytearray, enable: bool) -> None:
+    """Back-compat: True → ACTUATOR only; False → clear bits0..3."""
+    patch_system_rx_sim_mask(buf, 0x1 if enable else 0)
+
+
+def patch_system_rx_sim_mask(buf: bytearray, mask: int) -> None:
+    """system.reserved bits0..3 (wire bits5..8): ACTUATOR|SERVO|LED|PDU."""
+    word, = struct.unpack_from("<I", buf, SYSTEM_CMD_OFF)
+    word = (word & ~(0xF << 5)) | ((int(mask) & 0xF) << 5)
+    struct.pack_into("<I", buf, SYSTEM_CMD_OFF, word)
+
+
+def patch_servo_command(
+    buf: bytearray,
+    slot: int,
+    *,
+    servo_id: int,
+    native_step_position: int,
+    native_speed_unit: int = 0,
+    torque_enable: bool = True,
+    led_control: bool = False,
+    operating_mode: int = 3,
+) -> None:
+    """Pack one host_servo_command_t (6 B) at SERVO0_CMD_OFF + slot*6."""
+    if slot < 0 or slot > 1:
+        raise ValueError(f"servo slot must be 0..1, got {slot}")
+    flags = (
+        (1 if torque_enable else 0)
+        | ((1 if led_control else 0) << 1)
+        | ((int(operating_mode) & 7) << 2)
+        | ((int(servo_id) & 0xFF) << 5)
+    )
+    off = SERVO0_CMD_OFF + slot * SERVO_SLOT_BYTES
+    struct.pack_into(
+        "<hhH",
+        buf,
+        off,
+        int(native_step_position),
+        int(native_speed_unit),
+        flags,
+    )
+
+
+def patch_led_command(
+    buf: bytearray,
+    *,
+    mode: int = 0,
+    master_brightness: int = 0,
+    led_count: int = 0,
+) -> None:
+    """Pack host_led_command_t (2 B). led_count 0 ⇒ firmware LED_STRIP_MAX (300)."""
+    word = (
+        (int(mode) & 0x1F)
+        | ((int(master_brightness) & 0x1F) << 5)
+        | ((int(led_count) & 0x3F) << 10)
+    )
+    struct.pack_into("<H", buf, LED_CMD_OFF, word)
 
 
 def patch_actuator_desire(

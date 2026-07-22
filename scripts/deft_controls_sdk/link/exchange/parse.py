@@ -10,6 +10,8 @@ from .wire_layout import (
     HOST_FEEDBACK_MAGIC,
     IMAGE_BYTES,
     PDU_OFF,
+    SERVO0_FB_OFF,
+    SERVO_SLOT_BYTES,
     SYSTEM_FB_OFF,
 )
 
@@ -35,17 +37,22 @@ PLANT_BLOCK_NAMES = {
 
 
 def parse_system_timing(frame: bytes) -> Optional[dict]:
-    """Plant timing from system[32] (layout v2)."""
-    if len(frame) < SYSTEM_FB_OFF + 12:
+    """Plant timing + image-id readbacks from system[32] (layout v2)."""
+    if len(frame) < SYSTEM_FB_OFF + 26:
         return None
     lap_ms, lap_max_ms, ticks_svc, ticks_pending = struct.unpack_from(
         "<HHBB", frame, SYSTEM_FB_OFF + 4
+    )
+    last_image_id, last_applied_image_id = struct.unpack_from(
+        "<II", frame, SYSTEM_FB_OFF + 18
     )
     return {
         "lap_ms": lap_ms,
         "lap_max_ms": lap_max_ms,
         "ticks_svc": ticks_svc,
         "ticks_pending": ticks_pending,
+        "last_image_id": last_image_id,
+        "last_applied_image_id": last_applied_image_id,
     }
 
 
@@ -132,3 +139,25 @@ def parse_actuator_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:
     }
     out.update(parse_actuator_meta(meta))
     return out
+
+
+def parse_servo_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:
+    """Parse one host_servo_feedback_t (6 B) at SERVO0_FB_OFF + slot*6."""
+    if len(frame) != IMAGE_BYTES or slot not in (0, 1):
+        return None
+    magic, = struct.unpack_from("<I", frame, 0)
+    if magic not in (HOST_FEEDBACK_MAGIC, HOST_DEBUG_FEEDBACK_MAGIC):
+        return None
+    off = SERVO0_FB_OFF + slot * SERVO_SLOT_BYTES
+    pos, speed, flags = struct.unpack_from("<hhH", frame, off)
+    return {
+        "present_position": pos,
+        "present_speed": speed,
+        "moving": bool(flags & 0x1),
+        "target_reached": bool(flags & 0x2),
+        "err_input_volt": bool(flags & 0x4),
+        "err_overheating": bool(flags & 0x8),
+        "err_overload": bool(flags & 0x10),
+        "motor_source_id": (flags >> 5) & 0xFF,
+        "hw_err_any": bool(flags & 0x1C),
+    }

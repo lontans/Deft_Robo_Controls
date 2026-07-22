@@ -61,15 +61,20 @@ def test_system_timing_parse() -> None:
         "<IHHI", buf, 0, HOST_FEEDBACK_MAGIC, HOST_LAYOUT_VERSION, IMAGE_BYTES, 1
     )
     struct.pack_into("<IHHBB", buf, 12, 0, 15, 40, 2, 3)
+    struct.pack_into("<II", buf, 12 + 18, 0xAABBCCDD, 0x11223344)
     timing = parse_system_timing(bytes(buf))
     assert timing is not None
     assert timing["lap_ms"] == 15
     assert timing["lap_max_ms"] == 40
     assert timing["ticks_svc"] == 2
     assert timing["ticks_pending"] == 3
+    assert timing["last_image_id"] == 0xAABBCCDD
+    assert timing["last_applied_image_id"] == 0x11223344
     hdr = parse_feedback_header(bytes(buf))
     assert hdr is not None
     assert hdr["lap_ms"] == 15
+    assert hdr["last_image_id"] == 0xAABBCCDD
+    assert hdr["last_applied_image_id"] == 0x11223344
 
 
 def test_debug_command_magic() -> None:

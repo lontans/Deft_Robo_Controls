@@ -50,12 +50,17 @@ from .pack import (
     build_actuator_command,
     build_plant_command,
     patch_actuator_desire,
+    patch_led_command,
+    patch_servo_command,
     patch_system_mcu_state,
+    patch_system_rx_sim,
+    patch_system_rx_sim_mask,
 )
 from .parse import (
     PLANT_BLOCK_NAMES,
     parse_actuator_feedback,
     parse_feedback_header,
+    parse_servo_feedback,
     parse_svd_plant_timing,
     parse_system_timing,
 )
@@ -147,9 +152,14 @@ __all__ = [
     "parse_dm_probe_pdu",
     "parse_feedback_header",
     "parse_probe_pdu",
+    "parse_servo_feedback",
     "parse_svd_plant_timing",
     "parse_system_timing",
     "patch_actuator_desire",
+    "patch_led_command",
+    "patch_servo_command",
     "patch_system_mcu_state",
+    "patch_system_rx_sim",
+    "patch_system_rx_sim_mask",
     "probe_kind_matches",
 ]

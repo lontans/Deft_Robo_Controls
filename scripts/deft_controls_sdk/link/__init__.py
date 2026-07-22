@@ -7,8 +7,10 @@ from .api_types import (
     CommandImage,
     FeedbackImage,
     FeedbackState,
+    LedDesire,
     McuState,
     PlantBlockReason,
+    ServoDesire,
 )
 from .connection import HOST_STALE_MS, Connection
 from .exceptions import (
@@ -31,7 +33,9 @@ __all__ = [
     "HOST_STALE_MS",
     "InvalidFrameError",
     "InvalidSlotError",
+    "LedDesire",
     "McuState",
     "NotConnectedError",
     "PlantBlockReason",
+    "ServoDesire",
 ]
