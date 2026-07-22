@@ -45,14 +45,9 @@ static void diag_mcp_soft_recover(can_bus_id_t bus)
 	if (bus < CAN_BUS_CH4)
 		return;
 
-	if (mcp2518_rail_opmod((uint8_t)(bus - CAN_BUS_CH4)) != 6u) {
-		(void)mcp2518_reinit_rail(bus);
-	} else {
-		(void)mcp2518_recover_if_busoff(bus);
-		mcp2518_drain_rx(bus);
-		mcp2518_reset_tx_stats(bus);
-		mcp2518_prepare_tx(bus);
-	}
+	/* Prefer full reinit over prepare_tx — restores RX path after TXQ CFG. */
+	(void)mcp2518_reinit_rail(bus);
+	mcp2518_reset_tx_stats(bus);
 }
 
 static bool diag_mcp_tx_frame(can_bus_id_t bus, const can_frame_t *frame)

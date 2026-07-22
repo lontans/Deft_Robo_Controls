@@ -20,14 +20,24 @@ with ControlsPcbHub.connect() as hub:  # auto CDC, or connect("COM5")
     print(hub.telemetry.snapshot())
 ```
 
-**DEBUG** (CFG / discover / soft-DFU enter):
+**DEBUG** (CFG / discover / calibrate / soft-DFU enter):
 
 ```python
 with ControlsPcbHub.connect() as hub:
     table = hub.debug.cfg_get_table()
     hit = hub.debug.discover_robstride(bus=4)
     hub.debug.cfg_set_slot(slot=19, bus=4, protocol=1, motor_id=hit or 0, persist=True)
+    hub.debug.calibrate_robstride(bus=4, motor_id=hit)  # shaft free, 24–60 V
 ```
+
+**Single-actuator channel bringup** (move cable between CH1–CH6, change `--bus`):
+
+```powershell
+python rs02_channel_bringup.py --bus 4
+python rs02_channel_bringup.py --bus 1 --motor-id 0x70 --skip-cali
+```
+
+Runs discover → CFG → ack_lag/lap/fb_hz hold → cali → tiny teleop. PASS/FAIL summary at end.
 
 **USB flash** (no ST-Link):
 
@@ -43,10 +53,8 @@ python soft_dfu_flash.py
 ```
 controls_pcb_hub.py     # façade
 link/exchange/          # 672 B plant + DEBUG frame pack/parse
-bench/                  # discover, CFG, soft_dfu
+bench/                  # discover, CFG, calibrate, soft_dfu, metrics
 telemetry/              # snapshot / record
 debug_dashboard/        # localhost UI
 ```
 
-RS02 encoder calibrate is not ported (`NotImplementedError`); use archived
-legacy only if needed until that lands.

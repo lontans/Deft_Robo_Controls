@@ -54,7 +54,7 @@ void app_run(void)
 
 #if !USE_FREERTOS_SCHEDULER
 	/* One service call drains up to CONTROL_TICK_BURST_MAX ticks (see 5df1f04).
-	 * Avoid 6× can_router_poll() per lap — that was added for MCP and regressed FDCAN. */
+	 * Plant + end-of-lap poll all commanded/backends; idle MCP is INT-gated. */
 	control_loop_service();
 #endif
 

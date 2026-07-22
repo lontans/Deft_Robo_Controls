@@ -223,10 +223,9 @@ def test_discover_damiao_prefers_known_ids_order() -> None:
     assert hit == target
 
 
-def test_calibrate_robstride_explicitly_not_implemented() -> None:
-    """Deliberately deferred (see bench/__init__.py docstring) — must fail
-    loudly with a pointer to the legacy CLI, not silently no-op."""
+def test_calibrate_robstride_returns_false_without_replies() -> None:
+    """No hardware: cali should fail cleanly (False), not raise NotImplementedError."""
     conn = _fake_connection(lambda frame: None)
     debug = DebugAPI(conn, None)
-    with pytest.raises(NotImplementedError, match="legacy/control_hub.py calibrate"):
-        debug.calibrate_robstride(bus=2, motor_id=0x70)
+    ok = debug.calibrate_robstride(bus=2, motor_id=0x70, cal_listen_s=8.0, skip_iq_test=True)
+    assert ok is False

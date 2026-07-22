@@ -105,8 +105,9 @@ void plant_diag_can_router_poll(void)
 	else if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
 		can_router_poll_bus(g_rs2_can_bus);
 	else {
-		/* Plant path already polls commanded buses. End-of-lap: FDCAN only —
-		 * full can_router_poll() walks all MCP SPI rails every lap. */
+		/* Plant already polls commanded buses (incl. MCP). End-of-lap:
+		 * FDCAN only — covers uncommanded CH1–3 without a second MCP SPI pass
+		 * on busy CH4–6 holds. Idle MCP is already INT-gated on the plant path. */
 		for (can_bus_id_t bus = 0; bus < CAN_FDCAN_COUNT; bus++)
 			can_router_poll_bus(bus);
 	}

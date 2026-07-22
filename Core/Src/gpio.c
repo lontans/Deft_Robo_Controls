@@ -55,14 +55,15 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_5
                           |GPIO_PIN_6|GPIO_PIN_7, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1|GPIO_PIN_4, GPIO_PIN_RESET);
+	/*Configure GPIO pin Output Level — MCP nCS idle high (active low). */
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET); /* CH6 MCP CS */
 
-  /*Configure GPIO pin Output Level */
-  /* PB7 idle high: MAX31855 CS (active low) when SPI3 role is THERMO. */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_11|GPIO_PIN_14
-                          |GPIO_PIN_15, GPIO_PIN_RESET);
+	/*Configure GPIO pin Output Level */
+	/* PB7 idle high: MAX31855 CS (active low) when SPI3 role is THERMO.
+	 * PB11/PB1 idle high: CH4/CH5 MCP CS. */
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7 | GPIO_PIN_1 | GPIO_PIN_11, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2 | GPIO_PIN_14 | GPIO_PIN_15, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;

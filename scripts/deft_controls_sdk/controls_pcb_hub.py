@@ -15,12 +15,13 @@ be gated (plant_block=BENCH_SESSION) while a lease is held.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Optional, Union
 
 from deft_controls_sdk.bench import DebugAPI, find_cdc_port
-from deft_controls_sdk.link import ActuatorDesire, Connection, McuState
-from deft_controls_sdk.link.exchange import DEFAULT_BAUD
+from deft_controls_sdk.link import ActuatorDesire, Connection, FeedbackImage, McuState
+from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD
 from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
 
 
@@ -134,6 +135,51 @@ class ControlsPcbHub:
         fb = self._connection.poll_feedback()
         if fb is not None:
             self._connection.publish_feedback(fb)
+
+    def refresh_feedback(
+        self,
+        *,
+        slots: Optional[list[int]] = None,
+        seconds: float = 0.5,
+        hz: float = 40.0,
+    ) -> Optional[FeedbackImage]:
+        """Pump the 672 B plant stream until actuator FB in HBHF is fresh.
+
+        After CFG / DEBUG probe, plant ``actuator_state`` in the feedback image
+        can still be zeros until the MCU has exchanged CAN with the drive.
+        Seed idle-anchored desires first (``kp=0``, ``position=pose`` — never
+        blank ``p=0`` while the shaft is elsewhere); firmware then parareads
+        on FDCAN and MCP, and this call streams long enough for replies to
+        land in the payload.
+
+        Call before reading ``FeedbackImage.actuator(slot).position`` for
+        metrics / teleop. ``slots`` is validated only (held image is what TX).
+
+        Returns the latest ``FeedbackImage`` (or ``None`` if none arrived).
+        """
+        if slots is None:
+            slots = list(range(ACTUATOR_COUNT))
+        for s in slots:
+            if not (0 <= int(s) < ACTUATOR_COUNT):
+                raise ValueError(f"slot must be 0..{ACTUATOR_COUNT - 1}, got {s}")
+
+        dt = 1.0 / max(hz, 1.0)
+        t_end = time.perf_counter() + max(0.1, float(seconds))
+        next_t = time.perf_counter()
+        last_fb: Optional[FeedbackImage] = None
+        while time.perf_counter() < t_end:
+            self._connection.send_once()
+            fb = self._connection.poll_feedback()
+            if fb is not None:
+                last_fb = fb
+                self._connection.publish_feedback(fb)
+            next_t += dt
+            sleep_for = next_t - time.perf_counter()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            else:
+                next_t = time.perf_counter()
+        return last_fb
 
     def set_mcu_state(self, state: McuState, *, send: bool = True) -> None:
         self._connection.set_mcu_state(state, send=send)

@@ -1,15 +1,9 @@
-"""DebugAPI — DEBUG-mode bench ops (discover / config), under a lease on the
-same Connection `hub.plant` already uses. No second serial port.
+"""DebugAPI — DEBUG-mode bench ops (discover / config / calibrate), under a lease
+on the same Connection plant streaming already uses. No second serial port.
 
     with ControlsPcbHub.connect("COM5") as hub:
-        with hub.debug.lease(bus=2):
-            hit = hub.debug.discover_robstride(bus=2)
+        hit = hub.debug.discover_robstride(bus=2)
         table = hub.debug.cfg_get_table()
-
-See docs/architecture.md#host-api-modes for the PLANT vs DEBUG mode split and
-docs/plan-host-api-streamline.md for the rollout this implements (P0 lease,
-P1 config, P2 discover). calibrate_robstride is intentionally NOT implemented
-yet — see its docstring for why.
 """
 from __future__ import annotations
 
@@ -18,6 +12,7 @@ from typing import TYPE_CHECKING, List, Optional, Sequence
 from . import config as _config
 from . import damiao as _damiao
 from . import robstride as _robstride
+from . import robstride_calibrate as _robstride_calibrate
 from . import soft_dfu as _soft_dfu
 from . import zeroerr as _zeroerr
 from .lease import lease
@@ -70,23 +65,28 @@ class DebugAPI:
     def probe_robstride(self, *, bus: int, motor_id: int, timeout_s: float = 0.55) -> Optional[dict]:
         return _robstride.probe(self._connection, self._telemetry, bus=bus, motor_id=motor_id, timeout_s=timeout_s)
 
-    def calibrate_robstride(self, *, bus: int, motor_id: int, **kwargs: object) -> None:
-        """NOT PORTED — see scripts/legacy/control_hub/rs02/calibrate.py.
+    def calibrate_robstride(
+        self,
+        *,
+        bus: int,
+        motor_id: int,
+        cal_listen_s: float = 28.0,
+        skip_iq_test: bool = False,
+        strict_cali: bool = False,
+    ) -> bool:
+        """RS02 encoder cal (reset → iq_test → cali → zero → save → verify).
 
-        RS02 encoder cal (comm 0x04 reset -> 0x702D iq_test -> 0x05 cali (shaft
-        spins freely) -> 0x06 zero -> 0x16 save -> pararead verify) depends on
-        four more legacy modules (calibrate.py, probe.py, display.py, link.py)
-        with timing-sensitive listen windows, VBUS range checks, and mms-state
-        tracking around a physically spinning shaft. That is meaningfully
-        deeper and more hardware-sensitive than discover/probe/config, and
-        deserves its own dedicated port + HIL verification pass rather than a
-        rushed one bundled into this change. Use the legacy CLI today:
-
-            python scripts/legacy/control_hub.py calibrate --port COM5 --bus {bus} --id 0x{motor_id:02X}
+        Shaft must spin freely; supply 24–60 V. Manages its own lease.
+        Returns True when mechPos verify is near zero.
         """
-        raise NotImplementedError(
-            "calibrate_robstride is not ported yet — deliberately deferred (see docstring). "
-            f"Use: python scripts/legacy/control_hub.py calibrate --port <COM> --bus {bus} --id 0x{motor_id:02X}"
+        return _robstride_calibrate.calibrate(
+            self._connection,
+            self._telemetry,
+            bus=bus,
+            motor_id=motor_id,
+            cal_listen_s=cal_listen_s,
+            skip_iq_test=skip_iq_test,
+            strict_cali=strict_cali,
         )
 
     # -- Damiao (DM0) ----------------------------------------------------------------
@@ -116,7 +116,7 @@ class DebugAPI:
     # -- Config (CFG PDU — actuator table get/set/save) -------------------------------
 
     def cfg_get_table(self, *, timeout_s: float = 1.5) -> List[dict]:
-        """Read the MCU's actuator_table[] (paged; dual-arm ACTUATOR_COUNT=14)."""
+        """Read the MCU's actuator_table[] (paged)."""
         return _config.fetch_table(self._connection, timeout_s=timeout_s)
 
     def cfg_set_slot(
@@ -157,11 +157,7 @@ class DebugAPI:
         port: Optional[str] = None,
         serial: Optional[str] = None,
     ) -> str:
-        """Reset into ROM USB DFU (CDC drops). Uses this hub's port by default.
-
-        Pass ``port`` / ``serial`` to override; omit hub usage entirely via
-        ``deft_controls_sdk.bench.enter_bootloader(confirm=True)`` which
-        auto-finds 0483:5740 on Windows or Linux."""
+        """Reset into ROM USB DFU (CDC drops). Uses this hub's port by default."""
         if port is not None or serial is not None:
             return _soft_dfu.enter_bootloader(
                 None, confirm=confirm, port=port, serial=serial
@@ -175,10 +171,7 @@ class DebugAPI:
         address: int = 0x0803F800,
         timeout_s: float = 8.0,
     ) -> bool:
-        """Leave ROM DFU over USB; default jumps to the reset trampoline.
-
-        Talks to 0483:DF11 via libusb (Windows WinUSB / Linux libusb). Returns
-        True if DFU went away; CDC should reappear shortly after."""
+        """Leave ROM DFU over USB; default jumps to the reset trampoline."""
         return _soft_dfu.leave_bootloader(
             serial=serial, address=address, timeout_s=timeout_s
         )
@@ -186,11 +179,7 @@ class DebugAPI:
     # -- ZeroErr (CiA 402 PP) --------------------------------------------------------
 
     def discover_zeroerr(self, *, bus: int = 1, start: int = 1, end: int = 127) -> Optional[int]:
-        """NOT WIRED — firmware SDO identity helpers exist; DEBUG PDU TBD.
-
-        Configure via CFG with protocol=4 (PROTO_ZEROERR) and motor_id=node_id.
-        See docs/zeroerr-firmware-bringup.md and bench/zeroerr.py.
-        """
+        """NOT WIRED — firmware SDO identity helpers exist; DEBUG PDU TBD."""
         raise NotImplementedError(
             "discover_zeroerr DEBUG PDU not wired yet. "
             f"Use cfg_set_slot(..., bus={bus}, protocol={PROTO_ZEROERR}, motor_id=<node_id>). "

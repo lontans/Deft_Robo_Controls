@@ -4,6 +4,7 @@
 #include "plant/can/can_router.h"
 #include "plant/can/mcp2518fd.h"
 #include "plant/plugins/robstride.h"
+#include "plant/plant_timing.h"
 #include "main.h"
 #include <string.h>
 
@@ -94,12 +95,9 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 		for (uint8_t b = 0; b < (uint8_t)CAN_BUS_CH4; b++)
 			can_rx_drain((can_bus_id_t)b);
 		if (bus >= CAN_BUS_CH4) {
-			uint8_t rail = (uint8_t)(bus - CAN_BUS_CH4);
-			if ((mcp2518_init_mask() & (1u << rail)) != 0u) {
-				mcp2518_prepare_tx(bus);
-			} else {
-				(void)mcp2518_reinit_rail(bus);
-			}
+			/* Always full rail reinit on bench session — plant TXQ CFG reclaim
+			 * can leave RX FIFO/filters wedged (TX ACKs, probe raw=0). */
+			(void)mcp2518_reinit_rail(bus);
 			mcp2518_reset_tx_stats(bus);
 		}
 		actuator_desire_clear();
@@ -124,6 +122,7 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 		memset(&g_last_probe, 0, sizeof(g_last_probe));
 		g_last_probe.probe_kind = kind;
 		g_last_probe.found = true;
+		plant_timing_reset_peaks();
 		diag_flush_usb();
 		return;
 	}

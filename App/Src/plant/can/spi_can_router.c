@@ -217,23 +217,48 @@ static void spi_poll_rx_one(can_bus_id_t bus)
 {
 	uint8_t rail = spi_bus_to_rail(bus);
 
-	if (spi_can_port_int_active(rail))
-		mcp2518_isr_rx_pending(rail);
+	/*
+	 * INT is level-low while the RX FIFO is non-empty; EXTI only catches
+	 * falling edges into rx_irq_pending. Gate SPI on (level || SW flag) so
+	 * idle rails pay 0 SPI. No critical section: after drain, clear the flag
+	 * and re-check GPIO — sticky INT self-heals a torn bool or lost edge
+	 * (contrast g_control_ticks_pending in control_loop.c, which needs a CS
+	 * because a lost increment is not level-sticky).
+	 */
+	for (;;) {
+		if (!spi_can_port_int_active(rail) &&
+		    !mcp2518_rx_irq_is_pending(rail))
+			return;
 
-	/* Always try HW RX FIFO — do not rely on INT pin alone. */
-	can_frame_t temp;
-	while (mcp2518_recv(bus, &temp)) {
-		spi_rx_push(bus, &temp);
-		can_router_mark_traffic(bus);
+		can_frame_t temp;
+		bool got = false;
+
+		while (mcp2518_recv(bus, &temp)) {
+			spi_rx_push(bus, &temp);
+			can_router_mark_traffic(bus);
+			got = true;
+		}
+
+		mcp2518_rx_irq_clear(rail);
+
+		/* More frames keep INT low without a new edge — loop. */
+		if (!spi_can_port_int_active(rail))
+			return;
+		/* INT stuck or empty after SPI: avoid spin; next poll/EXTI retries. */
+		if (!got)
+			return;
 	}
 }
 
-#define SPI_POLL_TX_MAX 4u
+#define SPI_POLL_TX_MAX 2u
 
 static void spi_poll_one(can_bus_id_t bus)
 {
 	spi_poll_rx_one(bus);
 
+	/* Plant already coalesced one flush/rail; drain at most one more SW
+	 * queued MIT (2 slots/rail, 1-deep TXQ). Was 4 — busy empty-bus CH4–6
+	 * paid repeated try_send/service SPI for no gain. */
 	for (uint8_t n = 0; n < SPI_POLL_TX_MAX; n++) {
 		if (spi_can_router_tx_flush(bus) != CAN_OK)
 			break;

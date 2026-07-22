@@ -568,41 +568,38 @@ static void robstride_maintain_enable(const actuator_config_t *cfg,
 	can_bus_id_t bus;
 	uint32_t now;
 	bool mcp;
+	bool first_arm;
 
 	if (cfg == NULL || last_ms == NULL)
 		return;
 
-	/* First entry (last_ms==0) must always arm run/enable — even with kp>0 —
-	 * otherwise post-recover plant teleop never enables the drive.
-	 * After that, MIT (kp>0) keeps enable; skip periodic re-arm. */
-	if (desire != NULL && desire->kp > 0.01f && *last_ms != 0u)
-		return;
+	(void)desire; /* cadence only — kp>0 must still re-arm after cali/reset */
 
 	bus = cfg->bus;
 	mcp = (bus >= CAN_BUS_CH4);
 	now = HAL_GetTick();
-	if (*last_ms != 0u && (now - *last_ms) < 2000u)
+	first_arm = (*last_ms == 0u);
+	/* First entry (last_ms==0) always arms. Otherwise re-arm every 2s even
+	 * while kp>0 — MIT alone does not recover enable after cali/reset/blank. */
+	if (!first_arm && (now - *last_ms) < 2000u)
 		return;
 
 	*last_ms = now;
+	/* Always non-blocking on the plant path. Blocking send_now + HAL_Delay
+	 * on first_arm × N MCP slots pegged the superloop (CH4–6×6 ack_lag).
+	 * Probe/cali paths still use send_now outside apply_cycle. */
 	if (robstride_set_run_mode(cfg, RS02_RUN_MODE_MOVE, &frame) == PLUGIN_OK) {
+		(void)can_tx_enqueue(bus, &frame);
 		if (mcp) {
-			/* Non-blocking: probe_tx → mcp2518_send can wait 50 ms ×2 and freeze
-			 * the superloop/LEDs on every first Apply into a slot. */
-			(void)can_tx_enqueue(bus, &frame);
 			mcp2518_prepare_tx(bus);
 			(void)spi_can_router_tx_flush(bus);
-		} else {
-			(void)can_tx_enqueue(bus, &frame);
 		}
 	}
 	if (robstride_send_enable(cfg, &frame) == PLUGIN_OK) {
+		(void)can_tx_enqueue(bus, &frame);
 		if (mcp) {
-			(void)can_tx_enqueue(bus, &frame);
 			mcp2518_prepare_tx(bus);
 			(void)spi_can_router_tx_flush(bus);
-		} else {
-			(void)can_tx_enqueue(bus, &frame);
 		}
 	}
 }
@@ -757,10 +754,10 @@ static void robstride_interp_desire(uint8_t slot,
 		out->velocity = v_impl;
 }
 
-/* MCP MIT: plant 500 Hz / N ≈ 125 Hz per slot, staggered by slot index. */
-#define RS02_MCP_APPLY_DIV 4u
-/* FDCAN under FDCAN+MCP hold: 250 Hz MIT, burst 1 — frees lap for USB FB. */
-#define RS02_FDCAN_APPLY_DIV_HEAVY 2u
+/* MCP MIT at plant rate (was ÷4 when idle FIFOSTA + SPI starved FB). */
+#define RS02_MCP_APPLY_DIV 1u
+/* FDCAN under FDCAN+MCP hold: full plant rate (was ÷2 busy-path workaround). */
+#define RS02_FDCAN_APPLY_DIV_HEAVY 1u
 
 static uint32_t s_robstride_plant_tick;
 static uint8_t s_mcp_flush_rails; /* bit0=CH4 … bit2=CH6 */
@@ -818,10 +815,13 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	mcp = (bus >= CAN_BUS_CH4);
 	idle = robstride_desire_idle(desire);
 
-	/* Idle MCP slots (kp=0 on CH4–6) must not SPI-flush every plant tick — that
-	 * was added for MCP teleop and slowed the whole superloop including FDCAN. */
-	if (mcp && robstride_desire_blank(desire))
+	/* Blank MCP (kp=0 and p=0) skips SPI entirely. Idle-anchored MCP
+	 * (kp=0, p!=0) still rate-limits pararead below so HBHF can refresh
+	 * without a MIT; do not SPI-flush every plant tick for blank slots. */
+	if (mcp && robstride_desire_blank(desire)) {
+		last_maintain_ms[slot] = 0u;
 		return;
+	}
 
 	/* Host position interp is for slow MCP USB/SPI only. FDCAN must use the
 	 * host desire directly (5df1f04) — extrapolating stalled laps jolted teleop. */
@@ -829,13 +829,16 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 		robstride_interp_desire(slot, desire, &work);
 	else
 		work = *desire;
-	/* MCP: 1 MIT. FDCAN: burst 3 alone; burst 1 when FDCAN+MCP share the lap. */
-	tx_burst = mcp ? 1u : (s_heavy_multi_domain ? 1u : 3u);
+	/* MCP: 1 MIT (1-deep TXQ). FDCAN: burst 3 (restored under multi-domain). */
+	tx_burst = mcp ? 1u : 3u;
 
 	if (idle) {
 		/* Next non-idle entry must re-arm run/enable (e.g. after recover). */
 		last_maintain_ms[slot] = 0u;
-		if (!mcp) {
+		/* FDCAN and MCP: rate-limited pararead so the 672 B plant FB image
+		 * carries fresh mech pos/vel while host holds kp=0 (idle-anchored).
+		 * Without this, MCP FB stays at 0 after CFG until the first MIT. */
+		{
 			uint32_t now = HAL_GetTick();
 
 			if (last_pararead_ms[slot] == 0u ||
@@ -845,8 +848,11 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 				                                 RS02_PARAM_MECH_POS : RS02_PARAM_MECH_VEL;
 				pararead_phase[slot] ^= 1u;
 				if (robstride_send_para_read(cfg, s_rs02_last_pararead_idx[slot],
-				                             &frame) == PLUGIN_OK)
+				                             &frame) == PLUGIN_OK) {
 					(void)can_tx_enqueue(bus, &frame);
+					if (mcp)
+						s_mcp_flush_rails |= (uint8_t)(1u << (uint8_t)(bus - CAN_BUS_CH4));
+				}
 			}
 		}
 		return;
@@ -1107,6 +1113,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 		{
 			uint32_t deadline = HAL_GetTick() + cal_s * 1000u;
 			uint32_t last_progress_ms = 0u;
+			uint32_t last_enable_probe_ms = 0u;
 			bool saw_cali = false;
 			bool cal_done = false;
 			bool had_spin = false;
@@ -1125,6 +1132,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 							if (saw_cali_at_ms == 0u)
 								saw_cali_at_ms = HAL_GetTick();
 						}
+						/* Datasheet done: mms cali → rest(0) or running(2). */
 						if (saw_cali && (mms == 0u || mms == 2u))
 							cal_done = true;
 					}
@@ -1141,13 +1149,59 @@ bool robstride_probe_id(can_bus_id_t bus,
 				if (cal_done)
 					break;
 
+				/*
+				 * After mms=cali, enable (0x03) is ignored until cal finishes.
+				 * First enable ACK ⇒ cal done — often several seconds before the
+				 * listen deadline / old 8 s spin floor.
+				 */
+				if (saw_cali && saw_cali_at_ms != 0u) {
+					uint32_t now_en = HAL_GetTick();
+					if ((now_en - saw_cali_at_ms) >= 1500u &&
+					    (last_enable_probe_ms == 0u ||
+					     (now_en - last_enable_probe_ms) >= 400u)) {
+						last_enable_probe_ms = now_en;
+						if (robstride_send_enable(&cfg, &frame) == PLUGIN_OK &&
+						    robstride_probe_tx(bus, &frame) == PLUGIN_OK) {
+							for (uint8_t i = 0u; i < 25u; i++) {
+								robstride_poll_listen(bus);
+								while (can_rx_pop(bus, &frame) == CAN_OK) {
+									uint8_t mms = 0xFFu;
+									bool got_mms = robstride_try_decode_mms(
+										&frame, motor_id, &mms);
+									if (got_mms) {
+										if (mms == 1u) {
+											saw_cali = true;
+											if (saw_cali_at_ms == 0u)
+												saw_cali_at_ms = HAL_GetTick();
+										}
+										if (saw_cali && (mms == 0u || mms == 2u))
+											cal_done = true;
+									}
+									if (robstride_try_parse_feedback(
+										    &frame, motor_id, false, out)) {
+										out->found = true;
+										/* Enable/fb reply once not stuck in mms=cali. */
+										if (saw_cali && (!got_mms || mms != 1u))
+											cal_done = true;
+									}
+								}
+								if (cal_done)
+									break;
+								HAL_Delay(1);
+							}
+						}
+					}
+				}
+				if (cal_done)
+					break;
+
 				if (saw_cali && had_spin && out->found) {
 					if (fabsf(out->velocity) < 0.20f) {
 						if (spin_settled_ms == 0u)
 							spin_settled_ms = HAL_GetTick();
-						else if ((HAL_GetTick() - spin_settled_ms) >= 2000u &&
+						else if ((HAL_GetTick() - spin_settled_ms) >= 1500u &&
 						         saw_cali_at_ms != 0u &&
-						         (HAL_GetTick() - saw_cali_at_ms) >= 8000u)
+						         (HAL_GetTick() - saw_cali_at_ms) >= 2500u)
 							cal_done = true;
 					} else {
 						spin_settled_ms = 0u;
@@ -1156,7 +1210,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 
 				/* Static comm0x02 repeats during cal — require min spin window first. */
 				if (saw_cali && out->found && saw_cali_at_ms != 0u &&
-				    (HAL_GetTick() - saw_cali_at_ms) >= 15000u &&
+				    (HAL_GetTick() - saw_cali_at_ms) >= 12000u &&
 				    out->raw_frames_seen >= 8u) {
 					if (out->ext_id != last_ext_id ||
 					    memcmp(out->data, last_data, 8u) != 0) {
@@ -1165,7 +1219,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 						fb_static_ms = 0u;
 					} else if (fb_static_ms == 0u) {
 						fb_static_ms = HAL_GetTick();
-					} else if ((HAL_GetTick() - fb_static_ms) >= 4000u) {
+					} else if ((HAL_GetTick() - fb_static_ms) >= 3000u) {
 						cal_done = true;
 					}
 				}

@@ -252,31 +252,24 @@ void actuator_apply_desire(void)
 	/* One prepare_tx + flush per MCP bus that enqueued this tick. */
 	robstride_mcp_flush_pending();
 
-	/* Bound per-lap bus service: with many rails commanded, rotate poll/RX so
-	 * USB FB is not starved by servicing CH1–6 every tick. */
+	/* Poll every commanded bus each tick. Idle MCP pays 0 SPI (INT-gated);
+	 * busy-path SPI was cut via batched RAM + TXQ STA dedupe — RR≤3 was a
+	 * workaround when empty FIFOSTA + multi-rail SPI starved USB FB. */
 	{
 		uint8_t buses[CAN_BACKEND_COUNT];
 		uint8_t n = 0u;
-		static uint8_t s_bus_svc_rr;
-		uint8_t max_svc;
 
 		for (can_bus_id_t bus = 0; bus < CAN_BACKEND_COUNT; bus++) {
 			if ((poll_buses & (1u << (unsigned)bus)) != 0u)
 				buses[n++] = (uint8_t)bus;
 		}
 
-		max_svc = n;
-		if (max_svc > 3u)
-			max_svc = 3u;
-
-		for (uint8_t i = 0; i < max_svc; i++) {
-			can_bus_id_t bus = (can_bus_id_t)buses[(s_bus_svc_rr + i) % n];
+		for (uint8_t i = 0; i < n; i++) {
+			can_bus_id_t bus = (can_bus_id_t)buses[i];
 
 			can_router_poll_bus(bus);
 			actuator_dispatch_bus_rx(bus);
 		}
-		if (n > 0u)
-			s_bus_svc_rr = (uint8_t)((s_bus_svc_rr + max_svc) % n);
 	}
 }
 

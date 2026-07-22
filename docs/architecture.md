@@ -221,7 +221,9 @@ Per `External_Documentation/RobStride/RS02/RS02_Firmware_Documentation.pdf`:
 1. **comm 0x04** reset (`data[0]=1` clears faults) — motor at **rest** (mms=0)
 2. **parawrite 0x702D=1** (`iq_test`, §4.2.7) — optional extended init
 3. **comm 0x05** motor_cali — one listen window on MCU; shaft spins freely
-4. Success: mms **cali → rest or running**
+4. Success: mms **cali → rest or running** (no separate cal-done ACK). Firmware
+   also polls **enable (0x03)** after mms=cali — motor ignores enable while
+   calibrating, so the first enable/fb reply ends the listen early.
 5. **comm 0x06** zero, **comm 0x16** data_save, pararead verify (`0x7019` mechPos)
 
 Supply **24–60 V** (datasheet range). Host skips zero/save if step 4 fails.

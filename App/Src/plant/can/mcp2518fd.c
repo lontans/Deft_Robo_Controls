@@ -143,7 +143,24 @@ static bool mcp_trec_read(mcp2518_dev_t *d, uint8_t *tec, uint8_t *rec);
 static bool mcp_txq_has_space(mcp2518_dev_t *d);
 static void mcp_config_txq(mcp2518_dev_t *d);
 static void mcp_config_c1con_classic(mcp2518_dev_t *d);
+static void mcp_config_rx_fifo(mcp2518_dev_t *d);
+static void mcp_config_filters_accept_all(mcp2518_dev_t *d);
+static void mcp_enable_rx_irq(mcp2518_dev_t *d);
 static void mcp_txq_clear_atif(mcp2518_dev_t *d);
+
+/* Non-blocking TXQ free for plant (no HAL_Delay). Spreads
+ * ABAT → config → FRESET → normal across try_send calls. */
+typedef enum {
+	MCP_TXQ_RST_IDLE = 0,
+	MCP_TXQ_RST_WAIT_ABORT,
+	MCP_TXQ_RST_WAIT_CFG,
+	MCP_TXQ_RST_WAIT_NORMAL,
+} mcp_txq_rst_t;
+
+static mcp_txq_rst_t s_txq_rst[MCP2518_RAIL_COUNT];
+/* prepare_tx → try_send handoff: reuse STA result, skip second service. */
+static bool s_txq_prep_valid[MCP2518_RAIL_COUNT];
+static bool s_txq_prep_ready[MCP2518_RAIL_COUNT];
 
 /* -------------------------------------------------------------------------- */
 /* Low-level SPI                                                              */
@@ -453,24 +470,26 @@ static void mcp_txq_clear_abat(mcp2518_dev_t *d)
 
 static void mcp_txq_hard_reset(mcp2518_dev_t *d)
 {
+	/* Config-mode TXQ FRESET must re-arm RX FIFO + accept-all filter.
+	 * Skipping RX restore (8482a40 plant TXQ reclaim) left TX alive and RX dead
+	 * — probe HIT raw=0 with visible TX on the wire. */
 	if (mcp_enter_config(d)) {
+		mcp_enable_txq(d);
 		mcp_config_txq(d);
 		mcp_config_c1con_classic(d);
+		mcp_config_rx_fifo(d);
+		mcp_config_filters_accept_all(d);
+		mcp_enable_rx_irq(d);
 		(void)mcp_enter_normal_can20(d);
 	}
 	mcp_txq_clear_atif(d);
+	{
+		uint8_t rail = (uint8_t)(d - &g_dev[0]);
+
+		if (rail < MCP2518_RAIL_COUNT)
+			s_txq_rst[rail] = MCP_TXQ_RST_IDLE;
+	}
 }
-
-/* Non-blocking TXQ free for plant (no HAL_Delay). Spreads
- * ABAT → config → FRESET → normal across try_send calls. */
-typedef enum {
-	MCP_TXQ_RST_IDLE = 0,
-	MCP_TXQ_RST_WAIT_ABORT,
-	MCP_TXQ_RST_WAIT_CFG,
-	MCP_TXQ_RST_WAIT_NORMAL,
-} mcp_txq_rst_t;
-
-static mcp_txq_rst_t s_txq_rst[MCP2518_RAIL_COUNT];
 
 static void mcp_reqop_nowait(mcp2518_dev_t *d, uint8_t reqop)
 {
@@ -549,9 +568,13 @@ static bool mcp_txq_reset_poll(mcp2518_dev_t *d)
 			mcp_reqop_nowait(d, C1CON_OPMOD_CFG);
 			return false;
 		}
+		/* Same as mcp_txq_hard_reset: CFG rewrite must restore RX path. */
 		mcp_enable_txq(d);
 		mcp_config_txq(d);
 		mcp_config_c1con_classic(d);
+		mcp_config_rx_fifo(d);
+		mcp_config_filters_accept_all(d);
+		mcp_enable_rx_irq(d);
 		mcp_reqop_nowait(d, C1CON_OPMOD_CAN20);
 		s_txq_rst[rail] = MCP_TXQ_RST_WAIT_NORMAL;
 		return false;
@@ -717,8 +740,10 @@ static void mcp_txq_force_ready(mcp2518_dev_t *d)
 }
 
 /* Plant TXQ service (no HAL_Delay): UINC finished/orphaned objects; ABAT if
- * TXREQ sticks; rate-limited config FRESET if abort cannot free the 1-deep queue. */
-static void mcp_txq_service_nonblock(mcp2518_dev_t *d)
+ * TXREQ sticks; rate-limited config FRESET if abort cannot free the 1-deep queue.
+ * Returns true if TXQ can accept a frame (uses the STA already read — callers
+ * should not immediately re-read TXQSTA via mcp_txq_has_space). */
+static bool mcp_txq_service_nonblock(mcp2518_dev_t *d)
 {
 	static uint32_t s_busy_since_ms[MCP2518_RAIL_COUNT];
 	static bool s_aborting[MCP2518_RAIL_COUNT];
@@ -731,21 +756,23 @@ static void mcp_txq_service_nonblock(mcp2518_dev_t *d)
 	bool attempt_done;
 
 	if (rail >= MCP2518_RAIL_COUNT)
-		return;
+		return false;
 
 	if (s_txq_rst[rail] != MCP_TXQ_RST_IDLE) {
 		(void)mcp_txq_reset_poll(d);
-		return;
+		return mcp_txq_has_space(d);
 	}
 
 	if (!mcp_read_buf(d, REG_C1TXQSTA, &sta, 1u))
-		return;
+		return false;
 
 	if ((sta & TXQ_STA_TXQEIF) != 0u) {
+		/* Empty: only clear ABAT if we armed it — skip C1CON SPI otherwise. */
+		if (s_aborting[rail])
+			mcp_txq_clear_abat(d);
 		s_busy_since_ms[rail] = 0u;
 		s_aborting[rail] = false;
-		mcp_txq_clear_abat(d);
-		return;
+		return true;
 	}
 
 	(void)mcp_read_buf(d, (uint16_t)(REG_C1TXQCON + 1u), &con_b1, 1u);
@@ -767,21 +794,22 @@ static void mcp_txq_service_nonblock(mcp2518_dev_t *d)
 	    (!txreq && (now - s_busy_since_ms[rail]) >= 1u)) {
 		mcp_txq_uinc(d);
 		mcp_txq_clear_atif(d);
-		mcp_txq_clear_abat(d);
+		if (s_aborting[rail])
+			mcp_txq_clear_abat(d);
 		s_busy_since_ms[rail] = 0u;
 		s_aborting[rail] = false;
-		return;
+		return true;
 	}
 
 	if (!txreq)
-		return;
+		return ((sta & TXQ_STA_TXQNIF) != 0u);
 
 	if (!s_aborting[rail] && (now - s_busy_since_ms[rail]) >= 1u) {
 		uint32_t con = mcp_read32(d, REG_C1CON);
 
 		mcp_write32(d, REG_C1CON, con | C1CON_ABAT);
 		s_aborting[rail] = true;
-		return;
+		return false;
 	}
 
 	if (s_aborting[rail] && (now - s_busy_since_ms[rail]) >= 5u) {
@@ -789,7 +817,10 @@ static void mcp_txq_service_nonblock(mcp2518_dev_t *d)
 		(void)mcp_txq_reset_poll(d);
 		s_busy_since_ms[rail] = 0u;
 		s_aborting[rail] = false;
+		return mcp_txq_has_space(d);
 	}
+
+	return ((sta & TXQ_STA_TXQNIF) != 0u);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -959,11 +990,20 @@ static bool mcp_hw_pop_rx(mcp2518_dev_t *d, can_frame_t *frame)
 
 	uint32_t ua = mcp_read32(d, REG_C1FIFOUA(MCP_RX_FIFO_REG));
 	uint16_t ram = (uint16_t)(MCP_RAM_BASE + (ua & 0x0FFFu));
+	uint8_t raw[16];
+	uint32_t r0, r1, r2, r3;
 
-	uint32_t r0 = mcp_read32(d, ram + 0u);
-	uint32_t r1 = mcp_read32(d, ram + 4u);
-	uint32_t r2 = mcp_read32(d, ram + 8u);
-	uint32_t r3 = mcp_read32(d, ram + 12u);
+	if (!mcp_read_buf(d, ram, raw, 16u))
+		return false;
+
+	r0 = (uint32_t)raw[0] | ((uint32_t)raw[1] << 8) |
+	     ((uint32_t)raw[2] << 16) | ((uint32_t)raw[3] << 24);
+	r1 = (uint32_t)raw[4] | ((uint32_t)raw[5] << 8) |
+	     ((uint32_t)raw[6] << 16) | ((uint32_t)raw[7] << 24);
+	r2 = (uint32_t)raw[8] | ((uint32_t)raw[9] << 8) |
+	     ((uint32_t)raw[10] << 16) | ((uint32_t)raw[11] << 24);
+	r3 = (uint32_t)raw[12] | ((uint32_t)raw[13] << 8) |
+	     ((uint32_t)raw[14] << 16) | ((uint32_t)raw[15] << 24);
 
 	if (frame != NULL)
 		mcp_unpack_to_frame(r0, r1, r2, r3, frame);
@@ -988,10 +1028,15 @@ static bool mcp_hw_txq_load(mcp2518_dev_t *d, const can_frame_t *frame)
 	uint32_t d1 = (uint32_t)frame->data[4] | ((uint32_t)frame->data[5] << 8)
 	            | ((uint32_t)frame->data[6] << 16) | ((uint32_t)frame->data[7] << 24);
 
-	mcp_write32(d, ram + 0u, t0);
-	mcp_write32(d, ram + 4u, t1);
-	mcp_write32(d, ram + 8u, d0);
-	mcp_write32(d, ram + 12u, d1);
+	uint8_t raw[16] = {
+		(uint8_t)(t0), (uint8_t)(t0 >> 8), (uint8_t)(t0 >> 16), (uint8_t)(t0 >> 24),
+		(uint8_t)(t1), (uint8_t)(t1 >> 8), (uint8_t)(t1 >> 16), (uint8_t)(t1 >> 24),
+		(uint8_t)(d0), (uint8_t)(d0 >> 8), (uint8_t)(d0 >> 16), (uint8_t)(d0 >> 24),
+		(uint8_t)(d1), (uint8_t)(d1 >> 8), (uint8_t)(d1 >> 16), (uint8_t)(d1 >> 24),
+	};
+
+	if (!mcp_write_buf(d, ram, raw, 16u))
+		return false;
 
 	mcp_txq_commit_and_request(d);
 	return true;
@@ -1303,6 +1348,19 @@ void mcp2518_isr_rx_pending(uint8_t rail)
 		g_dev[rail].rx_irq_pending = true;
 }
 
+bool mcp2518_rx_irq_is_pending(uint8_t rail)
+{
+	if (rail >= MCP2518_RAIL_COUNT)
+		return false;
+	return g_dev[rail].rx_irq_pending;
+}
+
+void mcp2518_rx_irq_clear(uint8_t rail)
+{
+	if (rail < MCP2518_RAIL_COUNT)
+		g_dev[rail].rx_irq_pending = false;
+}
+
 /* -------------------------------------------------------------------------- */
 /* TX / RX API                                                                */
 /* -------------------------------------------------------------------------- */
@@ -1317,6 +1375,9 @@ bool mcp2518_send(can_bus_id_t bus, const can_frame_t *frame)
 
 	if (!d->initialized)
 		return false;
+
+	/* Blocking send path — drop prepare→try_send handoff if any. */
+	s_txq_prep_valid[rail] = false;
 
 	for (uint8_t round = 0; round < 2u; round++) {
 		uint8_t tec_before = 0u;
@@ -1388,24 +1449,32 @@ bool mcp2518_try_send(can_bus_id_t bus, const can_frame_t *frame)
 
 	uint8_t rail = (uint8_t)(bus - CAN_BUS_CH4);
 	mcp2518_dev_t *d = &g_dev[rail];
+	bool ready;
 
 	if (!d->initialized)
 		return false;
 
 	/* Prefer UINC/ABAT; if still full, advance rate-limited config FRESET.
-	 * Bus-off TEC recover lives in prepare_tx (not every try_send). */
-	if (s_txq_rst[rail] != MCP_TXQ_RST_IDLE) {
+	 * Bus-off TEC recover lives in prepare_tx (not every try_send).
+	 * If prepare_tx just serviced this rail, reuse that STA result. */
+	if (s_txq_prep_valid[rail]) {
+		ready = s_txq_prep_ready[rail];
+		s_txq_prep_valid[rail] = false;
+	} else if (s_txq_rst[rail] != MCP_TXQ_RST_IDLE) {
 		if (!mcp_txq_reset_poll(d))
 			return false;
+		ready = mcp_txq_has_space(d);
 	} else {
-		mcp_txq_service_nonblock(d);
+		ready = mcp_txq_service_nonblock(d);
 	}
 
-	if (!mcp_txq_has_space(d)) {
-		mcp_txq_reset_kick(d);
-		(void)mcp_txq_reset_poll(d);
-		if (!mcp_txq_has_space(d))
-			return false;
+	if (!ready) {
+		/* TXQ full or reclaim in progress — keep the frame in the SW queue.
+		 * Do not FRESET here: at plant-rate MCP MIT, a busy 1-deep TXQ is
+		 * normal (esp. empty-bus NACK). Kicking config reclaim every miss
+		 * pegged lap_max (~1s) and ack_lag on CH4–6×6. Stuck-TX FRESET
+		 * stays rate-limited inside mcp_txq_service_nonblock. */
+		return false;
 	}
 
 	if (!mcp_hw_txq_load(d, frame))
@@ -1465,8 +1534,7 @@ void mcp2518_poll_rx(can_bus_id_t bus)
 
 	if (spi_can_port_int_active(rail))
 		d->rx_irq_pending = true;
-
-	(void)mcp_rx_fifo_not_empty(d);
+	/* FIFOSTA is paid inside mcp2518_recv — do not probe it here. */
 }
 
 void mcp2518_reset_tx_stats(can_bus_id_t bus)
@@ -1499,11 +1567,14 @@ void mcp2518_prepare_tx(can_bus_id_t bus)
 		/* Non-blocking config reclaim — avoid HAL_Delay recover on plant path. */
 		mcp_txq_reset_kick(d);
 		(void)mcp_txq_reset_poll(d);
+		s_txq_prep_valid[rail] = false;
 		return;
 	}
 
-	/* Drain finished/stuck attempt (UINC on TXATIF). No ATIF W1C without UINC. */
-	mcp_txq_service_nonblock(d);
+	/* Drain finished/stuck attempt once; try_send reuses this STA via
+	 * s_txq_prep_* so prepare_tx + flush do not double-pay TXQSTA. */
+	s_txq_prep_ready[rail] = mcp_txq_service_nonblock(d);
+	s_txq_prep_valid[rail] = true;
 }
 
 void mcp2518_get_tx_stats(uint8_t rail, uint8_t *tx_ok, uint8_t *tx_fail, uint8_t *tx_nack)

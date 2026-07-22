@@ -1,4 +1,5 @@
 #include "plant/plant_timing.h"
+#include "plant/diag/diag.h"
 #include "main.h"
 #include <string.h>
 
@@ -22,6 +23,10 @@ void plant_timing_lap_end(void)
 	if (delta > 0xFFFFu)
 		delta = 0xFFFFu;
 	s_lap_delta_ms = (uint16_t)delta;
+	/* Blocking bench (MCP reinit / cali / probe) inflates one lap — do not
+	 * stick that into lap_max for plant-stream health. */
+	if (plant_diag_bench_session_active() || plant_diag_probe_busy())
+		return;
 	if (s_lap_delta_ms > s_lap_max_ms)
 		s_lap_max_ms = s_lap_delta_ms;
 }
@@ -55,4 +60,10 @@ void plant_timing_svd_fill(host_pdu_feedback_t *pdu)
 void plant_timing_thermo_fill(host_pdu_feedback_t *pdu)
 {
 	(void)pdu;
+}
+
+void plant_timing_reset_peaks(void)
+{
+	s_lap_max_ms = 0u;
+	s_lap_delta_ms = 0u;
 }

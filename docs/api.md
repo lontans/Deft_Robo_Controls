@@ -76,6 +76,7 @@ There is no `hub.plant` namespace; plant calls are on the hub itself.
 | `hub.set_actuator(slot, desire, *, send=True)` | Held MIT desire for `slot` in `0..24`. With streaming, use `send=False`. |
 | `hub.held_desire(slot)` / `hub.held_desires()` | What the stream is commanding. |
 | `hub.send_once()` | One write of the held image + one FB poll. |
+| `hub.refresh_feedback(*, slots=None, seconds=0.5, hz=40.0)` | Pump held desires until the 672 B `HBHF` actuator payload is fresh (see below). |
 | `hub.set_mcu_state(state, *, send=True)` | `McuState.NORMAL` / `RECOVERY` / `DIAG_ONLY` / `ESTOP`. |
 | `hub.recover()` | `RECOVERY` → `NORMAL` (MCU `plant_recovery_all`). |
 | `hub.port` / `hub.close()` | COM name / teardown (`with` supported). |
@@ -87,6 +88,22 @@ ActuatorDesire()  # all zeros — idle / blank
 ```
 
 A slot is **blank** when idle (`kp/kd/vel/τ≈0`) **and** `position == 0`. Blank MCP slots (CH4–6) skip SPI. Holds accumulate per slot — leaving many CH4–6 slots non-blank at once is expensive on the MCU.
+
+### Stale plant feedback after CFG / DEBUG
+
+Plant `HBHF` actuator fields are **not** filled by DEBUG probe/CFG alone. Until the MCU exchanges CAN under a held plant desire, slot pose/vel in the 672 B image can stay at zero (especially MCP CH4–6, where blank idle skips SPI).
+
+**Do not** pick between probe pose and plant FB ad hoc. After assigning CFG:
+
+1. Seed an **idle-anchored** desire at a known pose (`kp=0`, `position=pose` — not blank `p=0` if the shaft is elsewhere).
+2. Call `hub.refresh_feedback(...)` so firmware parareads and the host pumps until actuator state lands in `HBHF`.
+3. Then read `FeedbackImage.actuator(slot)` / metrics / teleop.
+
+```python
+hub.set_actuator(slot, ActuatorDesire(position=pose, kp=0.0, kd=0.0))
+fb = hub.refresh_feedback(slots=[slot], seconds=0.5)
+pos = fb.actuator(slot).position if fb and fb.actuator(slot) else None
+```
 
 ### `McuState` / `plant_block`
 
@@ -125,7 +142,7 @@ methods over crafting tags. A lease may set `plant_block=bench_session`.
 | `cfg_set_slot(…, persist=False)` | RAM SET; `persist=True` also flash SAVE (survives power cycle). |
 | `enter_bootloader(confirm=True)` | Soft-DFU enter (CDC drops → `0483:DF11`). |
 | `leave_bootloader(serial=…)` | Leave ROM DFU via reset trampoline. |
-| `calibrate_robstride(…)` | **Not ported** — legacy archived after prove-out; contact if needed. |
+| `calibrate_robstride(bus=…, motor_id=…)` | RS02 encoder cal (own lease). Shaft free; 24–60 V. |
 | `discover_zeroerr(…)` | **Not wired** — CFG `protocol=4` + node ID for now. |
 
 ### CFG protocols / buses
@@ -253,13 +270,22 @@ DEBUG tags: [host-debug-v1.md](host-debug-v1.md) (`DBGC`/`DBGF`). v1 (562 B) rej
 | Concern | Where |
 |---------|--------|
 | Arrow teleop, brace, YAM soft limits | Prefer hub plant stream; legacy teleop frozen |
-| RS02 encoder calibrate | Legacy holdout — use calibrated motors or contact |
 | Raw tag / frame crafting | Don’t — use hub; [host-exchange-v2.md](host-exchange-v2.md) / [host-debug-v1.md](host-debug-v1.md) |
 | Multi-client COM mux | Not yet — one process owns the port |
 
+## Single RS02 channel bringup
+
+Move one motor between CH1–CH6 and re-run with `--bus` only:
+
+```powershell
+cd scripts
+python rs02_channel_bringup.py --bus 4
+python rs02_channel_bringup.py --bus 1 --motor-id 0x70 --skip-cali
+```
+
 ## SDK-only actuator prove-out
 
-Checklist (no `scripts/legacy`): see [`scripts/legacy/README.md`](../scripts/legacy/README.md).
+Migration checklist (what's ported to the SDK vs. still frozen in `scripts/legacy`) tracked in [`scripts/legacy/README.md`](../scripts/legacy/README.md).
 
 ---
 

@@ -64,6 +64,10 @@ Arm2: J8–J14 → slots 7–13 on CH2, same local soft limits/gains.
 cd scripts
 pip install -r requirements.txt
 
+# Single RS02 — move cable between CH1–CH6, only change --bus
+python rs02_channel_bringup.py --bus 4
+python rs02_channel_bringup.py --bus 1 --motor-id 0x70 --skip-cali
+
 # Telemetry UI (owns COM)
 python -m deft_controls_sdk.debug_dashboard --port COM5
 
@@ -86,7 +90,7 @@ with ControlsPcbHub.connect('COM5') as hub:
 "
 ```
 
-One process owns COM. Plant motion = top-level hub methods (`set_actuator`, `start_streaming`, `recover`). Discover/CFG = `hub.debug.*`. There is **no** `hub.plant` namespace.
+One process owns COM. Plant motion = top-level hub methods (`set_actuator`, `start_streaming`, `recover`). Discover/CFG/calibrate = `hub.debug.*`. There is **no** `hub.plant` namespace.
 
 **MCP CH4–6 idle quirk:** firmware skips SPI when the slot desire is blank (`kp/kd/vel/τ≈0` and `position==0`). Idle stream blinks CH1–3 but not CH4–6 until a non-blank desire or a probe runs on that bus.
 
@@ -116,10 +120,11 @@ User teleop releases COM (`q`) before AI / `joint goto`. Absolute `--to` refused
 | `DM_ARROW_VEL` | 3.0 → 0.6 → 0.25 → | ≈0.12 rad/s (still a bit high) |
 | `MAX_CMD_LEAD` | 0.35 → | ≈0.18 rad |
 
-RS02 calibrate (legacy; SDK not ported yet):
+RS02 calibrate (SDK):
 
 ```powershell
-python legacy/control_hub.py calibrate --port COM5 --bus N --id 0x..
+python rs02_channel_bringup.py --bus N
+# or: hub.debug.calibrate_robstride(bus=N, motor_id=0x..)
 ```
 
 ---

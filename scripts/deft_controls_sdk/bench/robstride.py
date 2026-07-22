@@ -1,14 +1,4 @@
-"""RobStride RS2 discover / probe over the RS2 bench PDU.
-
-Ported from scripts/legacy/controls_pcb_host/plugins/robstride.py
-(discover_id, probe_id, send_diag, format_probe_line) — control flow and
-timing kept close to the original; calibrate (comm 0x04->0x05->0x06->0x16,
-RS02_Firmware_Documentation.pdf) is NOT ported yet. It depends on four more
-legacy modules (control_hub/rs02/{calibrate,probe,display}.py, link.py) with
-timing-sensitive listen windows and a spinning shaft — that's a deeper, more
-hardware-sensitive port than discover/probe and deserves its own pass rather
-than a rushed one bundled in here. Use `scripts/legacy` for calibrate today.
-"""
+"""RobStride RS2 discover / probe / calibrate over DEBUG frames."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
@@ -59,6 +49,15 @@ def format_probe_line(resp: dict) -> str:
     )
 
 
+def _mcp_discover_timeout(base_s: float) -> float:
+    """MCP probes block USB until listen finishes (~420 ms enable + TX flush).
+
+    FDCAN budgets (0.55 / 0.40) are too short — host times out after TX is on
+    the wire but before the HIT PDU arrives. Mirror legacy rs02_can_scan.
+    """
+    return max(base_s * 3.0, base_s + 0.6, 2.0)
+
+
 def discover(
     connection: "Connection",
     telemetry: Optional["TelemetryCache"],
@@ -68,15 +67,21 @@ def discover(
     end: int = 0x80,
 ) -> Optional[int]:
     """Sweep start..end on `bus`, trying enable-then-promiscuous per ID. Returns
-    the first responding motor_id, or None. Mirrors legacy discover_id exactly."""
-    print(f"RS2 discover on {can_bus_label(bus)}  IDs 0x{start:02X}..0x{end:02X}")
+    the first responding motor_id, or None."""
+    mcp = is_mcp_bus(bus)
+    enable_s = _mcp_discover_timeout(0.55) if mcp else 0.55
+    promisc_s = _mcp_discover_timeout(0.40) if mcp else 0.40
+    print(
+        f"RS2 discover on {can_bus_label(bus)}  IDs 0x{start:02X}..0x{end:02X}"
+        + (f"  (MCP timeouts enable={enable_s:.1f}s promisc={promisc_s:.1f}s)" if mcp else "")
+    )
     with lease(connection, telemetry, bus=bus):
         if telemetry is not None:
             telemetry.set_connected(True, mode="discover")
         for motor_id in range(start, end + 1):
             for kind, label, timeout_s in (
-                (PROBE_ENABLE_ONLY, "enable", 0.55),
-                (PROBE_PROMISC, "promisc", 0.40),
+                (PROBE_ENABLE_ONLY, "enable", enable_s),
+                (PROBE_PROMISC, "promisc", promisc_s),
             ):
                 resp = _send_diag(connection, motor_id, kind, timeout_s, bus=bus)
                 if resp is not None and resp.get("found"):
@@ -100,7 +105,8 @@ def probe(
     default path (kind=PROBE_ENABLE_ONLY); the kp/kd ctrl-probe kinds are not
     exposed here yet — add if a caller needs PROBE_FULL/PROBE_CTRL_ONLY."""
     mcp = is_mcp_bus(bus)
-    enable_timeout_s = max(timeout_s, 1.0) if mcp else timeout_s
+    # MCP: firmware enable listen ~420 ms + blocking SPI TX; keep ≥2 s like discover.
+    enable_timeout_s = _mcp_discover_timeout(timeout_s) if mcp else timeout_s
     with lease(connection, telemetry, bus=bus):
         if telemetry is not None:
             telemetry.set_connected(True, mode="discover")

@@ -12,3 +12,5 @@ void plant_timing_note_service(uint8_t ticks_serviced);
 void plant_timing_system_fill(host_system_feedback_t *sys);
 void plant_timing_svd_fill(host_pdu_feedback_t *pdu);
 void plant_timing_thermo_fill(host_pdu_feedback_t *pdu);
+/* Clear sticky lap_max (e.g. after blocking bench/MCP reinit). */
+void plant_timing_reset_peaks(void);

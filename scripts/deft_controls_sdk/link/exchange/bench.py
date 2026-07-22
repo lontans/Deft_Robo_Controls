@@ -118,6 +118,8 @@ def build_rs2_probe_command(
     motor_id: int,
     probe_kind: int,
     seq: int,
+    param_index: int = 0,
+    param_raw_value: int = 0,
     *,
     position: float = 0.0,
     velocity: float = 0.0,
@@ -125,11 +127,21 @@ def build_rs2_probe_command(
     kd: float = 0.0,
     bus: int = 1,
 ) -> bytes:
-    """Scan command + an actuator desire (used by PROBE_ENABLE_CTRL/PROBE_CTRL_ONLY/
-    PROBE_FULL, which mount a kp/kd hold alongside the probe)."""
+    """Scan command + optional param bytes + optional actuator desire.
+
+    ``param_index`` / ``param_raw_value`` map to pdu[5..10] (pararead/write, cali
+    listen seconds, etc.). Desire is mounted for PROBE_ENABLE_CTRL / CTRL_ONLY /
+    FULL when kp/kd/position are non-zero.
+    """
     buf = bytearray(build_rs2_scan_command(motor_id, probe_kind, seq, bus=bus))
     if position != 0.0 or velocity != 0.0 or kp != 0.0 or kd != 0.0:
         patch_actuator_desire(buf, position=position, velocity=velocity, kp=kp, kd=kd)
+    buf[PDU_OFF + 5] = param_index & 0xFF
+    buf[PDU_OFF + 6] = (param_index >> 8) & 0xFF
+    buf[PDU_OFF + 7] = param_raw_value & 0xFF
+    buf[PDU_OFF + 8] = (param_raw_value >> 8) & 0xFF
+    buf[PDU_OFF + 9] = (param_raw_value >> 16) & 0xFF
+    buf[PDU_OFF + 10] = (param_raw_value >> 24) & 0xFF
     return bytes(buf)
 
 
