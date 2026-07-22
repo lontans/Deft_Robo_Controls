@@ -225,7 +225,14 @@ void can_router_mark_traffic(can_bus_id_t bus)
 
 static void can_led_poll(void)
 {
+	static uint32_t s_led_poll_ms;
 	uint32_t now = HAL_GetTick();
+
+	/* can_router_poll_bus calls this once per bus; all×25 polls 6 buses
+	 * per plant tick. Blink period is 125 ms — once per ms is enough. */
+	if (s_led_poll_ms == now)
+		return;
+	s_led_poll_ms = now;
 
 	for (uint8_t i = 0; i < CAN_BACKEND_COUNT; i++) {
 		if (g_last_traffic_ms[i] != 0u &&
@@ -502,8 +509,20 @@ static void fdcan_poll_one(can_bus_id_t bus)
 {
 	fdcan_poll_rx_one(bus);
 
-	while (can_tx_flush(bus) == CAN_OK)
-		;
+	/* Hold the bus lock across the whole SW TX drain. Per-frame
+	 * can_tx_flush lock/unlock was a fixed all×25 tax (8+8+3 MIT/tick). */
+	if (!can_bus_lock(bus))
+		return;
+
+	while (tx_queues[bus].head != tx_queues[bus].tail) {
+		can_status_t status =
+			fdcan_backend_send(bus, &tx_queues[bus].buf[tx_queues[bus].tail]);
+		if (status != CAN_OK)
+			break;
+		tx_queues[bus].tail = (tx_queues[bus].tail + 1) % CAN_QUEUE_DEPTH;
+	}
+
+	can_bus_unlock(bus);
 }
 
 void can_router_poll_bus_rx(can_bus_id_t bus)

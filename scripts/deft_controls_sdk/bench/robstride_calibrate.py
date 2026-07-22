@@ -338,7 +338,7 @@ def calibrate(
     usb_wait_s = cal_listen_s + 5.0
 
     print(f"RS2 encoder cal on {can_bus_label(bus)}  id=0x{motor_id:02X}")
-    print("Sequence: reset → iq_test → 0x05 cali → 0x06 zero → 0x16 save.")
+    print("Sequence: reset -> iq_test -> 0x05 cali -> 0x06 zero -> 0x16 save.")
     print(
         f"Supply: {VBUS_MIN_V:.0f}–{VBUS_MAX_V:.0f} V. Shaft free, no load on output."
     )
@@ -433,7 +433,7 @@ def _cal_body(
 
     if not cal_ok:
         if strict_cali:
-            print("  SKIP zero/save — strict mode requires mms→rest/running.")
+            print("  SKIP zero/save — strict mode requires mms->rest/running.")
             return False
         print(f"  proceeding to zero/save ({CAL_SETTLE_S:.0f}s settle) — mms=cali was seen.")
         time.sleep(CAL_SETTLE_S)
@@ -477,8 +477,11 @@ def _cal_body(
     if got_pararead and mech_pos is not None and abs(mech_pos) < 0.1:
         print("Result: cal sequence OK — mechPos near zero.")
         return True
-    if got_pararead:
+    if got_pararead and mech_pos is not None:
         print(f"Result: pararead OK but mechPos={mech_pos:+.4f} rad — retry zero/save or cal.")
+        return False
+    if got_pararead:
+        print("Result: pararead OK (VBUS/run_mode) but mechPos read failed — retry verify.")
         return False
     print("Result: zero/save ran but pararead verify failed.")
     return False

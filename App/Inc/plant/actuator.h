@@ -43,3 +43,6 @@ void actuator_desire_clear(void);
 void plant_recovery_all(void);
 
 bool actuator_any_non_idle_live(void);
+
+/* Bit N set ⇒ schematic CH(N+1) was polled in the last apply tick. */
+uint32_t actuator_last_apply_poll_buses(void);

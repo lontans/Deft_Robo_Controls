@@ -289,3 +289,74 @@ def test_calibrate_succeeds_with_zero_echo_pararead_verify(
         strict_cali=False,
     )
     assert ok is True
+
+
+def test_calibrate_partial_pararead_does_not_crash_on_none_mechpos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: hardware report was "SDK crashed formatting mechPos=None
+    after save". VBUS/run_mode pararead can succeed while the mechPos read
+    specifically times out -- calibrate() must report a clean FAIL, not raise
+    TypeError formatting None with `:+.4f`.
+    """
+    monkeypatch.setattr("deft_controls_sdk.bench.robstride_calibrate.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr("deft_controls_sdk.link.connection.time.sleep", lambda *_a, **_k: None)
+
+    motor_id = 0x70
+    bus = 4
+
+    def _ext_feedback(kind: int, *, mms: int = 0, comm: int = 0x02) -> bytes:
+        return _rs2_feedback(
+            motor_id=motor_id,
+            probe_kind=kind,
+            comm_mode=comm,
+            mms=mms,
+            position=0.0,
+            raw_frames=1,
+        )
+
+    def responder(frame: bytes):
+        pdu = frame[PDU_OFF : PDU_OFF + 32]
+        kind = pdu[4]
+        param_index = pdu[5] | (pdu[6] << 8)
+
+        if kind == SESSION_BEGIN:
+            return _rs2_feedback(motor_id=0, probe_kind=SESSION_BEGIN, found=False, raw_frames=0)
+        if kind == SESSION_END:
+            return _rs2_feedback(motor_id=0, probe_kind=SESSION_END, found=False, raw_frames=0)
+        if kind == PROBE_RESET:
+            return _ext_feedback(PROBE_RESET, mms=0)
+        if kind == PROBE_PARAWRITE:
+            return _ext_feedback(PROBE_PARAWRITE, mms=0, comm=0x12)
+        if kind == PROBE_PARAREAD:
+            # mechPos read: no reply (times out). VBUS/run_mode: reply fine.
+            if (param_index & 0xFFFF) == PARAM_MECH_POS:
+                return None
+            value = 48.0 if (param_index & 0xFFFF) == PARAM_BUS_VOLT else 0.0
+            return _rs2_feedback(
+                motor_id=motor_id,
+                probe_kind=PROBE_PARAREAD,
+                comm_mode=0x11,
+                position=value,
+                can_data=_pararead_can_data_zero_echo(value),
+                raw_frames=1,
+            )
+        if kind == PROBE_CALI:
+            return _ext_feedback(PROBE_CALI, mms=1) + _ext_feedback(PROBE_CALI, mms=0)
+        if kind == PROBE_ZERO:
+            return _ext_feedback(PROBE_ZERO, mms=0)
+        if kind == PROBE_DATA_SAVE:
+            return _ext_feedback(PROBE_DATA_SAVE, mms=0)
+        return None
+
+    conn = _fake_connection(responder)
+    ok = calibrate(
+        conn,
+        None,
+        bus=bus,
+        motor_id=motor_id,
+        cal_listen_s=10.0,
+        skip_iq_test=False,
+        strict_cali=False,
+    )
+    assert ok is False

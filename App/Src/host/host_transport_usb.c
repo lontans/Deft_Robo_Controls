@@ -16,16 +16,32 @@ static volatile bool     tx_busy;
 
 void host_transport_usb_rx_push(const uint8_t *data, uint32_t len)
 {
+	uint16_t head;
+	uint16_t tail;
+	uint16_t free;
+	uint16_t first;
+
 	if (data == NULL || len == 0)
 		return;
 
-	for (uint32_t i = 0; i < len; i++) {
-		uint16_t next = (uint16_t)((rx_head + 1u) % USB_TRANSPORT_RX_RING_SIZE);
-		if (next == rx_tail)
-			break;
-		rx_ring[rx_head] = data[i];
-		rx_head = next;
-	}
+	/* Contiguous memcpy into the ring (ISR path). Byte-at-a-time push was a
+	 * fixed tax on every CDC OUT at 200–500 Hz host × 672 B frames. */
+	head = rx_head;
+	tail = rx_tail;
+	free = (uint16_t)((tail + USB_TRANSPORT_RX_RING_SIZE - head - 1u) %
+	                  USB_TRANSPORT_RX_RING_SIZE);
+	if (len > free)
+		len = free;
+	if (len == 0)
+		return;
+
+	first = (uint16_t)(USB_TRANSPORT_RX_RING_SIZE - head);
+	if (first > len)
+		first = (uint16_t)len;
+	memcpy(&rx_ring[head], data, first);
+	if (len > first)
+		memcpy(&rx_ring[0], data + first, len - first);
+	rx_head = (uint16_t)((head + len) % USB_TRANSPORT_RX_RING_SIZE);
 }
 
 static void usb_init(void)
@@ -37,16 +53,32 @@ static void usb_init(void)
 
 static size_t usb_read(uint8_t *dst, size_t max_len)
 {
-	size_t n = 0;
+	uint16_t head;
+	uint16_t tail;
+	uint16_t avail;
+	uint16_t first;
+	size_t n;
 
 	if (dst == NULL || max_len == 0)
 		return 0;
 
-	while (n < max_len && rx_tail != rx_head) {
-		dst[n++] = rx_ring[rx_tail];
-		rx_tail = (uint16_t)((rx_tail + 1u) % USB_TRANSPORT_RX_RING_SIZE);
-	}
+	head = rx_head;
+	tail = rx_tail;
+	avail = (uint16_t)((head + USB_TRANSPORT_RX_RING_SIZE - tail) %
+	                   USB_TRANSPORT_RX_RING_SIZE);
+	if (avail == 0)
+		return 0;
+	if (max_len < avail)
+		avail = (uint16_t)max_len;
 
+	first = (uint16_t)(USB_TRANSPORT_RX_RING_SIZE - tail);
+	if (first > avail)
+		first = avail;
+	memcpy(dst, &rx_ring[tail], first);
+	if (avail > first)
+		memcpy(dst + first, &rx_ring[0], avail - first);
+	rx_tail = (uint16_t)((tail + avail) % USB_TRANSPORT_RX_RING_SIZE);
+	n = avail;
 	return n;
 }
 

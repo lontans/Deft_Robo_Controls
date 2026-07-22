@@ -101,7 +101,8 @@ plugin_status_t robstride_send_proactive(const actuator_config_t *cfg,
 void robstride_plant_tick_begin(uint32_t commanded_buses);
 void robstride_apply_cycle(const actuator_config_t *cfg,
                            const actuator_desire_t *desire,
-                           actuator_state_t *state_out);
+                           actuator_state_t *state_out,
+                           uint8_t slot);
 /* After all apply_cycle calls: one prepare_tx + flush per MCP bus that enqueued. */
 void robstride_mcp_flush_pending(void);
 void robstride_on_rx_frame(const actuator_config_t *cfg, uint8_t slot,

@@ -1,6 +1,7 @@
 #include "plant/diag/diag.h"
 #include "plant/diag/diag_internal.h"
 #include "plant/servo.h"
+#include "plant/actuator.h"
 #include "plant/can/can_router.h"
 #include "plant/plugins/dynamixel.h"
 #include "host/host_link.h"
@@ -106,10 +107,16 @@ void plant_diag_can_router_poll(void)
 		can_router_poll_bus(g_rs2_can_bus);
 	else {
 		/* Plant already polls commanded buses (incl. MCP). End-of-lap:
-		 * FDCAN only — covers uncommanded CH1–3 without a second MCP SPI pass
-		 * on busy CH4–6 holds. Idle MCP is already INT-gated on the plant path. */
-		for (can_bus_id_t bus = 0; bus < CAN_FDCAN_COUNT; bus++)
+		 * FDCAN only, and skip buses the last apply already drained so
+		 * all×25 does not pay a second CH1–3 flush every lap. Idle /
+		 * uncommanded FDCAN still get coverage here. */
+		uint32_t already = actuator_last_apply_poll_buses();
+
+		for (can_bus_id_t bus = 0; bus < CAN_FDCAN_COUNT; bus++) {
+			if ((already & (1u << (unsigned)bus)) != 0u)
+				continue;
 			can_router_poll_bus(bus);
+		}
 	}
 }
 

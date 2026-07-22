@@ -16,8 +16,14 @@ static size_t                g_cmd_rx_fill;
 static host_feedback_image_t g_fb_tx_frame;
 static bool                  g_debug_reply_pending;
 
+/* Plant command mount deferred to control_loop_service (TIM6-tick gated) —
+ * see host_link_apply_pending_plant(). host_link_poll_rx() only stages the
+ * latest coalesced image here; it does not mount. */
+static host_command_image_t  g_plant_pending_image;
+static volatile bool         g_plant_pending;
+
 static void host_link_rx_resync(void);
-static bool host_link_rx_feed_byte(uint8_t b);
+static void host_link_rx_consume_ready(bool *have_plant, host_command_image_t *plant_hold);
 static void host_feedback_image_fetch_plant(host_feedback_image_t *out);
 static void host_feedback_image_fetch_debug(host_feedback_image_t *out);
 
@@ -80,13 +86,51 @@ void host_link_begin_loop(void)
 void host_link_poll_rx(void)
 {
 	const host_transport_ops_t *tp = host_transport_get();
-	uint8_t chunk[64];
+	uint8_t chunk[256];
 	size_t n;
+	host_command_image_t plant_hold;
+	bool have_plant = false;
 
+	/* Drain USB ring; coalesce plant images to the latest per lap so a
+	 * 200–500 Hz host does not mount 25 slots for every queued frame. */
 	while ((n = tp->read(chunk, sizeof(chunk))) > 0) {
-		for (size_t i = 0; i < n; i++)
-			(void)host_link_rx_feed_byte(chunk[i]);
+		size_t off = 0;
+
+		while (off < n) {
+			size_t need = HOST_COMMAND_IMAGE_BYTES - g_cmd_rx_fill;
+			size_t take = n - off;
+
+			if (take > need)
+				take = need;
+			memcpy(&g_cmd_rx_buf[g_cmd_rx_fill], &chunk[off], take);
+			g_cmd_rx_fill += take;
+			off += take;
+
+			if (g_cmd_rx_fill >= HOST_COMMAND_IMAGE_BYTES)
+				host_link_rx_consume_ready(&have_plant, &plant_hold);
+		}
 	}
+
+	if (have_plant) {
+		/* Stage only -- mount happens in host_link_apply_pending_plant(),
+		 * called from control_loop_service() on an actual TIM6 tick. A fast
+		 * host (200-500 Hz) can otherwise trigger a full 25-slot mount on
+		 * every superloop spin once SPI/USB got cheap enough to spin faster
+		 * than 500 Hz between ticks. */
+		g_plant_pending_image = plant_hold;
+		g_plant_pending = true;
+	}
+}
+
+void host_link_apply_pending_plant(void)
+{
+	if (!g_plant_pending)
+		return;
+
+	g_plant_pending = false;
+	plant_command_image_dispatch_plant(&g_plant_pending_image);
+	g_last_command_seq = g_plant_pending_image.header.seq;
+	g_last_command_ms = HAL_GetTick();
 }
 
 static bool host_link_magic_at(const uint8_t *buf, uint32_t magic)
@@ -118,27 +162,30 @@ static void host_link_rx_resync(void)
 	}
 }
 
-static bool host_link_rx_feed_byte(uint8_t b)
+static void host_link_rx_consume_ready(bool *have_plant, host_command_image_t *plant_hold)
 {
-	if (g_cmd_rx_fill >= HOST_COMMAND_IMAGE_BYTES)
-		g_cmd_rx_fill = 0;
-
-	g_cmd_rx_buf[g_cmd_rx_fill++] = b;
-
-	if (g_cmd_rx_fill < HOST_COMMAND_IMAGE_BYTES)
-		return false;
-
 	const host_command_image_t *cmd =
 			(const host_command_image_t *)g_cmd_rx_buf;
 
 	if (!host_command_image_valid(cmd)) {
 		host_link_rx_resync();
-		return false;
+		return;
 	}
 
 	g_cmd_rx_fill = 0;
-	host_command_image_dispatch(cmd);
-	return true;
+
+	if (cmd->header.magic == HOST_DEBUG_COMMAND_MAGIC) {
+		/* Bench/debug must not be coalesced away. */
+		host_command_image_dispatch(cmd);
+		return;
+	}
+
+	if (plant_hold != NULL && have_plant != NULL) {
+		memcpy(plant_hold, cmd, sizeof(*plant_hold));
+		*have_plant = true;
+	} else {
+		host_command_image_dispatch(cmd);
+	}
 }
 
 static void host_feedback_fill_system(host_feedback_image_t *out)
@@ -175,9 +222,21 @@ static void host_feedback_image_fetch_debug(host_feedback_image_t *out)
 
 void host_link_poll_tx(void)
 {
+	static uint32_t s_last_plant_fb_tick = 0xFFFFFFFFu;
+
+	/* Plant FB at most once per TIM6 tick (500 Hz). Superloop otherwise
+	 * rebuilds 672 B on every spin and starves all-25 under a fast host. */
+	if (!g_debug_reply_pending &&
+	    s_last_plant_fb_tick == (uint32_t)g_control_tick_count) {
+		return;
+	}
+
 	for (uint8_t i = 0; i < 8u; i++) {
-		if (host_link_poll_tx_once())
+		if (host_link_poll_tx_once()) {
+			if (!g_debug_reply_pending)
+				s_last_plant_fb_tick = (uint32_t)g_control_tick_count;
 			return;
+		}
 	}
 }
 

@@ -15,6 +15,9 @@
 static actuator_desire_t actuator_desire_stage[ACTUATOR_COUNT];
 static actuator_state_t  actuator_state_stage[ACTUATOR_COUNT];
 static volatile bool     actuator_desire_pending;
+/* Buses polled by the last actuator_apply_desire(); end-of-lap diag skips
+ * these so all×25 does not double-flush FDCAN every superloop lap. */
+static uint32_t          s_last_apply_poll_buses;
 
 actuator_config_t actuator_table[ACTUATOR_COUNT];
 actuator_desire_t actuator_desire_live[ACTUATOR_COUNT];
@@ -185,8 +188,10 @@ void actuator_apply_desire(void)
 	}
 	plant_crit_exit();
 
-	if (!plant_runtime_actuator_can_apply())
+	if (!plant_runtime_actuator_can_apply()) {
+		s_last_apply_poll_buses = 0u;
 		return;
+	}
 
 	uint32_t commanded_buses = 0u;
 
@@ -228,7 +233,7 @@ void actuator_apply_desire(void)
 
 		if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
 			robstride_apply_cycle(&actuator_table[i], desire,
-			                      &actuator_state_live[i]);
+			                      &actuator_state_live[i], i);
 			continue;
 		}
 
@@ -271,6 +276,8 @@ void actuator_apply_desire(void)
 			actuator_dispatch_bus_rx(bus);
 		}
 	}
+
+	s_last_apply_poll_buses = poll_buses;
 }
 
 void actuator_capture_state(void)
@@ -306,4 +313,9 @@ void actuator_feedback_snapshot(host_actuator_feedback_t *dst, uint8_t count)
 
 	for (uint8_t i = n; i < count; i++)
 		memset(&dst[i], 0, sizeof(dst[i]));
+}
+
+uint32_t actuator_last_apply_poll_buses(void)
+{
+	return s_last_apply_poll_buses;
 }

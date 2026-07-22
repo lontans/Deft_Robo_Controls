@@ -9,6 +9,11 @@ void host_link_poll_tx(void);
 bool host_link_poll_tx_once(void);
 void host_link_poll_rx(void);
 
+/* Mount the latest staged plant command, if any. Call from
+ * control_loop_service() so mount cost is paid at most once per TIM6 tick,
+ * not once per superloop spin. */
+void host_link_apply_pending_plant(void);
+
 bool host_command_image_valid(const host_command_image_t *cmd);
 void host_command_image_dispatch(const host_command_image_t *cmd);
 

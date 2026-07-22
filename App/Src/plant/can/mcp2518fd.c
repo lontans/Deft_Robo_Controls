@@ -1556,11 +1556,24 @@ void mcp2518_prepare_tx(can_bus_id_t bus)
 
 	uint8_t rail = (uint8_t)(bus - CAN_BUS_CH4);
 	mcp2518_dev_t *d = &g_dev[rail];
+	static uint32_t s_trec_last_ms[MCP2518_RAIL_COUNT];
+	uint32_t now;
+	uint8_t tec = 0u;
 
 	if (!d->initialized)
 		return;
 
-	uint8_t tec = 0u;
+	/* TREC every flush was a fixed SPI tax on CH4–6 / all-25. Sample ~50 ms
+	 * unless we already know bus-off reclaim is mid-flight. */
+	now = HAL_GetTick();
+	if (s_txq_rst[rail] == MCP_TXQ_RST_IDLE &&
+	    s_trec_last_ms[rail] != 0u &&
+	    (now - s_trec_last_ms[rail]) < 50u) {
+		s_txq_prep_ready[rail] = mcp_txq_service_nonblock(d);
+		s_txq_prep_valid[rail] = true;
+		return;
+	}
+	s_trec_last_ms[rail] = (now == 0u) ? 1u : now;
 
 	mcp_read_trec(d, &tec, NULL);
 	if (tec >= 128u) {

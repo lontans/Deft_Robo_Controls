@@ -560,6 +560,11 @@ static plugin_status_t robstride_probe_tx(can_bus_id_t bus, const can_frame_t *f
 	return PLUGIN_OK;
 }
 
+/* Plant-tick MCP coalesce — before maintain_enable so it can mark rails. */
+static uint32_t s_robstride_plant_tick;
+static uint8_t s_mcp_flush_rails; /* bit0=CH4 … bit2=CH6 */
+static bool s_heavy_multi_domain; /* FDCAN and MCP both commanded */
+
 static void robstride_maintain_enable(const actuator_config_t *cfg,
                                       const actuator_desire_t *desire,
                                       uint32_t *last_ms)
@@ -585,22 +590,17 @@ static void robstride_maintain_enable(const actuator_config_t *cfg,
 		return;
 
 	*last_ms = now;
-	/* Always non-blocking on the plant path. Blocking send_now + HAL_Delay
-	 * on first_arm × N MCP slots pegged the superloop (CH4–6×6 ack_lag).
-	 * Probe/cali paths still use send_now outside apply_cycle. */
+	/* Always non-blocking on the plant path. MCP frames join the tick coalesce
+	 * flush (no per-slot prepare/flush). Probe/cali still use send_now. */
 	if (robstride_set_run_mode(cfg, RS02_RUN_MODE_MOVE, &frame) == PLUGIN_OK) {
 		(void)can_tx_enqueue(bus, &frame);
-		if (mcp) {
-			mcp2518_prepare_tx(bus);
-			(void)spi_can_router_tx_flush(bus);
-		}
+		if (mcp)
+			s_mcp_flush_rails |= (uint8_t)(1u << (uint8_t)(bus - CAN_BUS_CH4));
 	}
 	if (robstride_send_enable(cfg, &frame) == PLUGIN_OK) {
 		(void)can_tx_enqueue(bus, &frame);
-		if (mcp) {
-			mcp2518_prepare_tx(bus);
-			(void)spi_can_router_tx_flush(bus);
-		}
+		if (mcp)
+			s_mcp_flush_rails |= (uint8_t)(1u << (uint8_t)(bus - CAN_BUS_CH4));
 	}
 }
 
@@ -759,10 +759,6 @@ static void robstride_interp_desire(uint8_t slot,
 /* FDCAN under FDCAN+MCP hold: full plant rate (was ÷2 busy-path workaround). */
 #define RS02_FDCAN_APPLY_DIV_HEAVY 1u
 
-static uint32_t s_robstride_plant_tick;
-static uint8_t s_mcp_flush_rails; /* bit0=CH4 … bit2=CH6 */
-static bool s_heavy_multi_domain; /* FDCAN and MCP both commanded */
-
 void robstride_plant_tick_begin(uint32_t commanded_buses)
 {
 	bool fdcan = (commanded_buses & 0x07u) != 0u; /* CH1..3 */
@@ -789,14 +785,14 @@ void robstride_mcp_flush_pending(void)
 
 void robstride_apply_cycle(const actuator_config_t *cfg,
                            const actuator_desire_t *desire,
-                           actuator_state_t *state_out)
+                           actuator_state_t *state_out,
+                           uint8_t slot)
 {
 	static uint32_t last_maintain_ms[ACTUATOR_COUNT];
 	static uint32_t last_pararead_ms[ACTUATOR_COUNT];
 	static uint8_t pararead_phase[ACTUATOR_COUNT];
 	can_frame_t frame;
 	can_bus_id_t bus;
-	uint8_t slot;
 	bool idle;
 	bool mcp;
 	uint8_t tx_burst;
@@ -807,7 +803,6 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 
 	(void)state_out;
 
-	slot = robstride_actuator_slot(cfg);
 	if (slot >= ACTUATOR_COUNT)
 		slot = 0u;
 
@@ -829,8 +824,9 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 		robstride_interp_desire(slot, desire, &work);
 	else
 		work = *desire;
-	/* MCP: 1 MIT (1-deep TXQ). FDCAN: burst 3 (restored under multi-domain). */
-	tx_burst = mcp ? 1u : 3u;
+	/* One MIT per plant tick (500 Hz capability). FDCAN burst 3 stacked three
+	 * frames/tick and dominated all-25 lap time without raising control rate. */
+	tx_burst = 1u;
 
 	if (idle) {
 		/* Next non-idle entry must re-arm run/enable (e.g. after recover). */
@@ -878,18 +874,9 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 			s_mcp_flush_rails |= (uint8_t)(1u << (uint8_t)(bus - CAN_BUS_CH4));
 	}
 
-	if (!mcp) {
-		uint32_t now = HAL_GetTick();
-
-		if (last_pararead_ms[slot] == 0u || (now - last_pararead_ms[slot]) >= 50u) {
-			last_pararead_ms[slot] = now;
-			s_rs02_last_pararead_idx[slot] = (pararead_phase[slot] == 0u) ?
-			                                 RS02_PARAM_MECH_POS : RS02_PARAM_MECH_VEL;
-			pararead_phase[slot] ^= 1u;
-			if (robstride_send_para_read(cfg, s_rs02_last_pararead_idx[slot], &frame) == PLUGIN_OK)
-				(void)can_tx_enqueue(bus, &frame);
-		}
-	}
+	/* Non-idle FDCAN used to also enqueue a 50 ms pararead per slot. MIT
+	 * feedback already carries mech state; the extra TX was pure all×25
+	 * cost when FDCAN+MCP were both commanded. Idle path still parareads. */
 }
 
 static void robstride_listen_rx(can_bus_id_t bus,

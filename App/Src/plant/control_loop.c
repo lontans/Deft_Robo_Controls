@@ -2,13 +2,19 @@
 #include "plant/actuator.h"
 #include "plant/servo.h"
 #include "plant/plant_timing.h"
+#include "host/host_link.h"
 #include "main.h"
 #include "tim.h"
 
 #define HEARTBEAT_PORT GPIOC
 #define HEARTBEAT_PIN  GPIO_PIN_3
 #define HEARTBEAT_TOGGLE_EVERY 250u
-#define CONTROL_TICK_BURST_MAX 8u
+/* Was 8: under all×25 overload one apply already ≥2 ms, so draining 8 ticks
+ * in one superloop lap made lap≈16–20 ms and starved host_link_poll_tx
+ * (plant FB ≤1/lap → fb_hz≈63 while ticks_svc≈8). Cap at 1 so each lap
+ * returns to USB RX/TX; when apply fits in the TIM6 period, pending stays
+ * 0–1 and plant still runs at 500 Hz with full per-tick MIT. */
+#define CONTROL_TICK_BURST_MAX 1u
 #define CONTROL_TICK_PENDING_MAX 255u
 
 volatile uint32_t g_control_tick_count = 0;
@@ -45,6 +51,11 @@ void control_loop_service(void)
 
 	if (n == 0u)
 		return;
+
+	/* Mount the latest staged plant command here (not in host_link_poll_rx)
+	 * so mount cost is paid once per serviced tick, not once per superloop
+	 * spin -- see host_link_apply_pending_plant(). */
+	host_link_apply_pending_plant();
 
 	plant_timing_note_service(n);
 
