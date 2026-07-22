@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import types
+from pathlib import Path
 from typing import List, Optional
 
 _SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -143,3 +144,61 @@ def test_main_flash_wires_to_flash_firmware(monkeypatch: pytest.MonkeyPatch) -> 
     assert main(["flash", "--serial", "ABC", "--image", "/tmp/x.elf"]) == 0
     assert called["serial"] == "ABC"
     assert called["image"] == "/tmp/x.elf"
+
+
+def test_dfu_util_flash_retries_sudo_on_access_denied(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import deft_controls_sdk.bench.soft_dfu as mod
+
+    bin_path = tmp_path / "fw.bin"
+    bin_path.write_bytes(b"\x00" * 64)
+    calls: List[List[str]] = []
+
+    def _run(argv, check=False, text=True, capture_output=True):
+        calls.append(list(argv))
+        if "sudo" in argv[0]:
+            return types.SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+        return types.SimpleNamespace(
+            returncode=74,
+            stdout="",
+            stderr="dfu-util: Cannot open DFU device 0483:df11\n",
+        )
+
+    monkeypatch.setattr(mod, "_which_dfu_util", lambda: "/usr/bin/dfu-util")
+    monkeypatch.setattr(mod, "host_os", lambda: "linux")
+    monkeypatch.setattr(
+        mod.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None
+    )
+    monkeypatch.setattr(mod.subprocess, "run", _run)
+    mod._dfu_util_flash(bin_path, serial=None, address=0x08000000)
+    assert calls[0][0] == "/usr/bin/dfu-util"
+    assert calls[1][:2] == ["/usr/bin/sudo", "-n"]
+
+
+def test_flash_firmware_windows_skips_objcopy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import deft_controls_sdk.bench.soft_dfu as mod
+
+    elf = tmp_path / "fw.elf"
+    elf.write_bytes(b"\x7fELF")
+
+    monkeypatch.setattr(mod, "_which_dfu_util", lambda: None)
+    monkeypatch.setattr(mod, "_which_cubeprog", lambda: "STM32_Programmer_CLI")
+    monkeypatch.setattr(mod, "wait_for_dfu", lambda **kw: True)
+    monkeypatch.setattr(mod, "leave_bootloader", lambda **kw: True)
+    monkeypatch.setattr(mod, "wait_for_cdc", lambda **kw: "COM5")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("objcopy should not run on CubeProg path")
+
+    monkeypatch.setattr(mod, "elf_to_bin", _boom)
+    seen = {}
+
+    def _cube(image, *, serial=None):
+        seen["image"] = Path(image)
+
+    monkeypatch.setattr(mod, "_cubeprog_flash", _cube)
+    assert mod.flash_firmware(elf, confirm=True) == "COM5"
+    assert seen["image"] == elf

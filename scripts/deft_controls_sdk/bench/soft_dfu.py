@@ -200,6 +200,51 @@ def wait_for_dfu(
     return False
 
 
+def wait_for_dfu_access(
+    *,
+    serial: Optional[str] = None,
+    timeout_s: float = 5.0,
+) -> bool:
+    """Poll until 0483:DF11 can be opened+claimed (udev perms applied).
+
+    Listing the device can succeed while open still returns ACCESS — common
+    right after re-enumeration before udev finishes.
+    """
+    try:
+        import usb1
+    except ImportError as exc:
+        raise RuntimeError(
+            "wait_for_dfu_access needs libusb1 (pip install libusb1)"
+        ) from exc
+
+    ctx = usb1.USBContext()
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        dev = _find_dfu(ctx, serial=serial)
+        if dev is not None:
+            handle = None
+            try:
+                handle = dev.open()
+                try:
+                    if handle.kernelDriverActive(0):
+                        handle.detachKernelDriver(0)
+                except Exception:
+                    pass
+                handle.claimInterface(0)
+                handle.releaseInterface(0)
+                return True
+            except Exception:
+                pass
+            finally:
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
+        time.sleep(0.15)
+    return False
+
+
 def enter_bootloader(
     connection: Optional["Connection"] = None,
     *,
@@ -469,13 +514,14 @@ def default_firmware_elf() -> Path:
 
 
 def _which_objcopy() -> str:
-    for name in ("arm-none-eabi-objcopy", "objcopy"):
+    for name in ("arm-none-eabi-objcopy", "objcopy", "arm-none-eabi-objcopy.exe"):
         path = shutil.which(name)
         if path:
             return path
     raise RuntimeError(
-        "need objcopy (apt: binutils) or arm-none-eabi-objcopy "
-        "(apt: gcc-arm-none-eabi)"
+        "need objcopy for dfu-util path (apt: binutils / gcc-arm-none-eabi). "
+        "On Windows without dfu-util, install STM32CubeProgrammer instead "
+        "(ELF is flashed directly — no objcopy)."
     )
 
 
@@ -488,12 +534,69 @@ def elf_to_bin(elf: Path, bin_path: Path) -> Path:
     return bin_path
 
 
+def _which_dfu_util() -> Optional[str]:
+    return shutil.which("dfu-util") or shutil.which("dfu-util.exe")
+
+
+def _which_cubeprog() -> Optional[str]:
+    for name in ("STM32_Programmer_CLI", "STM32_Programmer_CLI.exe"):
+        path = shutil.which(name)
+        if path:
+            return path
+    candidates = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "STMicroelectronics"
+        / "STM32Cube"
+        / "STM32CubeProgrammer"
+        / "bin"
+        / "STM32_Programmer_CLI.exe",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+        / "STMicroelectronics"
+        / "STM32Cube"
+        / "STM32CubeProgrammer"
+        / "bin"
+        / "STM32_Programmer_CLI.exe",
+        Path(os.environ.get("LOCALAPPDATA", ""))
+        / "Programs"
+        / "STM32Cube"
+        / "STM32CubeProgrammer"
+        / "bin"
+        / "STM32_Programmer_CLI.exe",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return None
+
+
+_DFU_UDEV_HINT = """\
+Linux cannot open 0483:df11 (permissions). ATTR was too narrow on some
+Jetson/udev builds — use ATTRS + uaccess (repo file):
+
+  sudo cp scripts/udev/99-stm32-dfu.rules /etc/udev/rules.d/
+  sudo udevadm control --reload-rules
+  sudo udevadm trigger --subsystem-match=usb --action=add
+  # unplug/replug once, then re-run soft_dfu_flash.py
+
+Or flash once with sudo (board still in DFU):
+
+  sudo dfu-util -d 0483:df11 -a 0 -s 0x08000000 -D /tmp/controls.bin
+"""
+
+
+def _dfu_util_permission_error(text: str, returncode: int) -> bool:
+    if returncode == 74:  # LIBUSB_ERROR_ACCESS / cannot open
+        return True
+    t = text.lower()
+    return "cannot open dfu" in t or "no dfu capable usb device" in t
+
+
 def _dfu_util_flash(bin_path: Path, *, serial: Optional[str], address: int) -> None:
-    dfu = shutil.which("dfu-util")
+    dfu = _which_dfu_util()
     if not dfu:
         raise RuntimeError(
-            "dfu-util not found — install it (apt: dfu-util) or flash with "
-            "STM32_Programmer_CLI then call leave_bootloader()"
+            "dfu-util not found — install it (apt: dfu-util) or use "
+            "STM32_Programmer_CLI on Windows"
         )
     cmd = [
         dfu,
@@ -509,21 +612,66 @@ def _dfu_util_flash(bin_path: Path, *, serial: Optional[str], address: int) -> N
     ]
     if serial:
         cmd.extend(["-S", serial])
-    print("+", " ".join(cmd), flush=True)
-    # dfu-util prints "Invalid DFU suffix" for raw .bin — that is expected.
-    subprocess.run(cmd, check=True)
+
+    def _run(argv: List[str]) -> subprocess.CompletedProcess[str]:
+        print("+", " ".join(argv), flush=True)
+        # dfu-util prints "Invalid DFU suffix" for raw .bin — that is expected.
+        return subprocess.run(argv, check=False, text=True, capture_output=True)
+
+    result = _run(cmd)
+    if result.returncode == 0:
+        if result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+        return
+
+    out = (result.stdout or "") + (result.stderr or "")
+    if out:
+        print(out, end="" if out.endswith("\n") else "\n")
+
+    # Listing DFU works without write perms; opening often needs udev or sudo.
+    if host_os() == "linux" and _dfu_util_permission_error(out, result.returncode):
+        sudo = shutil.which("sudo")
+        if sudo:
+            for sudo_argv in (
+                [sudo, "-n", *cmd],  # passwordless sudo
+                [sudo, *cmd],  # interactive prompt if TTY
+            ):
+                print(
+                    "dfu-util could not open device — retrying with sudo…",
+                    flush=True,
+                )
+                result = _run(sudo_argv)
+                if result.returncode == 0:
+                    if result.stdout:
+                        print(
+                            result.stdout,
+                            end="" if result.stdout.endswith("\n") else "\n",
+                        )
+                    if result.stderr:
+                        print(
+                            result.stderr,
+                            end="" if result.stderr.endswith("\n") else "\n",
+                        )
+                    return
+                out = (result.stdout or "") + (result.stderr or "")
+                if out:
+                    print(out, end="" if out.endswith("\n") else "\n")
+        raise RuntimeError(_DFU_UDEV_HINT.strip())
+
+    raise subprocess.CalledProcessError(result.returncode, cmd, out)
 
 
 def _cubeprog_flash(image: Path, *, serial: Optional[str]) -> None:
-    cli = shutil.which("STM32_Programmer_CLI") or shutil.which(
-        "STM32_Programmer_CLI.exe"
-    )
+    cli = _which_cubeprog()
     if not cli:
-        raise RuntimeError("STM32_Programmer_CLI not found on PATH")
-    cmd = [cli, "-c", "port=USB1", "-w", str(image), "-v"]
-    if serial:
-        # CubeProg uses sn= for USB DFU serial when multiple devices present.
-        cmd = [cli, "-c", f"port=USB1 sn={serial}", "-w", str(image), "-v"]
+        raise RuntimeError(
+            "STM32_Programmer_CLI not found — install STM32CubeProgrammer "
+            "or add it to PATH"
+        )
+    connect = f"port=USB1 sn={serial}" if serial else "port=USB1"
+    cmd = [cli, "-c", connect, "-w", str(image), "-v"]
     print("+", " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True)
 
@@ -539,6 +687,10 @@ def flash_firmware(
 
     ``image`` may be an ``.elf`` or ``.bin``. Default: repo Debug ELF.
     Returns the CDC device path after the app re-enumerates.
+
+    Backend: dfu-util when present (Linux/Jetson; needs .bin via objcopy for
+    ELF). Otherwise STM32_Programmer_CLI (Windows typical) flashes ELF
+    directly — no objcopy required.
     """
     if not confirm:
         raise ValueError("flash_firmware() requires confirm=True")
@@ -547,6 +699,14 @@ def flash_firmware(
     if not img.is_file():
         raise FileNotFoundError(
             f"firmware not found: {img} — build in CubeIDE or pass --image"
+        )
+
+    use_dfu_util = _which_dfu_util() is not None
+    use_cube = (not use_dfu_util) and (_which_cubeprog() is not None)
+    if not use_dfu_util and not use_cube:
+        raise RuntimeError(
+            "no flasher found — install dfu-util (Linux) or STM32CubeProgrammer "
+            "(Windows)"
         )
 
     # Prefer DFU if already there (re-flash without re-enter).
@@ -561,22 +721,31 @@ def flash_firmware(
     else:
         print("already in DFU (0483:DF11)", flush=True)
 
+    # List ≠ open: wait until udev MODE/uaccess has applied (or sudo later).
+    if use_dfu_util and host_os() == "linux":
+        if not wait_for_dfu_access(serial=serial, timeout_s=5.0):
+            print(
+                "warning: DFU visible but not openable yet — "
+                "dfu-util may need sudo / better udev rules",
+                flush=True,
+            )
+
     tmp_bin: Optional[Path] = None
     try:
-        if img.suffix.lower() == ".bin":
-            bin_path = img
+        if use_cube:
+            # CubeProg accepts ELF/BIN directly — skip objcopy on Windows.
+            print(f"flashing with STM32_Programmer_CLI: {img}", flush=True)
+            _cubeprog_flash(img, serial=serial)
         else:
-            fd, tmp_name = tempfile.mkstemp(prefix="soft_dfu_", suffix=".bin")
-            os.close(fd)
-            tmp_bin = Path(tmp_name)
-            print(f"objcopy {img} → {tmp_bin}", flush=True)
-            elf_to_bin(img, tmp_bin)
-            bin_path = tmp_bin
-
-        os_name = host_os()
-        if os_name == "windows" and shutil.which("dfu-util") is None:
-            _cubeprog_flash(img if img.suffix.lower() == ".elf" else bin_path, serial=serial)
-        else:
+            if img.suffix.lower() == ".bin":
+                bin_path = img
+            else:
+                fd, tmp_name = tempfile.mkstemp(prefix="soft_dfu_", suffix=".bin")
+                os.close(fd)
+                tmp_bin = Path(tmp_name)
+                print(f"objcopy {img} → {tmp_bin}", flush=True)
+                elf_to_bin(img, tmp_bin)
+                bin_path = tmp_bin
             _dfu_util_flash(bin_path, serial=serial, address=flash_address)
     finally:
         if tmp_bin is not None:
