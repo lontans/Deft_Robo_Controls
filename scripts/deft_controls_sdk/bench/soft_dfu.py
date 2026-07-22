@@ -22,7 +22,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Sequence
+from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 from deft_controls_sdk.link.exchange import PDU_OFF, build_plant_command
 from deft_controls_sdk.link.exchange.wire_layout import (
@@ -519,12 +519,52 @@ def _which_objcopy() -> str:
 
 
 def elf_to_bin(elf: Path, bin_path: Path) -> Path:
-    """Convert ELF → raw binary for dfu-util."""
+    """Convert full ELF → raw binary (pads gaps — slow for dfu-util)."""
     cmd = [_which_objcopy(), "-O", "binary", str(elf), str(bin_path)]
     subprocess.run(cmd, check=True)
     if not bin_path.is_file() or bin_path.stat().st_size == 0:
         raise RuntimeError(f"objcopy produced empty/missing bin: {bin_path}")
     return bin_path
+
+
+def elf_to_dfu_parts(elf: Path, app_bin: Path, leave_bin: Path) -> Tuple[Path, Path]:
+    """Split ELF for fast dfu-util: app image + leave VT (no 254KB gap pad).
+
+    The leave trampoline lives at 0x0803F800; a naive ``objcopy -O binary``
+    pads everything from flash base → that address (~260KB). CubeProg skips
+    the gap; we match that by flashing two compact blobs.
+    """
+    obj = _which_objcopy()
+    subprocess.run(
+        [
+            obj,
+            "-O",
+            "binary",
+            "--remove-section=.soft_dfu_leave_vt",
+            str(elf),
+            str(app_bin),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            obj,
+            "-O",
+            "binary",
+            "--only-section=.soft_dfu_leave_vt",
+            str(elf),
+            str(leave_bin),
+        ],
+        check=True,
+    )
+    if not app_bin.is_file() or app_bin.stat().st_size == 0:
+        raise RuntimeError(f"objcopy produced empty app bin: {app_bin}")
+    if not leave_bin.is_file() or leave_bin.stat().st_size == 0:
+        raise RuntimeError(
+            f"objcopy produced empty leave VT bin: {leave_bin} "
+            "(missing .soft_dfu_leave_vt in ELF?)"
+        )
+    return app_bin, leave_bin
 
 
 def _which_dfu_util() -> Optional[str]:
@@ -681,13 +721,15 @@ def flash_firmware(
             f"firmware not found: {img} — build in CubeIDE or pass --image"
         )
 
-    use_dfu_util = _which_dfu_util() is not None
-    use_cube = (not use_dfu_util) and (_which_cubeprog() is not None)
+    # Prefer CubeProg when present (ELF, no gap pad). Else dfu-util.
+    use_cube = _which_cubeprog() is not None
+    use_dfu_util = (not use_cube) and (_which_dfu_util() is not None)
     if not use_dfu_util and not use_cube:
         raise RuntimeError(
-            "no flasher found — install dfu-util (Linux) or STM32CubeProgrammer "
-            "(Windows)"
+            "no flasher found — install dfu-util (Linux) or STM32CubeProgrammer"
         )
+
+    already_root = hasattr(os, "geteuid") and os.geteuid() == 0
 
     # Prefer DFU if already there (re-flash without re-enter).
     in_dfu = wait_for_dfu(serial=serial, timeout_s=0.5)
@@ -701,36 +743,42 @@ def flash_firmware(
     else:
         print("already in DFU (0483:DF11)", flush=True)
 
-    # List ≠ open: wait until udev MODE/uaccess has applied (or sudo later).
-    if use_dfu_util and host_os() == "linux":
-        if not wait_for_dfu_access(serial=serial, timeout_s=5.0):
+    # Skip access poll when soft_dfu_flash.sh already ran under sudo.
+    if use_dfu_util and host_os() == "linux" and not already_root:
+        if not wait_for_dfu_access(serial=serial, timeout_s=2.0):
             print(
                 "warning: DFU visible but not openable yet — "
                 "dfu-util may need sudo / better udev rules",
                 flush=True,
             )
 
-    tmp_bin: Optional[Path] = None
+    tmp_paths: List[Path] = []
     try:
         if use_cube:
-            # CubeProg accepts ELF/BIN directly — skip objcopy on Windows.
             print(f"flashing with STM32_Programmer_CLI: {img}", flush=True)
             _cubeprog_flash(img, serial=serial)
+        elif img.suffix.lower() == ".bin":
+            _dfu_util_flash(img, serial=serial, address=flash_address)
         else:
-            if img.suffix.lower() == ".bin":
-                bin_path = img
-            else:
-                fd, tmp_name = tempfile.mkstemp(prefix="soft_dfu_", suffix=".bin")
-                os.close(fd)
-                tmp_bin = Path(tmp_name)
-                print(f"objcopy {img} → {tmp_bin}", flush=True)
-                elf_to_bin(img, tmp_bin)
-                bin_path = tmp_bin
-            _dfu_util_flash(bin_path, serial=serial, address=flash_address)
+            fd_a, name_a = tempfile.mkstemp(prefix="soft_dfu_app_", suffix=".bin")
+            fd_l, name_l = tempfile.mkstemp(prefix="soft_dfu_leave_", suffix=".bin")
+            os.close(fd_a)
+            os.close(fd_l)
+            app_bin, leave_bin = Path(name_a), Path(name_l)
+            tmp_paths.extend([app_bin, leave_bin])
+            print(f"objcopy (split, no gap pad) {img}", flush=True)
+            elf_to_dfu_parts(img, app_bin, leave_bin)
+            print(
+                f"  app {app_bin.stat().st_size} B @ 0x{flash_address:08X}; "
+                f"leave VT {leave_bin.stat().st_size} B @ 0x{_LEAVE_VT_ADDR:08X}",
+                flush=True,
+            )
+            _dfu_util_flash(app_bin, serial=serial, address=flash_address)
+            _dfu_util_flash(leave_bin, serial=serial, address=_LEAVE_VT_ADDR)
     finally:
-        if tmp_bin is not None:
+        for p in tmp_paths:
             try:
-                tmp_bin.unlink()
+                p.unlink()
             except OSError:
                 pass
 
