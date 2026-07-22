@@ -35,7 +35,7 @@ from controls_pcb_host.protocol.diag_pdu import (
     SESSION_BEGIN,
     SESSION_END,
 )
-from controls_pcb_host.protocol.schema import HOST_FEEDBACK_MAGIC, IMAGE_BYTES
+from controls_pcb_host.protocol.schema import HOST_FEEDBACK_MAGIC, IMAGE_BYTES, PDU_OFF
 from controls_pcb_host.plugins.damiao import clamp_listen_ms, probe_timeout_s, wait_probe_response
 from controls_pcb_host.transport import FrameReader, SerialRxPump
 
@@ -54,7 +54,7 @@ def normalize_bus(bus: int) -> int:
 def pdu_tag_name(frame: bytes) -> str:
     if len(frame) != IMAGE_BYTES:
         return "?"
-    tag = frame[530]
+    tag = frame[PDU_OFF]
     if tag == 0:
         return "0"
     if 32 <= tag <= 126:
@@ -65,7 +65,7 @@ def pdu_tag_name(frame: bytes) -> str:
 def pdu_has_dm_fw_marker(frame: bytes) -> bool:
     if len(frame) != IMAGE_BYTES:
         return False
-    return frame[559] == ord("D") and frame[560] == ord("1")
+    return frame[PDU_OFF + 29] == ord("D") and frame[PDU_OFF + 30] == ord("1")
 
 
 def format_miss(

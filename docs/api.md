@@ -1,312 +1,296 @@
 # Host API — Controls PCB
 
-How software talks to the flashed board today. Canonical package:
-[`scripts/deft_controls_sdk/`](../scripts/deft_controls_sdk/). Byte layout:
-[host-exchange-v2.md](host-exchange-v2.md) (672 B; v1 was 562 B). Architecture / modes:
-[architecture.md](architecture.md). Bench how-to: [bringup.md](bringup.md).
+How host software talks to a flashed board. Package:
+[`scripts/deft_controls_sdk/`](../scripts/deft_controls_sdk/).
 
-This page is the **call surface** — what to import, what each call does, and
-how rates / hold-last / blank MCP interact. It is not a teleop policy guide
-(arrow keys, homing, YAM limits stay in `scripts/legacy/`).
+| Doc | Role |
+|-----|------|
+| **This page** | What to import and call |
+| [host-exchange-v2.md](host-exchange-v2.md) | 672 B plant image (`CMDH` ↔ `HBHF`) |
+| [host-debug-v1.md](host-debug-v1.md) | DEBUG frames (`DBGC` ↔ `DBGF`) |
+| [architecture.md](architecture.md) | Modes, plant tick, staging |
+| [bringup.md](bringup.md) | Flash, buses, teleop how-to |
 
----
-
-## 1. Mental model
-
-```mermaid
-flowchart TB
-  subgraph host["Host — one process owns COM"]
-    App["App / dashboard"]
-    Hub["ControlsPcbHub"]
-    Plant["PLANT<br/>set_actuator · start_streaming · recover · mcu_state"]
-    Debug["DEBUG<br/>hub.debug.* — discover / CFG"]
-    Log["LOG<br/>hub.telemetry.* — snapshot / record"]
-    App --> Hub
-    Hub --> Plant
-    Hub --> Debug
-    Hub --> Log
-  end
-
-  Link["USB CDC or UART<br/>672 B CMDH ↔ HBHF @ stream rate"]
-
-  subgraph mcu["MCU"]
-    Super["app_run lap<br/>RX → diag? → plant service → LED/thermo → TX FB"]
-    Tick["TIM6 500 Hz<br/>hold-last desires → CAN apply<br/>FDCAN CH1–3 · MCP SPI CH4–6"]
-    Super --- Tick
-  end
-
-  Plant --> Link
-  Debug --> Link
-  Link --> Super
-  Super -->|feedback| Log
-```
-
-| Layer | Rate | Who owns it |
-|-------|------|-------------|
-| Host plant stream | typically **~40 Hz** | `hub.start_streaming(hz=…)` |
-| MCU plant apply | **500 Hz** (TIM6) | firmware — repeats last mounted desires |
-| USB feedback | as often as `app_run` completes a lap | firmware `host_link_poll_tx` |
-
-**Hold-last:** you do not need to match 500 Hz on the wire. Mount desires (via
-stream or `send_once`); the plant keeps applying them until you change them,
-blank them, hit `HOST_STALE` (>500 ms without a fresh CMD), or gate with
-`mcu_state` / a DEBUG lease.
-
-**One COM owner:** do not open the dashboard and a script (or two scripts)
-against the same port at once.
+`scripts/legacy/` is frozen pending SDK-only prove-out (see its README).
 
 ---
 
-## 2. Entry points
+## Quick start
 
 ```powershell
 cd scripts
 pip install -r requirements.txt
 ```
 
-| Use | How |
-|-----|-----|
-| Python plant / bench | `from deft_controls_sdk import ControlsPcbHub, ActuatorDesire, McuState` |
-| Localhost UI | `python -m deft_controls_sdk.debug_dashboard` → http://127.0.0.1:8765 |
-| Legacy teleop / cal | `scripts/legacy/` — frozen; not part of this API |
-
 ```python
-from deft_controls_sdk import ControlsPcbHub, ActuatorDesire, McuState
+from deft_controls_sdk import ControlsPcbHub, ActuatorDesire
 
-with ControlsPcbHub.connect("COM5") as hub:
+with ControlsPcbHub.connect("COM5") as hub:   # Linux: /dev/ttyACM0
     hub.recover()
-    hub.start_streaming(hz=40.0)          # plant TX thread + telemetry side thread
-    hub.set_actuator(
-        0,
-        ActuatorDesire(position=0.0, kp=8.0, kd=0.5),
-        send=False,                       # stream will resend held desires
-    )
+    hub.start_streaming(hz=40.0)
+    hub.set_actuator(0, ActuatorDesire(position=0.2, kp=8.0, kd=0.5), send=False)
     print(hub.telemetry.snapshot())
+    hub.set_actuator(0, ActuatorDesire(), send=False)  # blank / idle
 ```
+
+**Rules of thumb**
+
+- One process owns the COM port (don’t run dashboard + script together).
+- Host stream ~40 Hz; MCU applies desires at **500 Hz** (hold-last).
+- Prefer `send=False` while streaming — the stream thread resends held desires.
+- Flash host **and** firmware together after a layout bump (v2 = 672 B).
 
 ---
 
-## 3. `ControlsPcbHub` — plant calls
+## Mental model
 
-These are the top-level methods. There is **no** `hub.plant` namespace.
+```mermaid
+flowchart LR
+  App --> Hub["ControlsPcbHub"]
+  Hub --> Plant["PLANT<br/>stream · set_actuator · recover"]
+  Hub --> Debug["DEBUG<br/>hub.debug.*"]
+  Hub --> Log["LOG<br/>hub.telemetry.*"]
+  Plant --> USB["USB CDC 672 B"]
+  Debug --> USB
+  USB --> MCU["app_run + TIM6 500 Hz"]
+  MCU --> Log
+```
 
-| Call | What it does |
-|------|----------------|
-| `ControlsPcbHub.connect(port, *, baud=…, persist_telemetry=False, telemetry=None)` | Opens serial, attaches a `TelemetryCache`. Scripts default to **not** rewriting `state.json`; pass `persist_telemetry=True` or a shared cache if you want disk mirror / reconnect history. |
-| `hub.close()` / `with hub:` | Stops stream, closes COM. |
-| `hub.start_streaming(hz=40.0, *, telemetry_hz=10.0)` | Background **plant TX** at `hz` (send → sleep only). Telemetry publish runs on a **separate** thread at `telemetry_hz`. Does **not** auto-`recover()`. |
-| `hub.stop_streaming()` | Stops both background threads. |
-| `hub.is_streaming` | Whether the plant stream thread is alive. |
-| `hub.send_once()` | Build current held-desire image, write+flush one frame, poll/publish latest FB once. |
-| `hub.set_actuator(slot, desire, *, send=True)` | Update held MIT desire for `slot` (`0 .. ACTUATOR_COUNT-1`, today **0..13**). `send=True` also writes immediately; with streaming, prefer `send=False` and let the stream resend (dashboard does this). |
-| `hub.held_desire(slot)` / `hub.held_desires()` | What the stream is actually commanding (not “last UI box value”). |
-| `hub.set_mcu_state(state, *, send=True)` | `McuState.NORMAL`, `RECOVERY`, `DIAG_ONLY`, `ESTOP`. |
-| `hub.recover()` | `RECOVERY` then `NORMAL` — MCU runs `plant_recovery_all()` (resets/disables mounted actuators). Use explicitly; not implied by `start_streaming`. |
-| `hub.port` | Open COM name. |
-| `hub.state_path` | Path to `state.json` under the session dir (only written if persist is on). |
-| `hub.log_feedback(raw=None, *, include_raw=True)` | Append one compact FB record to an **open** manual recording (no-op otherwise). |
+| Mode | Surface | Job |
+|------|---------|-----|
+| **PLANT** | top-level `hub.*` | Cyclic desires / feedback |
+| **DEBUG** | `hub.debug.*` | Discover, CFG, soft-DFU (same COM; may gate plant) |
+| **LOG** | `hub.telemetry.*` | Snapshot, grades, optional NDJSON record |
+
+---
+
+## Plant — `ControlsPcbHub`
+
+There is no `hub.plant` namespace; plant calls are on the hub itself.
+
+| Call | Role |
+|------|------|
+| `ControlsPcbHub.connect(port, *, baud=…, persist_telemetry=False)` | Open CDC. Scripts default **off** for `state.json` rewrite. |
+| `hub.start_streaming(hz=40.0, *, telemetry_hz=10.0)` | Background plant TX + side telemetry thread. Does **not** auto-recover. |
+| `hub.stop_streaming()` / `hub.is_streaming` | Stop / query. |
+| `hub.set_actuator(slot, desire, *, send=True)` | Held MIT desire for `slot` in `0..24`. With streaming, use `send=False`. |
+| `hub.held_desire(slot)` / `hub.held_desires()` | What the stream is commanding. |
+| `hub.send_once()` | One write of the held image + one FB poll. |
+| `hub.set_mcu_state(state, *, send=True)` | `McuState.NORMAL` / `RECOVERY` / `DIAG_ONLY` / `ESTOP`. |
+| `hub.recover()` | `RECOVERY` → `NORMAL` (MCU `plant_recovery_all`). |
+| `hub.port` / `hub.close()` | COM name / teardown (`with` supported). |
 
 ### Desires and blank MCP
 
 ```python
-ActuatorDesire(position=0.0, velocity=0.0, kp=0.0, kd=0.0, torque=0.0)  # idle / blank
+ActuatorDesire()  # all zeros — idle / blank
 ```
 
-Firmware treats a slot as **blank** when it is idle (`kp/kd/vel/τ≈0`) **and**
-`position == 0`. Blank MCP slots (CH4–6) **skip SPI entirely**. A hold at true
-zero with `kp>0` is fine; a “soft idle” that must keep MCP RX alive often uses
-a tiny position epsilon (legacy teleop / dashboard: `1e-6`) with gains as needed.
+A slot is **blank** when idle (`kp/kd/vel/τ≈0`) **and** `position == 0`. Blank MCP slots (CH4–6) skip SPI. Holds accumulate per slot — leaving many CH4–6 slots non-blank at once is expensive on the MCU.
 
-**Apply accumulates.** Each `set_actuator` only changes that slot’s held desire.
-Other slots keep prior holds until you idle them. Leaving CH4–6 all non-blank
-at once is much heavier on the MCU than single-slot teleop.
+### `McuState` / `plant_block`
 
-### `McuState`
+| `McuState` | Meaning |
+|------------|---------|
+| `NORMAL` (0) | Plant apply allowed (other gates may still block). |
+| `RECOVERY` (1) | Recovery / clear path. |
+| `DIAG_ONLY` (2) | Plant CAN gated for bench. |
+| `ESTOP` (3) | E-stop semantics. |
 
-| Value | Meaning |
-|-------|---------|
-| `NORMAL` (0) | Plant apply allowed (subject to other gates). |
-| `RECOVERY` (1) | Recovery path / clear desires on MCU. |
-| `DIAG_ONLY` (2) | Plant CAN apply gated — bench/diag. |
-| `ESTOP` (3) | Emergency stop semantics on MCU. |
-
-### Plant block (read from feedback / telemetry)
-
-Why the 500 Hz apply path may be gated (`plant_block` in FB / snapshot):
-
-| Code | Name | Typical cause |
-|------|------|----------------|
-| 0 | none | Plant running |
-| 1 | bench_session | `hub.debug.lease()` / RS2–DM session |
-| 2 | probe_busy | Blocking probe in progress |
-| 3 | quiet_period | Shortly after session end |
-| 4 | diag_only | `mcu_state=DIAG_ONLY` |
-| 5 | host_stale | No fresh host CMD for >500 ms — start/keep streaming |
-| 6 | servo_session | Servo host session holding the path |
+| `plant_block` | Meaning |
+|---------------|---------|
+| 0 none | Plant applying |
+| 1 bench_session | DEBUG lease / RS2–DM session |
+| 2 probe_busy | Blocking probe |
+| 3 quiet_period | After session end |
+| 4 diag_only | `mcu_state=DIAG_ONLY` |
+| 5 host_stale | No fresh CMD >500 ms — start/keep streaming |
+| 6 servo_session | Servo host session |
 
 ---
 
-## 4. `hub.debug` — bench / CFG (DEBUG mode)
+## DEBUG — `hub.debug`
 
-Same COM, tagged PDU under the hood. App code should call these methods, not
-craft PDU tags. While a lease/session is active, plant apply may show
-`plant_block=bench_session`.
+Same COM; dedicated **`DBGC` / `DBGF`** frames with a 32 B mailbox at offset 608
+([host-debug-v1.md](host-debug-v1.md)). Plant `HBHF.pdb` stays clear. Prefer these
+methods over crafting tags. A lease may set `plant_block=bench_session`.
 
-| Call | What it does |
-|------|----------------|
-| `with hub.debug.lease(bus=…):` | RS2 session begin/end bracket. Prefer letting discover manage its own lease unless you need a multi-step session. |
-| `hub.debug.discover_robstride(bus=…, start=0x40, end=0x80)` | Sweep for an RS02 ID. Manages its own lease. |
-| `hub.debug.probe_robstride(bus=…, motor_id=…, timeout_s=…)` | Single-motor probe reply dict (or `None`). |
-| `hub.debug.discover_damiao(bus=…, start=…, end=…, known_ids=…)` | Damiao discover; pass `known_ids` for configured slots first (avoids bus flood). |
-| `hub.debug.cfg_get_table()` | List of actuator table rows (dual-arm: **14** slots). |
-| `hub.debug.cfg_set_slot(slot=…, bus=…, protocol=…, motor_id=…, master_id=0, enabled=True, persist=False)` | RAM apply always; `persist=True` also CFG SAVE to flash NVM (needs BKER erase fix in firmware). |
-| `hub.debug.calibrate_robstride(…)` | **Not ported** — raises `NotImplementedError`. Use legacy: `python scripts/legacy/control_hub.py calibrate --port COM5 --bus N --id 0xXX`. |
+| Call | Role |
+|------|------|
+| `with hub.debug.lease(bus=…):` | RS2 session bracket. Discover usually manages its own lease. |
+| `discover_robstride(bus=…, start=…, end=…)` | RS02 ID sweep (own lease). |
+| `probe_robstride(bus=…, motor_id=…)` | One-motor probe dict or `None`. |
+| `discover_damiao(bus=…, start=…, end=…, known_ids=…)` | Damiao discover; pass configured IDs first. |
+| `cfg_get_table()` | Full actuator table (**25** rows). |
+| `cfg_set_slot(…, persist=False)` | RAM SET; `persist=True` also flash SAVE (survives power cycle). |
+| `enter_bootloader(confirm=True)` | Soft-DFU enter (CDC drops → `0483:DF11`). |
+| `leave_bootloader(serial=…)` | Leave ROM DFU via reset trampoline. |
+| `calibrate_robstride(…)` | **Not ported** — legacy archived after prove-out; contact if needed. |
+| `discover_zeroerr(…)` | **Not wired** — CFG `protocol=4` + node ID for now. |
 
-Protocol enum for CFG (firmware `actuator_protocol_t`):
+### CFG protocols / buses
 
-| `protocol` | Meaning |
-|------------|---------|
-| 0 | `PROTO_NONE` |
-| 1 | `PROTO_ROBSTRIDE` |
-| 2 | `PROTO_CUBEMARS` |
-| 3 | `PROTO_DAMIAO` |
-| 4 | `PROTO_ZEROERR` (CiA 402 PP; `motor_id` = CANopen node ID; bus @ 1 Mbps) |
+| `protocol` | Motor stack |
+|------------|-------------|
+| 0 | none |
+| 1 | RobStride |
+| 2 | CubeMars (not motion-ready — see lessons) |
+| 3 | Damiao |
+| 4 | ZeroErr (CiA 402; `motor_id` = node ID) |
 
-Bus numbers are schematic branches **1..6** (CH1..CH6). CH1–3 = FDCAN; CH4–6 = MCP2518 SPI-CAN.
+Buses **1..6** = schematic CH1..CH6 (CH1–3 FDCAN, CH4–6 MCP2518).
 
 ```python
 with ControlsPcbHub.connect("COM5") as hub:
-    table = hub.debug.cfg_get_table()
     hit = hub.debug.discover_robstride(bus=4)
     if hit is not None:
-        hub.debug.cfg_set_slot(
-            slot=3, bus=4, protocol=1, motor_id=hit, persist=False
-        )
+        hub.debug.cfg_set_slot(slot=19, bus=4, protocol=1, motor_id=hit, persist=True)
 ```
 
 ---
 
-## 5. `hub.telemetry` — health / black box (LOG)
+## Soft-DFU — USB flash (no ST-Link)
 
-| Call | What it does |
-|------|----------------|
-| `hub.telemetry.snapshot()` | Frozen `SessionState` (grade, `fb_hz`, `ack_seq`, `stream_ack_lag`, actuators, plant_block, …). |
-| `hub.telemetry.snapshot_dict()` | Same as JSON-friendly dict. |
-| `hub.telemetry.start_recording()` | Opt-in NDJSON under `.deft_session/recordings/`. |
-| `hub.telemetry.stop_recording()` | Stop manual record. |
-| `hub.telemetry.log_feedback(…)` | Also available as `hub.log_feedback`. |
-| `hub.telemetry.flush()` / `close()` | Drain background disk writer. |
+Supported. One-shot helper (auto-finds CDC, enter → program → leave):
 
-Fault-triggered dumps can fire automatically on ugly `plant_block` / fault /
-`ESTOP` transitions (with a short connect grace so cold `HOST_STALE` does not
-spam). Manual record is unbounded until stopped — watch size in the snapshot.
+```powershell
+# Windows (CubeProg if no dfu-util)
+python scripts/soft_dfu_flash.py
 
-**Reading metrics:**
+# Linux / Jetson (dfu-util; script uses sudo for DFU open)
+./scripts/soft_dfu_flash.sh
+# or: python scripts/soft_dfu_flash.py
+```
 
-- `fb_hz` — raw USB feedback rate when driven from `FrameReader.total_frames` (idle/blank MCP can be hundreds–~1000 Hz; sparse FB under heavy MCP is a superloop symptom, not “Python forgot to TX”).
-- `stream_ack_lag` — host plant seq minus MCU `last_cmd_seq` at last FB sample. High lag with healthy `stream_send_ms` means FB samples are sparse.
-- `stream_tx_gap_p95_ms` — host plant write spacing (prefer p95 over sticky max).
+Module API (also on `hub.debug`):
+
+```python
+from deft_controls_sdk.bench import (
+    find_cdc_port,
+    enter_bootloader,
+    leave_bootloader,
+    flash_firmware,
+)
+
+print(find_cdc_port())                 # e.g. COM5 or /dev/ttyACM0
+flash_firmware(confirm=True)           # default: repo Debug/*.elf
+# or: enter_bootloader(confirm=True) → external programmer → leave_bootloader()
+```
+
+Leave targets the app reset trampoline (`0x0803F800`), not a bare jump to `0x08000000` (that can leave USB CDC dead). Details: `bench/soft_dfu.py`.
 
 ---
 
-## 6. Localhost dashboard (human API)
+## Telemetry — `hub.telemetry`
+
+| Call | Role |
+|------|------|
+| `snapshot()` / `snapshot_dict()` | Grade, `fb_hz`, ack lag, actuators, `plant_block`, … |
+| `start_recording()` / `stop_recording()` | Opt-in NDJSON under `.deft_session/recordings/` |
+| `log_feedback(…)` | Also `hub.log_feedback` — append one FB to an open recording |
+| `flush()` / `close()` | Drain disk writer |
+
+Useful fields: `fb_hz` (raw USB FB rate), `stream_ack_lag`, `stream_tx_gap_p95_ms`, `lap_ms` / `lap_max_ms` (from **system** block in layout v2).
+
+---
+
+## Dashboard
 
 ```powershell
 cd scripts
 python -m deft_controls_sdk.debug_dashboard
-# optional: python -m deft_controls_sdk.debug_dashboard --port COM5
+# optional: --port COM5
 ```
 
-One page, one process, one COM owner on Connect. Plant controls are the same
-MIT holds as the SDK (`Apply` → `set_actuator(..., send=False)` into the stream).
-DEBUG discover/CFG are **not** in the UI yet — use `hub.debug.*` in a script
-(and disconnect the dashboard first).
+→ http://127.0.0.1:8765 — one COM owner. Plant holds match the SDK. Discover/CFG/soft-DFU are script-side for now (disconnect the UI first).
 
-Useful HTTP routes (same process):
-
-| Route | Method | Role |
-|-------|--------|------|
-| `/api/state` | GET | Full snapshot |
-| `/api/ports` | GET | COM list |
-| `/api/connect` / `/api/disconnect` | POST | Own / release COM |
-| `/api/actuator/<slot>` | POST | `{position, kp, kd}` hold |
-| `/api/actuator/<slot>/idle` | POST | Blank that slot |
-| `/api/mcu_state` | POST | `{state}` 0–3 |
-| `/api/recover` | POST | Recover |
-| `/api/record/start` · `/stop` | POST | Manual black box |
+| Route | Role |
+|-------|------|
+| `GET /api/state` | Snapshot |
+| `GET /api/ports` | COM list |
+| `POST /api/connect` · `/disconnect` | Own / release port |
+| `POST /api/actuator/<slot>` | Hold `{position,kp,kd}` |
+| `POST /api/actuator/<slot>/idle` | Blank slot |
+| `POST /api/mcu_state` · `/recover` | MCU state / recover |
+| `POST /api/record/start` · `/stop` | Manual black box |
 
 ---
 
-## 7. Slot map (dual-arm defaults)
+## Slot map
 
-Firmware `ACTUATOR_COUNT = 14`. Wire image still has 25 actuator slots; only
-0..13 are mounted.
+Firmware `ACTUATOR_COUNT` = **25** (matches the wire image). Factory-style layout used by the timing probe:
 
-| Arm | Slots | Typical bus |
-|-----|-------|-------------|
-| Arm1 J1–J7 | 0–6 | CH1 (FDCAN) |
-| Arm2 J8–J14 | 7–13 | CH2 (FDCAN) |
+| Buses | Slots | Backend |
+|-------|------:|---------|
+| CH1 | 8 | FDCAN |
+| CH2 | 8 | FDCAN |
+| CH3 | 3 | FDCAN |
+| CH4–6 | 2 each | MCP2518 |
 
-Live CFG can place RobStride (or others) on CH3–CH6; always `cfg_get_table()`
-before assuming motor IDs. MCP CH4–6 share SPI — many simultaneous non-blank
-MCP holds are expensive on the MCU hot path (see
-[handoff-mcp-fb-bringup-2026-07-20.md](handoff-mcp-fb-bringup-2026-07-20.md)).
+Always `cfg_get_table()` before assuming IDs — CFG/NVM overrides factory. Dual-arm teleop recipes in legacy often use slots **0–13** only; the table still has 25 wire slots.
 
 ---
 
-## 8. What this API deliberately does not include
+## Wire image (v2, brief)
 
-| Concern | Where it lives |
-|---------|----------------|
-| Arrow teleop, homing, brace, YAM soft limits | `scripts/legacy/control_hub/teleop/` |
-| RS02 encoder calibrate | Legacy CLI (`calibrate`) until ported |
-| Crafting raw PDU tags / 672 B layouts in apps | Don’t — use hub methods; bytes in [host-exchange-v2.md](host-exchange-v2.md) |
-| Second COM session / mux daemon | Not yet — one process owns the port |
+672 B both ways — see [host-exchange-v2.md](host-exchange-v2.md).
 
----
+| Offset | Size | Contents |
+|-------:|-----:|----------|
+| 0 | 12 | Header (magic, layout **2**, size **672**, seq) |
+| 12 | 32 | System (tick, mcu_state, plant_block, lap timing, …) |
+| 44 | 550 | Actuators 25×22 (MIT + 2 B meta on feedback) |
+| 594 | 12 | Servos |
+| 606 | 2 | LEDs |
+| 608 | 64 | `pdb[]` — power mirror only on plant path |
 
-## 9. Next step — DFU / bootloader (not the API yet)
-
-**Field firmware update over USB without ST-Link (soft-DFU / ROM bootloader)
-is a planned next step**, not part of the supported app API in this document.
-
-Until that path is verified and documented as a first-class call:
-
-- Flash / debug with **STM32CubeIDE + ST-Link** (see [bringup.md](bringup.md) §1).
-- Do not build product workflows on an unverified bootloader entry hook.
-
-When soft-DFU lands, this section should gain a single explicit hub (or tool)
-entry point, success/failure semantics, and a bringup checklist — not a second
-competing flash story.
+DEBUG tags: [host-debug-v1.md](host-debug-v1.md) (`DBGC`/`DBGF`). v1 (562 B) rejected.
 
 ---
 
-## 10. Minimal recipes
+## Not in this API
 
-**Stream + hold one joint**
+| Concern | Where |
+|---------|--------|
+| Arrow teleop, brace, YAM soft limits | Prefer hub plant stream; legacy teleop frozen |
+| RS02 encoder calibrate | Legacy holdout — use calibrated motors or contact |
+| Raw tag / frame crafting | Don’t — use hub; [host-exchange-v2.md](host-exchange-v2.md) / [host-debug-v1.md](host-debug-v1.md) |
+| Multi-client COM mux | Not yet — one process owns the port |
 
-```python
-with ControlsPcbHub.connect("COM5") as hub:
-    hub.start_streaming(hz=40.0)
-    hub.set_actuator(0, ActuatorDesire(position=0.2, kp=8.0, kd=0.5), send=False)
-    # ... time.sleep / your loop ...
-    hub.set_actuator(0, ActuatorDesire(), send=False)  # idle / blank
-```
+## SDK-only actuator prove-out
 
-**Recover then stream**
+Checklist (no `scripts/legacy`): see [`scripts/legacy/README.md`](../scripts/legacy/README.md).
+
+---
+
+## Recipes
+
+**Recover + stream**
 
 ```python
 with ControlsPcbHub.connect("COM5") as hub:
     hub.recover()
-    hub.start_streaming()
+    hub.start_streaming(hz=40.0)
 ```
 
-**Discover + bind a CFG slot (bench)**
+**Persist a CFG slot**
 
 ```python
 with ControlsPcbHub.connect("COM5") as hub:
-    mid = hub.debug.discover_robstride(bus=4)
-    hub.debug.cfg_set_slot(slot=3, bus=4, protocol=1, motor_id=mid or 0, persist=False)
+    hub.debug.cfg_set_slot(slot=3, bus=1, protocol=1, motor_id=5, persist=True)
+# power-cycle; cfg_get_table()[3] should still show motor_id=5
+```
+
+**USB reflash**
+
+```powershell
+python scripts/soft_dfu_flash.py
+```
+
+**Bandwidth matrix (after flash)**
+
+```powershell
+python _tmp_mcp_timing_probe.py --port COM5 --seconds 3.0 --hz 40
 ```
 
 **Black-box a run**
@@ -315,7 +299,7 @@ with ControlsPcbHub.connect("COM5") as hub:
 with ControlsPcbHub.connect("COM5") as hub:
     hub.start_streaming()
     hub.telemetry.start_recording()
-    # ... exercise plant ...
+    # … exercise …
     hub.telemetry.stop_recording()
     print(hub.telemetry.snapshot().recording_path)
 ```

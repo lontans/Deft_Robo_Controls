@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-SK9822 LED strip bench test over USB CDC (562 B plant command image).
+SK9822 LED strip bench test over USB CDC (672 B plant command image, layout v2).
 
-Patches leds[0] at offset 528 (host-exchange v1):
+UNMAINTAINED — prefer deft_controls_sdk for new work.
+
+Patches leds[0] at offset 606 (host-exchange v2):
   bits  0-4:  mode (0=test knight-rider, 1=off)
   bits  5-9:  master_brightness (0-31, SK9822 global brightness)
   bits 10-15: led_count (0 = use firmware LED_STRIP_MAX default)
 
 Examples:
-  python scripts/sk9822_led_test.py --port COM9
-  python scripts/sk9822_led_test.py --port COM9 --mode 0 --brightness 8 --count 0
-  python scripts/sk9822_led_test.py --port COM9 --mode 1
+  python scripts/legacy/sk9822_led_test.py --port COM9
 """
 
 from __future__ import annotations
@@ -27,9 +27,9 @@ except ImportError:
     sys.exit(1)
 
 HOST_COMMAND_MAGIC = 0x434D4448
-HOST_LAYOUT_VERSION = 1
-IMAGE_BYTES = 562
-LED_CMD_OFF = 528
+HOST_LAYOUT_VERSION = 2
+IMAGE_BYTES = 672
+LED_CMD_OFF = 606
 USB_BAUD = 115200
 DEFAULT_HZ = 40.0
 

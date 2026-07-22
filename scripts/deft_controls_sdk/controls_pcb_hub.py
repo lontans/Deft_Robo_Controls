@@ -2,21 +2,15 @@
 
     from deft_controls_sdk import ControlsPcbHub
 
-    with ControlsPcbHub.connect("COM5") as hub:
+    with ControlsPcbHub.connect() as hub:  # or connect("COM5") / serial=
         hub.start_streaming()
         print(hub.telemetry.snapshot())
-
-    with ControlsPcbHub.connect("COM5") as hub:
-        with hub.debug.lease(bus=2):
-            hit = hub.debug.discover_robstride(bus=2)
 
 Owns COM via link.Connection. Publishes TelemetryCache for scripts and
 debug_dashboard. Never imports debug_dashboard.
 
-hub.debug.* is DEBUG mode — see deft_controls_sdk/bench/ and
-docs/architecture.md#host-api-modes. It borrows this same Connection under a
-lease (tagged-pdu bench PDU) rather than opening a second serial port; plant
-apply may be gated (plant_block=BENCH_SESSION) while a lease is held.
+hub.debug.* is DEBUG mode — see docs/api.md. Same Connection; plant apply may
+be gated (plant_block=BENCH_SESSION) while a lease is held.
 """
 from __future__ import annotations
 
@@ -24,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Optional, Union
 
-from deft_controls_sdk.bench import DebugAPI
+from deft_controls_sdk.bench import DebugAPI, find_cdc_port
 from deft_controls_sdk.link import ActuatorDesire, Connection, McuState
 from deft_controls_sdk.link.exchange import DEFAULT_BAUD
 from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
@@ -39,8 +33,9 @@ class ControlsPcbHub:
     @classmethod
     def connect(
         cls,
-        port: str,
+        port: Optional[str] = None,
         *,
+        serial: Optional[str] = None,
         baud: int = DEFAULT_BAUD,
         session_dir: Optional[Union[str, os.PathLike[str]]] = None,
         persist_telemetry: bool = False,
@@ -48,14 +43,14 @@ class ControlsPcbHub:
     ) -> "ControlsPcbHub":
         """Connect and attach telemetry.
 
-        ``persist_telemetry`` defaults **False** — scripts do not rewrite
-        ``state.json`` unless asked. The dashboard passes ``True`` (or its own
-        cache) for the live UI mirror. Accurate logs are opt-in via
-        ``hub.telemetry.start_recording()`` / ``hub.log_feedback()``.
-
-        Pass an existing ``telemetry`` to keep fault history across reconnects
-        (see debug_dashboard AppState).
+        ``port`` omitted → auto-pick STM32 USB CDC (0483:5740), optionally
+        filtered by USB ``serial``. ``persist_telemetry`` defaults **False**.
         """
+        if not port:
+            port = find_cdc_port(serial=serial)
+        elif serial is not None:
+            # Explicit port wins; serial only used for auto-pick.
+            pass
         connection = Connection.connect(port, baud=baud)
         if telemetry is None:
             telemetry = TelemetryCache(session_dir=session_dir or default_session_dir(), persist=persist_telemetry)

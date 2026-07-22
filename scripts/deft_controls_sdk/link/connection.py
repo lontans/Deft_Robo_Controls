@@ -306,12 +306,23 @@ class Connection:
         with self._state_lock:
             return dict(self._desires)
 
-    def poll_feedback(self) -> Optional[FeedbackImage]:
+    @staticmethod
+    def _is_plant_feedback(raw: bytes) -> bool:
+        hdr = parse_feedback_header(raw)
+        return hdr is not None and not hdr.get("is_debug")
+
+    def _drain_latest_plant_feedback(self) -> Optional[bytes]:
+        """Newest HBHF only — DBGF (DEBUG mailbox replies) do not update plant FB."""
         latest: Optional[bytes] = None
         frame = self._reader.pop()
         while frame is not None:
-            latest = frame
+            if self._is_plant_feedback(frame):
+                latest = frame
             frame = self._reader.pop()
+        return latest
+
+    def poll_feedback(self) -> Optional[FeedbackImage]:
+        latest = self._drain_latest_plant_feedback()
         return FeedbackImage(latest) if latest is not None else None
 
     def read_feedback(self, *, timeout_s: float = 1.0, latest: bool = True) -> FeedbackImage:
@@ -323,12 +334,15 @@ class Connection:
             if got is None:
                 time.sleep(0.002)
                 continue
+            if not self._is_plant_feedback(got):
+                continue
             frame = got
             if not latest:
                 break
             nxt = self._reader.pop()
             while nxt is not None:
-                frame = nxt
+                if self._is_plant_feedback(nxt):
+                    frame = nxt
                 nxt = self._reader.pop()
         if frame is None:
             raise FeedbackTimeoutError(f"no feedback frame within {timeout_s}s")
@@ -514,12 +528,8 @@ class Connection:
             t_loop = time.perf_counter()
             send_ms = poll_ms = 0.0
             try:
-                latest: Optional[bytes] = None
                 t0 = time.perf_counter()
-                frame = self._reader.pop()
-                while frame is not None:
-                    latest = frame
-                    frame = self._reader.pop()
+                latest = self._drain_latest_plant_feedback()
                 if latest is not None:
                     self._note_feedback_raw(latest)
                     self._latest_fb_raw = latest

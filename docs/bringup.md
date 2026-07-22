@@ -1,10 +1,10 @@
 # Bring-up
 
 **As of Jul 2026.** Dual YAM Damiao arms are the live plant path. Prefer
-[`scripts/deft_controls_sdk/`](../scripts/deft_controls_sdk/README.md). Legacy CLIs:
-[`scripts/legacy/`](../scripts/legacy/README.md). Wire: [host-exchange-v1.md](host-exchange-v1.md)
-(672 B layout v2). Contract: [host-exchange-v2.md](host-exchange-v2.md). Compact bug list:
-[lessons.md](lessons.md).
+[`scripts/deft_controls_sdk/`](../scripts/deft_controls_sdk/README.md) and
+[`api.md`](api.md). Legacy is frozen ([`scripts/legacy/README.md`](../scripts/legacy/README.md))
+pending SDK-only prove-out, then gitignore. Wire: [host-exchange-v2.md](host-exchange-v2.md),
+DEBUG: [host-debug-v1.md](host-debug-v1.md). Compact bug list: [lessons.md](lessons.md).
 
 This file keeps **how to run** plus the **bench stories** worth not losing
 (Damiao daisy, dual-arm firmware fixes, plant-cadence regression, CH4 MCP2518FD +

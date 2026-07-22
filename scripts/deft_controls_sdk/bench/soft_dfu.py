@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
-from deft_controls_sdk.link.exchange import PDU_OFF, build_plant_command
+from deft_controls_sdk.link.exchange import PDU_OFF
+from deft_controls_sdk.link.exchange.bench import build_debug_command
 from deft_controls_sdk.link.exchange.wire_layout import (
     STM32_USB_CDC_PID,
     STM32_VID,
@@ -256,7 +257,7 @@ def enter_bootloader(
         )
 
     if connection is not None:
-        frame = bytearray(build_plant_command(connection.next_seq()))
+        frame = bytearray(build_debug_command(connection.next_seq()))
         frame[PDU_OFF : PDU_OFF + len(_TAG)] = _TAG
         connection.write_raw(bytes(frame))
         return getattr(connection, "port", port or "")
@@ -267,7 +268,7 @@ def enter_bootloader(
     device = find_cdc_port(port=port, serial=serial)
     conn = Connection.connect(device)
     try:
-        frame = bytearray(build_plant_command(conn.next_seq()))
+        frame = bytearray(build_debug_command(conn.next_seq()))
         frame[PDU_OFF : PDU_OFF + len(_TAG)] = _TAG
         conn.write_raw(bytes(frame))
     finally:

@@ -6,8 +6,9 @@
 #include "plant/plant_config_nvm.h"
 #include "plant/thermo.h"
 #include "host/host_uart_bridge.h"
+#include <string.h>
 
-void plant_feedback_image_fetch(host_feedback_image_t *out)
+void plant_feedback_image_fetch_plant(host_feedback_image_t *out)
 {
 	if (out == NULL)
 		return;
@@ -16,20 +17,27 @@ void plant_feedback_image_fetch(host_feedback_image_t *out)
 	actuator_feedback_snapshot(out->actuator_feedback, HOST_EXCHANGE_ACTUATOR_SLOTS);
 	servo_feedback_snapshot(out->servos, HOST_EXCHANGE_SERVO_SLOTS);
 	led_feedback_snapshot(&out->leds[0]);
-	plant_diag_feedback_fill(&out->pdu);
-	/* UART4 bridge (host/uart4_mode.h) takes priority when built in; no-op otherwise. */
-	host_uart_bridge_feedback_fill(&out->pdu);
-	plant_config_feedback_fill(&out->pdu);
-	/* Thermo 't' when SPI3 role is THERMO — must run before the whitelist. */
-	thermo_feedback_fill(&out->pdu);
-	/* Keep RS2 ('r'), Dynamixel ('d'), UART bridge ('u'), CFG ('c'), thermo ('t'). */
-	if (out->pdu.data[0] != (uint8_t)'d' &&
-	    out->pdu.data[0] != (uint8_t)'u' &&
-	    out->pdu.data[0] != (uint8_t)PLANT_CFG_PDU_RESP_TAG0 &&
-	    out->pdu.data[0] != (uint8_t)PLANT_DIAG_DM_RESP_TAG &&
-	    out->pdu.data[0] != (uint8_t)PLANT_DIAG_PDU_RESP_TAG &&
-	    out->pdu.data[0] != (uint8_t)PLANT_THERMO_RESP_TAG) {
-		servo_diag_feedback_fill(&out->pdu);
-		plant_diag_feedback_stamp_fw_marker(&out->pdu);
+	/* Plant path: pdb[] reserved for power mirror — no DEBUG tags. */
+	memset(out->pdb, 0, sizeof(out->pdb));
+}
+
+void plant_feedback_image_fetch_debug_mailbox(host_pdu_feedback_t *pdu)
+{
+	if (pdu == NULL)
+		return;
+
+	memset(pdu->data, 0, sizeof(pdu->data));
+	plant_diag_feedback_fill(pdu);
+	host_uart_bridge_feedback_fill(pdu);
+	plant_config_feedback_fill(pdu);
+	thermo_feedback_fill(pdu);
+	if (pdu->data[0] != (uint8_t)'d' &&
+	    pdu->data[0] != (uint8_t)'u' &&
+	    pdu->data[0] != (uint8_t)PLANT_CFG_PDU_RESP_TAG0 &&
+	    pdu->data[0] != (uint8_t)PLANT_DIAG_DM_RESP_TAG &&
+	    pdu->data[0] != (uint8_t)PLANT_DIAG_PDU_RESP_TAG &&
+	    pdu->data[0] != (uint8_t)PLANT_THERMO_RESP_TAG) {
+		servo_diag_feedback_fill(pdu);
+		plant_diag_feedback_stamp_fw_marker(pdu);
 	}
 }

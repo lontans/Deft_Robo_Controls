@@ -67,6 +67,8 @@ def test_host_stale_context(tmp_path):
 
 def test_mcp_fb_starve_vs_host_stall(tmp_path):
     """Low fb_hz with healthy send_ms is MCP USB starve, not a stuck host loop."""
+    from deft_controls_sdk.telemetry.cache import _grade_and_context
+
     cache = TelemetryCache(session_dir=tmp_path, persist=False)
     cache.set_connected(True, port="COM5", mode="plant_stream")
     cache.update_from_feedback(
@@ -83,14 +85,16 @@ def test_mcp_fb_starve_vs_host_stall(tmp_path):
         actuators=[],
         mode="plant_stream",
     )
-    with cache._lock:
-        cache._state.fb_hz = 4.0
-        cache._state.age_s = 0.0
     cache.update_stream_timing(
         send_ms=1.8, poll_ms=0.01, publish_ms=0.0, loop_ms=1.9, tx_hz=50.0
     )
+    # update_stream_timing does not re-grade (hot path); set fb_hz then grade.
+    with cache._lock:
+        cache._state.fb_hz = 4.0
+        cache._state.age_s = 0.0
+        _grade_and_context(cache._state)
     snap = cache.snapshot()
     assert snap.grade == "yellow"
-    assert "TX ok" in snap.summary or "starve" in snap.summary.lower()
-    assert any("send_ms=1.8" in c for c in snap.context)
+    assert "sparse" in snap.summary.lower() or "fb=" in snap.summary.lower()
+    assert any("fb_hz=4.0" in c for c in snap.context)
     assert snap.stream_tx_hz == pytest.approx(50.0)

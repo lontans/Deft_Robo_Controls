@@ -1,11 +1,10 @@
 """Byte contract helpers for the 672 B host exchange image (layout v2).
 
-  wire_layout.py — constants / offsets (plant path; renamed from schema.py —
-                   "schema" already means something else in telemetry/cache.py)
-  transport.py   — serial open + frame reader
-  pack.py        — build/patch command image bytes (plant path, pdu=0)
-  parse.py       — parse feedback image bytes (plant path)
-  bench.py       — tagged-pdu (DEBUG mode) pack/parse: RS2/DM0/CFG + CAN bus helpers
+  wire_layout.py — constants / offsets (plant + DEBUG magics)
+  transport.py   — serial open + frame reader (HBHF / DBGF demux)
+  pack.py        — build/patch plant command image (CMDH, pdb=0)
+  parse.py       — parse plant/DEBUG feedback images
+  bench.py       — DEBUG frames (DBGC mailbox): RS2/DM0/CFG pack/parse
 """
 from __future__ import annotations
 
@@ -32,6 +31,7 @@ from .bench import (
     SESSION_BEGIN,
     SESSION_END,
     build_cfg_command,
+    build_debug_command,
     build_dm_probe_command,
     build_rs2_probe_command,
     build_rs2_scan_command,
@@ -57,6 +57,7 @@ from .parse import (
     parse_actuator_feedback,
     parse_feedback_header,
     parse_svd_plant_timing,
+    parse_system_timing,
 )
 from .transport import (
     FrameReader,
@@ -68,8 +69,11 @@ from .transport import (
 )
 from .wire_layout import (
     ACTUATOR_COUNT,
+    DEBUG_MAILBOX_OFF,
     DEFAULT_BAUD,
     HOST_COMMAND_MAGIC,
+    HOST_DEBUG_COMMAND_MAGIC,
+    HOST_DEBUG_FEEDBACK_MAGIC,
     HOST_EXCHANGE_ACTUATOR_SLOTS,
     HOST_FEEDBACK_MAGIC,
     HOST_LAYOUT_VERSION,
@@ -91,6 +95,7 @@ __all__ = [
     "CFG_RESP_TAG2",
     "CFG_STATUS_NAMES",
     "CFG_STATUS_OK",
+    "DEBUG_MAILBOX_OFF",
     "DEFAULT_BAUD",
     "DM_MASTER_ANY",
     "DM_PROBE_ID_SWEEP",
@@ -99,6 +104,8 @@ __all__ = [
     "DM_REG_ESC_ID",
     "DM_RESP_TAG",
     "HOST_COMMAND_MAGIC",
+    "HOST_DEBUG_COMMAND_MAGIC",
+    "HOST_DEBUG_FEEDBACK_MAGIC",
     "HOST_EXCHANGE_ACTUATOR_SLOTS",
     "HOST_FEEDBACK_MAGIC",
     "HOST_LAYOUT_VERSION",
@@ -122,6 +129,7 @@ __all__ = [
     "auto_pick_port",
     "build_actuator_command",
     "build_cfg_command",
+    "build_debug_command",
     "build_dm_probe_command",
     "build_plant_command",
     "build_rs2_probe_command",
@@ -140,6 +148,7 @@ __all__ = [
     "parse_feedback_header",
     "parse_probe_pdu",
     "parse_svd_plant_timing",
+    "parse_system_timing",
     "patch_actuator_desire",
     "patch_system_mcu_state",
     "probe_kind_matches",

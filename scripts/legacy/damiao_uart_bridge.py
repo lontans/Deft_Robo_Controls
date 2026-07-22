@@ -2,24 +2,10 @@
 """
 Raw UART4 <-> Damiao Assistant bridge over the MCU's existing USB CDC link.
 
-Firmware side (see App/Inc/host/uart4_mode.h — UART4_MODE_DAMIAO_BRIDGE):
-UART4 (PC10 TX / PC11 RX) is reconfigured to 921600-8N1 and wired to the
-Damiao motor's GH1.25 debug port (GND/RX/TX). Raw bytes are tunnelled
-through PDU tag 'U','B' (host->MCU, up to 29 B/frame) and 'u' (MCU->host,
-up to 30 B/frame) inside the normal 562-byte host_exchange image — no
-second USB descriptor needed.
+UNMAINTAINED — layout bump + DEBUG-off-plant not fully ported. Prefer
+deft_controls_sdk; contact if you need this bridge revived on DBGC/DBGF.
 
-This script bridges those PDU-tunnelled bytes to a local serial port. Pair
-it with com0com (a free virtual null-modem driver for Windows):
-  1. Install com0com, create a pair, e.g. COM20 <-> COM21.
-  2. Run this script with --bridge-port COM20.
-  3. Point the real Damiao Assistant at COM21, 921600 baud.
-
-Wiring: MCU UART4 TX (PC10) -> Damiao debug RX, MCU UART4 RX (PC11) <-
-Damiao debug TX, common GND. Confirm 3.3V logic before connecting.
-
-Example:
-  python scripts/damiao_uart_bridge.py --mcu-port COM9 --bridge-port COM20
+Was: UART4 tunnel via PDU tags inside the host image (see uart4_mode.h).
 """
 
 from __future__ import annotations
@@ -41,9 +27,9 @@ except ImportError:
 
 HOST_COMMAND_MAGIC = 0x434D4448
 HOST_FEEDBACK_MAGIC = 0x46424848
-HOST_LAYOUT_VERSION = 1
-IMAGE_BYTES = 562
-PDU_OFF = 530
+HOST_LAYOUT_VERSION = 2
+IMAGE_BYTES = 672
+PDU_OFF = 608
 PLANT_MCU_STATE_DIAG_ONLY = 2
 SYSTEM_CMD_OFF = 12
 

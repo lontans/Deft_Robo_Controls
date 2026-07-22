@@ -30,7 +30,8 @@ from deft_controls_sdk.link.exchange import (
     DM_PROBE_ID_SWEEP,
     DM_PROBE_REG_SCAN,
     DM_RESP_TAG,
-    HOST_FEEDBACK_MAGIC,
+    HOST_DEBUG_COMMAND_MAGIC,
+    HOST_DEBUG_FEEDBACK_MAGIC,
     HOST_LAYOUT_VERSION,
     IMAGE_BYTES,
     PDU_OFF,
@@ -61,7 +62,9 @@ def _fake_connection(responder) -> Connection:
 
 def _blank_feedback() -> bytearray:
     buf = bytearray(IMAGE_BYTES)
-    struct.pack_into("<IHHI", buf, 0, HOST_FEEDBACK_MAGIC, HOST_LAYOUT_VERSION, IMAGE_BYTES, 0)
+    struct.pack_into(
+        "<IHHI", buf, 0, HOST_DEBUG_FEEDBACK_MAGIC, HOST_LAYOUT_VERSION, IMAGE_BYTES, 0
+    )
     return buf
 
 
@@ -71,6 +74,8 @@ def _blank_feedback() -> bytearray:
 def test_rs2_scan_command_places_tag_id_kind_and_bus() -> None:
     frame = build_rs2_scan_command(0x70, SESSION_BEGIN, seq=5, bus=2)
     assert len(frame) == IMAGE_BYTES
+    magic, = struct.unpack_from("<I", frame, 0)
+    assert magic == HOST_DEBUG_COMMAND_MAGIC
     assert frame[PDU_OFF : PDU_OFF + 3] == b"RS2"
     assert frame[PDU_OFF + 3] == 0x70
     assert frame[PDU_OFF + 4] == SESSION_BEGIN

@@ -66,12 +66,12 @@ def test_state_before_any_connect_is_well_formed(server) -> None:
     status, data = _get(base, "/api/state")
     assert status == 200
     assert data["connected"] is False
-    assert len(data["actuators"]) == 14  # fixed slot count even with no hub yet
+    assert len(data["actuators"]) == 25  # wire slot count even with no hub yet
     assert all(a is None for a in data["actuators"])
     # Plant control clarity fields (held-desire / streaming) must also be
     # well-formed with no hub yet, not just the feedback side.
     assert data["streaming"] is False
-    assert data["held"] == [None] * 14
+    assert data["held"] == [None] * 25
 
 
 def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> None:

@@ -240,8 +240,16 @@ def slots_for(by_bus: Dict[int, List[int]], buses: Sequence[int]) -> List[int]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="COM5")
+    from deft_controls_sdk import find_cdc_port
+
+    ap = argparse.ArgumentParser(
+        description="Plant hold matrix probe (local tool — prefer deft_controls_sdk for apps)"
+    )
+    ap.add_argument(
+        "--port",
+        default=None,
+        help="Serial port (default: auto-pick STM32 USB CDC 0483:5740)",
+    )
     ap.add_argument("--seconds", type=float, default=3.0)
     ap.add_argument("--hz", type=float, default=40.0)
     ap.add_argument(
@@ -250,12 +258,13 @@ def main() -> int:
         help="Always CFG SET product layout (default: skip if table already matches)",
     )
     args = ap.parse_args()
+    port = args.port or find_cdc_port()
 
     hold = ActuatorDesire(position=0.01, velocity=0.0, kp=2.0, kd=0.5, torque=0.0)
     results: List[dict] = []
 
-    print(f"Opening {args.port} ... ACTUATOR_COUNT={ACTUATOR_COUNT}")
-    with ControlsPcbHub.connect(args.port, persist_telemetry=False) as hub:
+    print(f"Opening {port} ... ACTUATOR_COUNT={ACTUATOR_COUNT}")
+    with ControlsPcbHub.connect(port, persist_telemetry=False) as hub:
         by_bus = ensure_product_cfg(hub, force=args.force_cfg)
 
         def desire_map(*buses: int) -> Dict[int, ActuatorDesire]:

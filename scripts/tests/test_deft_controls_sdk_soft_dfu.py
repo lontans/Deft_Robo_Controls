@@ -25,7 +25,12 @@ from deft_controls_sdk.bench.soft_dfu import (
     main,
 )
 from deft_controls_sdk.link import Connection
-from deft_controls_sdk.link.exchange import IMAGE_BYTES, PDU_OFF
+from deft_controls_sdk.link.exchange import (
+    HOST_DEBUG_COMMAND_MAGIC,
+    IMAGE_BYTES,
+    PDU_OFF,
+)
+import struct
 
 
 def _fake_connection(sent: list) -> Connection:
@@ -54,6 +59,8 @@ def test_enter_bootloader_sends_dfu_tag_at_pdu_offset() -> None:
     assert len(sent) == 1
     frame = sent[0]
     assert len(frame) == IMAGE_BYTES
+    magic, = struct.unpack_from("<I", frame, 0)
+    assert magic == HOST_DEBUG_COMMAND_MAGIC
     assert frame[PDU_OFF : PDU_OFF + 4] == b"DFU!"
 
 

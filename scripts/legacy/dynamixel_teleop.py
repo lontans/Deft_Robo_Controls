@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-Dynamixel neck servo teleop over USB CDC (562 B plant image, no DXL PDU).
+Dynamixel neck servo teleop over USB CDC (672 B plant image, layout v2).
+
+UNMAINTAINED — prefer deft_controls_sdk. Depends on legacy rs02_can_scan helpers.
 
 Slot 0 = bottom neck (ID 1): Left / Right
 Slot 1 = top neck (ID 2):    Up / Down
-
-Position ramps up while a key is held; release stops immediately (no coast-down).
-When idle, goal is latched at present on entry (not continuously tracked — that caused hunting).
-
-Examples:
-  python scripts/dynamixel_teleop.py --port COM9
-  python scripts/dynamixel_teleop.py --port COM9 --hz 40 --arrow-vel 90
 """
 
 from __future__ import annotations
@@ -44,9 +39,9 @@ from rs02_can_scan import (  # noqa: E402
 )
 
 HOST_FEEDBACK_MAGIC = 0x46424848
-IMAGE_BYTES = 562
+IMAGE_BYTES = 672
 USB_BAUD = 115200
-PDU_OFF = 530
+PDU_OFF = 608
 
 BUS_STATE_NAMES = {
     0: "torque_on",

@@ -2,8 +2,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define HOST_COMMAND_MAGIC  0x434D4448u
-#define HOST_FEEDBACK_MAGIC 0x46424848u
+#define HOST_COMMAND_MAGIC  0x434D4448u /* "CMDH" plant */
+#define HOST_FEEDBACK_MAGIC 0x46424848u /* "HBHF" plant */
+#define HOST_DEBUG_COMMAND_MAGIC  0x44424743u /* "DBGC" DEBUG */
+#define HOST_DEBUG_FEEDBACK_MAGIC 0x46424744u /* "DBGF" DEBUG */
 #define HOST_LAYOUT_VERSION 2u /* Schema v2 — 672 B; see docs/host-exchange-v2.md */
 
 #define HOST_EXCHANGE_ACTUATOR_SLOTS 25u

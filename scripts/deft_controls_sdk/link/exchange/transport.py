@@ -13,7 +13,19 @@ try:
 except ImportError as exc:
     raise ImportError("pyserial required: pip install pyserial") from exc
 
-from .wire_layout import DEFAULT_BAUD, HOST_FEEDBACK_MAGIC, IMAGE_BYTES, STM32_USB_CDC_PID, STM32_VID
+from .wire_layout import (
+    DEFAULT_BAUD,
+    HOST_DEBUG_FEEDBACK_MAGIC,
+    HOST_FEEDBACK_MAGIC,
+    IMAGE_BYTES,
+    STM32_USB_CDC_PID,
+    STM32_VID,
+)
+
+_FB_MAGICS = (
+    struct.pack("<I", HOST_FEEDBACK_MAGIC),
+    struct.pack("<I", HOST_DEBUG_FEEDBACK_MAGIC),
+)
 
 
 class FrameReader:
@@ -22,7 +34,8 @@ class FrameReader:
         self._lock = threading.Lock()
         self._frames: Deque[bytes] = deque(maxlen=maxlen)
         self.total_bytes = 0
-        self.total_frames = 0
+        self.total_frames = 0  # plant HBHF only (USB FB rate)
+        self.total_debug_frames = 0
 
     def feed(self, chunk: bytes) -> None:
         if not chunk:
@@ -30,17 +43,25 @@ class FrameReader:
         with self._lock:
             self.total_bytes += len(chunk)
             self._buf.extend(chunk)
-            magic_bytes = struct.pack("<I", HOST_FEEDBACK_MAGIC)
             while len(self._buf) >= IMAGE_BYTES:
-                if self._buf[:4] != magic_bytes:
-                    idx = self._buf.find(magic_bytes)
+                head = bytes(self._buf[:4])
+                if head not in _FB_MAGICS:
+                    idx = -1
+                    for magic in _FB_MAGICS:
+                        found = self._buf.find(magic)
+                        if found > 0 and (idx < 0 or found < idx):
+                            idx = found
                     if idx <= 0:
                         self._buf.clear()
                         break
                     del self._buf[:idx]
                     continue
-                self._frames.append(bytes(self._buf[:IMAGE_BYTES]))
-                self.total_frames += 1
+                frame = bytes(self._buf[:IMAGE_BYTES])
+                self._frames.append(frame)
+                if head == _FB_MAGICS[0]:
+                    self.total_frames += 1
+                else:
+                    self.total_debug_frames += 1
                 del self._buf[:IMAGE_BYTES]
 
     def pop(self) -> Optional[bytes]:

@@ -14,10 +14,12 @@ static uint32_t              g_last_command_ms;
 static uint8_t               g_cmd_rx_buf[HOST_COMMAND_IMAGE_BYTES];
 static size_t                g_cmd_rx_fill;
 static host_feedback_image_t g_fb_tx_frame;
+static bool                  g_debug_reply_pending;
 
 static void host_link_rx_resync(void);
 static bool host_link_rx_feed_byte(uint8_t b);
-static void host_feedback_image_fetch(host_feedback_image_t *out);
+static void host_feedback_image_fetch_plant(host_feedback_image_t *out);
+static void host_feedback_image_fetch_debug(host_feedback_image_t *out);
 
 uint32_t host_link_last_command_seq(void)
 {
@@ -28,13 +30,13 @@ bool host_command_image_valid(const host_command_image_t *cmd)
 {
 	if (cmd == NULL)
 		return false;
-	if (cmd->header.magic != HOST_COMMAND_MAGIC)
-		return false;
 	if (cmd->header.layout_version != HOST_LAYOUT_VERSION)
 		return false;
 	if (cmd->header.byte_size != HOST_COMMAND_IMAGE_BYTES)
 		return false;
-
+	if (cmd->header.magic != HOST_COMMAND_MAGIC &&
+	    cmd->header.magic != HOST_DEBUG_COMMAND_MAGIC)
+		return false;
 	return true;
 }
 
@@ -43,7 +45,12 @@ void host_command_image_dispatch(const host_command_image_t *cmd)
 	if (cmd == NULL)
 		return;
 
-	plant_command_image_dispatch(cmd);
+	if (cmd->header.magic == HOST_DEBUG_COMMAND_MAGIC) {
+		plant_command_image_dispatch_debug(cmd);
+		g_debug_reply_pending = true;
+	} else {
+		plant_command_image_dispatch_plant(cmd);
+	}
 	g_last_command_seq = cmd->header.seq;
 	g_last_command_ms  = HAL_GetTick();
 }
@@ -61,13 +68,13 @@ void host_link_init(void)
 	g_last_command_seq = 0;
 	g_last_command_ms  = 0;
 	g_cmd_rx_fill      = 0;
+	g_debug_reply_pending = false;
 
 	host_transport_get()->init();
 }
 
 void host_link_begin_loop(void)
 {
-	/* poll_rx drains the full USB RX ring each app_run iteration. */
 }
 
 void host_link_poll_rx(void)
@@ -82,13 +89,21 @@ void host_link_poll_rx(void)
 	}
 }
 
+static bool host_link_magic_at(const uint8_t *buf, uint32_t magic)
+{
+	return buf[0] == (uint8_t)(magic & 0xFFu) &&
+	       buf[1] == (uint8_t)((magic >> 8) & 0xFFu) &&
+	       buf[2] == (uint8_t)((magic >> 16) & 0xFFu) &&
+	       buf[3] == (uint8_t)((magic >> 24) & 0xFFu);
+}
+
 static void host_link_rx_resync(void)
 {
-	static const uint8_t magic[] = { 0x48, 0x44, 0x4D, 0x43 };
 	size_t shift = HOST_COMMAND_IMAGE_BYTES;
 
 	for (size_t i = 1; i < HOST_COMMAND_IMAGE_BYTES; i++) {
-		if (memcmp(&g_cmd_rx_buf[i], magic, sizeof(magic)) == 0) {
+		if (host_link_magic_at(&g_cmd_rx_buf[i], HOST_COMMAND_MAGIC) ||
+		    host_link_magic_at(&g_cmd_rx_buf[i], HOST_DEBUG_COMMAND_MAGIC)) {
 			shift = i;
 			break;
 		}
@@ -126,16 +141,8 @@ static bool host_link_rx_feed_byte(uint8_t b)
 	return true;
 }
 
-static void host_feedback_image_fetch(host_feedback_image_t *out)
+static void host_feedback_fill_system(host_feedback_image_t *out)
 {
-	if (out == NULL)
-		return;
-
-	memset(out, 0, sizeof(*out));
-	out->header.magic          = HOST_FEEDBACK_MAGIC;
-	out->header.layout_version = HOST_LAYOUT_VERSION;
-	out->header.byte_size      = HOST_FEEDBACK_IMAGE_BYTES;
-
 	out->system.control_tick_count = (uint32_t)(g_control_tick_count & 0xFFFu);
 	out->system.last_command_seq   = (uint32_t)(host_link_last_command_seq() & 0xFFu);
 	out->system.mcu_state_readback = (uint32_t)plant_command_mcu_state_readback();
@@ -143,8 +150,27 @@ static void host_feedback_image_fetch(host_feedback_image_t *out)
 	out->system.plant_block =
 		(uint32_t)plant_runtime_actuator_block_reason() & 0x7Fu;
 	plant_timing_system_fill(&out->system);
+}
 
-	plant_feedback_image_fetch(out);
+static void host_feedback_image_fetch_plant(host_feedback_image_t *out)
+{
+	memset(out, 0, sizeof(*out));
+	out->header.magic          = HOST_FEEDBACK_MAGIC;
+	out->header.layout_version = HOST_LAYOUT_VERSION;
+	out->header.byte_size      = HOST_FEEDBACK_IMAGE_BYTES;
+	host_feedback_fill_system(out);
+	plant_feedback_image_fetch_plant(out);
+}
+
+static void host_feedback_image_fetch_debug(host_feedback_image_t *out)
+{
+	memset(out, 0, sizeof(*out));
+	out->header.magic          = HOST_DEBUG_FEEDBACK_MAGIC;
+	out->header.layout_version = HOST_LAYOUT_VERSION;
+	out->header.byte_size      = HOST_FEEDBACK_IMAGE_BYTES;
+	host_feedback_fill_system(out);
+	plant_feedback_image_fetch_plant(out);
+	plant_feedback_image_fetch_debug_mailbox(&out->pdu);
 }
 
 void host_link_poll_tx(void)
@@ -165,10 +191,17 @@ bool host_link_poll_tx_once(void)
 	if (!tp->tx_ready())
 		return false;
 
-	host_feedback_image_fetch(&g_fb_tx_frame);
+	if (g_debug_reply_pending) {
+		host_feedback_image_fetch_debug(&g_fb_tx_frame);
+		if (!tp->write((const uint8_t *)&g_fb_tx_frame, HOST_FEEDBACK_IMAGE_BYTES))
+			return false;
+		plant_diag_feedback_sent(g_fb_tx_frame.pdu.data[25]);
+		g_debug_reply_pending = false;
+		return true;
+	}
+
+	host_feedback_image_fetch_plant(&g_fb_tx_frame);
 	if (!tp->write((const uint8_t *)&g_fb_tx_frame, HOST_FEEDBACK_IMAGE_BYTES))
 		return false;
-
-	plant_diag_feedback_sent(g_fb_tx_frame.pdu.data[25]);
 	return true;
 }

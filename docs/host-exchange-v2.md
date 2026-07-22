@@ -27,9 +27,12 @@ Hosts that send v1 (562 / version 1) are rejected by `host_command_image_valid()
 | 44 | 550 | `actuator_*[25]` — **22 B** each (20 B MIT + 2 B meta) |
 | 594 | 12 | `servos[2]` — 6 B each |
 | 606 | 2 | `leds[1]` |
-| 608 | 64 | `pdb[]` — power-board mirror; **DEBUG mailbox = pdb[0..31]** (`pdu` alias) |
+| 608 | 64 | `pdb[]` — power-board mirror only (plant path keeps tags out) |
 
 Total = 12 + 32 + 550 + 12 + 2 + 64 = **672**.
+
+Tagged DEBUG ops use separate **`DBGC` / `DBGF`** frames — see
+[host-debug-v1.md](host-debug-v1.md).
 
 ### System feedback (offset 12, 32 B)
 
@@ -64,13 +67,14 @@ Feedback: position, velocity, torque, temperature, fault + `uint16 meta`:
 | 14 | enabled |
 | 15 | fb_valid |
 
-### `pdb[64]` / DEBUG mailbox
+### `pdb[64]`
 
-- **PLANT stream:** prefer `pdb` zeros except when PDB UART telemetry is live.
-- **DEBUG / bench:** tagged ops (CFG, RS2, DM, DFU, thermo, SVD) still use **`pdb[0..31]`** via the `pdu` field alias — same tags as v1, new offset **608**.
-- Full 8×V/I power mirror occupies all 64 B when the PDB link is brought up ([ADR-001](decisions.md)).
+- **PLANT stream (`CMDH` / `HBHF`):** `pdb` must be zero for tags; reserved for
+  PDB UART power telemetry ([ADR-001](decisions.md)).
+- **DEBUG (`DBGC` / `DBGF`):** 32 B tag mailbox at offset 608 — see
+  [host-debug-v1.md](host-debug-v1.md).
 
-Plant timing **must not** be packed into the DEBUG mailbox (v1 SVD/thermo overlay removed).
+Plant timing lives in `system[]` only (v1 SVD overlay removed).
 
 ## Rates
 

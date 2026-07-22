@@ -6,6 +6,7 @@ from typing import Optional
 
 from .pack import actuator_slot_offset
 from .wire_layout import (
+    HOST_DEBUG_FEEDBACK_MAGIC,
     HOST_FEEDBACK_MAGIC,
     IMAGE_BYTES,
     PDU_OFF,
@@ -82,7 +83,7 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
     magic, layout_version, byte_size, fb_seq = struct.unpack_from("<IHHI", frame, 0)
-    if magic != HOST_FEEDBACK_MAGIC:
+    if magic not in (HOST_FEEDBACK_MAGIC, HOST_DEBUG_FEEDBACK_MAGIC):
         return None
     sys_word, = struct.unpack_from("<I", frame, SYSTEM_FB_OFF)
     pdu = frame[PDU_OFF : PDU_OFF + 32]
@@ -92,6 +93,7 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     out = {
         "magic_ok": True,
         "magic_hex": f"0x{magic:08X}",
+        "is_debug": magic == HOST_DEBUG_FEEDBACK_MAGIC,
         "layout_version": layout_version,
         "byte_size": byte_size,
         "fb_seq": fb_seq,
@@ -113,7 +115,7 @@ def parse_actuator_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
     magic, = struct.unpack_from("<I", frame, 0)
-    if magic != HOST_FEEDBACK_MAGIC:
+    if magic not in (HOST_FEEDBACK_MAGIC, HOST_DEBUG_FEEDBACK_MAGIC):
         return None
     sys_word, = struct.unpack_from("<I", frame, SYSTEM_FB_OFF)
     off = actuator_slot_offset(slot)

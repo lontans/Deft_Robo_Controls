@@ -15,7 +15,7 @@ from typing import Dict, Optional
 from .pack import patch_actuator_desire, patch_system_mcu_state
 from .parse import parse_actuator_feedback
 from .wire_layout import (
-    HOST_COMMAND_MAGIC,
+    HOST_DEBUG_COMMAND_MAGIC,
     HOST_LAYOUT_VERSION,
     IMAGE_BYTES,
     MAX_CAN_BUS,
@@ -57,10 +57,23 @@ def can_bus_label(bus: int) -> str:
     return f"CH{b} ({_CAN_PINS[b]})"
 
 
-def _blank_command(seq: int) -> bytearray:
+def build_debug_command(seq: int) -> bytearray:
+    """Blank DEBUG command image (DBGC) — mailbox at PDU_OFF / pdb[0..31]."""
     buf = bytearray(IMAGE_BYTES)
-    struct.pack_into("<IHHI", buf, 0, HOST_COMMAND_MAGIC, HOST_LAYOUT_VERSION, IMAGE_BYTES, seq & 0xFFFFFFFF)
+    struct.pack_into(
+        "<IHHI",
+        buf,
+        0,
+        HOST_DEBUG_COMMAND_MAGIC,
+        HOST_LAYOUT_VERSION,
+        IMAGE_BYTES,
+        seq & 0xFFFFFFFF,
+    )
     return buf
+
+
+# Internal alias used by RS2/DM/CFG builders in this module.
+_blank_command = build_debug_command
 
 
 def _patch_pdu_bus(buf: bytearray, bus: int) -> None:

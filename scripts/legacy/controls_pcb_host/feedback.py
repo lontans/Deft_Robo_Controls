@@ -1,4 +1,4 @@
-"""562 B host feedback image parsers."""
+"""672 B host feedback image parsers (layout v2). Prefer deft_controls_sdk."""
 from __future__ import annotations
 
 import struct
@@ -22,10 +22,13 @@ from .protocol import (
     SERVO_SLOT_BYTES,
     SESSION_BEGIN,
     SESSION_END,
+    SYSTEM_CMD_OFF,
     THERMO_RESP_TAG,
     UB_FB_MAX_BYTES,
     UB_RESP_TAG,
 )
+
+SYSTEM_FB_OFF = SYSTEM_CMD_OFF
 
 
 PDU_TAG_NAMES = {
@@ -49,8 +52,23 @@ PLANT_BLOCK_NAMES = {
 }
 
 
+def parse_system_timing(frame: bytes) -> Optional[dict]:
+    """Plant timing from system[32] (layout v2) — not from SVD mailbox bytes."""
+    if len(frame) < SYSTEM_FB_OFF + 12:
+        return None
+    lap_ms, lap_max_ms, ticks_svc, ticks_pending = struct.unpack_from(
+        "<HHBB", frame, SYSTEM_FB_OFF + 4
+    )
+    return {
+        "lap_ms": lap_ms,
+        "lap_max_ms": lap_max_ms,
+        "ticks_svc": ticks_svc,
+        "ticks_pending": ticks_pending,
+    }
+
+
 def parse_svd_plant_timing(pdu: bytes) -> Optional[dict]:
-    """Bytes 23..28 in SVD PDU — superloop timing from firmware plant_timing.c."""
+    """Deprecated: v1 SVD overlay. Prefer parse_system_timing(frame)."""
     if len(pdu) < 29 or pdu[:3] != b"SVD":
         return None
     lap_ms = pdu[23] | (pdu[24] << 8)
@@ -69,11 +87,11 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     magic, layout_version, byte_size, fb_seq = struct.unpack_from("<IHHI", frame, 0)
     if magic != HOST_FEEDBACK_MAGIC:
         return None
-    sys_word, = struct.unpack_from("<I", frame, 12)
+    sys_word, = struct.unpack_from("<I", frame, SYSTEM_FB_OFF)
     pdu = frame[PDU_OFF : PDU_OFF + 32]
     tag = chr(pdu[0]) if 32 <= pdu[0] < 127 else f"0x{pdu[0]:02X}"
     plant_block = (sys_word >> 25) & 0x7F
-    timing = parse_svd_plant_timing(pdu)
+    timing = parse_system_timing(frame)
     out = {
         "magic_ok": True,
         "magic_hex": f"0x{magic:08X}",

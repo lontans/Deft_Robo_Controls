@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RS-02 CAN bench tool over USB (562 B host image).
+RS-02 CAN bench tool over USB (672 B host image, layout v2). UNMAINTAINED — prefer deft_controls_sdk.
 
 Modes:
   --discover   Find motor CAN ID (new motor / unknown address) — recommended
@@ -53,7 +53,7 @@ except ImportError:
 
 HOST_COMMAND_MAGIC = 0x434D4448
 HOST_FEEDBACK_MAGIC = 0x46424848
-HOST_LAYOUT_VERSION = 1
+HOST_LAYOUT_VERSION = 2
 IMAGE_BYTES = 672
 ACTUATOR0_OFF = 44
 ACTUATOR_SLOT_BYTES = 22

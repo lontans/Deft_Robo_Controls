@@ -109,13 +109,15 @@ NORMAL → SOFT_KILL_REQ → (controls safe pose) → SOFT_KILL_READY → HARD_E
 - [x] SDK: `wire_layout` IMAGE_BYTES=672, pack/parse (timing from system[])
 - [ ] Dashboard / health strip: soft-kill visible before hard ESTOP
 - [x] Layout version bump — mismatched v1 hosts rejected
-- [ ] Move DEBUG tags off `pdb[0..31]` to a dedicated DEBUG message (transitional: still on mailbox)
+- [x] Move DEBUG tags off plant `pdb[]` to dedicated `DBGC`/`DBGF` frames ([host-debug-v1.md](host-debug-v1.md))
 
 ---
 
 ## Related
 
 - [architecture.md](architecture.md) — runtime + host API modes
-- [host-exchange-v1.md](host-exchange-v1.md) — **current** 562 B contract
+- [host-exchange-v2.md](host-exchange-v2.md) — **current** 672 B plant contract
+- [host-debug-v1.md](host-debug-v1.md) — DEBUG frames
+- [host-exchange-v1.md](host-exchange-v1.md) — archived 562 B contract
 - [bringup.md](bringup.md) — how to run
 - [lessons.md](lessons.md) — bugs and durable findings

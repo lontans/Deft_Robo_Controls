@@ -1,5 +1,6 @@
 # CubeIDE / Eclipse build output
-Debug/
+Debug/*
+!Debug/DeftRoboticsControlsPCB.elf
 Release/
 
 # IDE metadata
@@ -11,6 +12,12 @@ Release/
 Thumbs.db
 Desktop.ini
 docs/damiao-bringup.md
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+scripts/.pytest_cache/
 
 # deft_controls_sdk live telemetry mirror
 .deft_session/

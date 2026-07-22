@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
 """
-RS-02 teleop: 562 B host command/feedback images (layout v1).
+RS-02 teleop: 672 B host command/feedback images (layout v2).
 
-Command rate (--hz):
-  send_period = 1.0 / hz. The main loop writes a command image whenever
-  monotonic time since the last send >= send_period (default 30 Hz USB / 10 Hz UART).
-  Arrow / r also trigger an immediate send so key latency is not capped by hz.
-
-Transport (Jetson):
-  Run script; press 1 = USB CDC (/dev/ttyACM*), 0 = UART (/dev/ttyUSB* or /dev/ttyTHS*).
-  Or pass --transport usb|uart to skip the prompt.
-
-Jetson:
-  sudo apt install python3-serial
-  python3 scripts/host_teleop.py
+UNMAINTAINED — prefer deft_controls_sdk ControlsPcbHub plant streaming.
 """
 
 from __future__ import annotations
@@ -45,10 +34,10 @@ except ImportError:
 
 HOST_COMMAND_MAGIC = 0x434D4448
 HOST_FEEDBACK_MAGIC = 0x46424848
-HOST_LAYOUT_VERSION = 1
-IMAGE_BYTES = 562
-ACTUATOR0_CMD_OFF = 16
-ACTUATOR0_FB_OFF = 16
+HOST_LAYOUT_VERSION = 2
+IMAGE_BYTES = 672
+ACTUATOR0_CMD_OFF = 44
+ACTUATOR0_FB_OFF = 44
 
 P_MIN, P_MAX = -12.57, 12.57
 POS_STEP = 0.05
