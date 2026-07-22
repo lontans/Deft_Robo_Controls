@@ -34,6 +34,9 @@ __all__ = [
     "list_cdc_ports",
     "enter_bootloader",
     "leave_bootloader",
+    "wait_for_cdc",
+    "wait_for_dfu",
+    "flash_firmware",
 ]
 
 PROTO_ZEROERR = _zeroerr.PROTO_ZEROERR
@@ -42,6 +45,9 @@ find_cdc_port = _soft_dfu.find_cdc_port
 list_cdc_ports = _soft_dfu.list_cdc_ports
 enter_bootloader = _soft_dfu.enter_bootloader
 leave_bootloader = _soft_dfu.leave_bootloader
+wait_for_cdc = _soft_dfu.wait_for_cdc
+wait_for_dfu = _soft_dfu.wait_for_dfu
+flash_firmware = _soft_dfu.flash_firmware
 
 
 class DebugAPI:

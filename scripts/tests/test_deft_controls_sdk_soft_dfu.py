@@ -15,11 +15,13 @@ import pytest
 from deft_controls_sdk.bench import DebugAPI
 from deft_controls_sdk.bench.soft_dfu import (
     CdcPortInfo,
+    default_firmware_elf,
     enter_bootloader,
     find_cdc_port,
     host_os,
     leave_bootloader,
     list_cdc_ports,
+    main,
 )
 from deft_controls_sdk.link import Connection
 from deft_controls_sdk.link.exchange import IMAGE_BYTES, PDU_OFF
@@ -118,3 +120,26 @@ def test_find_cdc_port_linux_style(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(mod, "host_os", lambda: "linux")
     assert find_cdc_port() == "/dev/ttyACM0"
+
+
+def test_default_firmware_elf_points_at_repo_debug() -> None:
+    elf = default_firmware_elf()
+    assert elf.name == "DeftRoboticsControlsPCB.elf"
+    assert elf.parent.name == "Debug"
+
+
+def test_main_flash_wires_to_flash_firmware(monkeypatch: pytest.MonkeyPatch) -> None:
+    import deft_controls_sdk.bench.soft_dfu as mod
+
+    called = {}
+
+    def _flash(image, *, serial=None, flash_address=0, confirm=True):
+        called["image"] = image
+        called["serial"] = serial
+        called["address"] = flash_address
+        return "/dev/ttyACM0"
+
+    monkeypatch.setattr(mod, "flash_firmware", _flash)
+    assert main(["flash", "--serial", "ABC", "--image", "/tmp/x.elf"]) == 0
+    assert called["serial"] == "ABC"
+    assert called["image"] == "/tmp/x.elf"

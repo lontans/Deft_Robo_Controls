@@ -11,10 +11,17 @@ STM32 USB CDC 0483:5740 — never hard-code COM5.
 """
 from __future__ import annotations
 
+import argparse
+import os
 import platform
+import shutil
 import struct
+import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Sequence
 
 from deft_controls_sdk.link.exchange import PDU_OFF, build_plant_command
@@ -452,3 +459,213 @@ def _dfu_leave(handle, *, address: int) -> None:
                 return
     except Exception:
         return
+
+
+def default_firmware_elf() -> Path:
+    """Repo ``Debug/DeftRoboticsControlsPCB.elf`` relative to this package."""
+    # scripts/deft_controls_sdk/bench/soft_dfu.py → repo root
+    root = Path(__file__).resolve().parents[3]
+    return root / "Debug" / "DeftRoboticsControlsPCB.elf"
+
+
+def _which_objcopy() -> str:
+    for name in ("arm-none-eabi-objcopy", "objcopy"):
+        path = shutil.which(name)
+        if path:
+            return path
+    raise RuntimeError(
+        "need objcopy (apt: binutils) or arm-none-eabi-objcopy "
+        "(apt: gcc-arm-none-eabi)"
+    )
+
+
+def elf_to_bin(elf: Path, bin_path: Path) -> Path:
+    """Convert ELF → raw binary for dfu-util."""
+    cmd = [_which_objcopy(), "-O", "binary", str(elf), str(bin_path)]
+    subprocess.run(cmd, check=True)
+    if not bin_path.is_file() or bin_path.stat().st_size == 0:
+        raise RuntimeError(f"objcopy produced empty/missing bin: {bin_path}")
+    return bin_path
+
+
+def _dfu_util_flash(bin_path: Path, *, serial: Optional[str], address: int) -> None:
+    dfu = shutil.which("dfu-util")
+    if not dfu:
+        raise RuntimeError(
+            "dfu-util not found — install it (apt: dfu-util) or flash with "
+            "STM32_Programmer_CLI then call leave_bootloader()"
+        )
+    cmd = [
+        dfu,
+        "-d",
+        f"{_DFU_VID:04x}:{_DFU_PID:04x}",
+        "-a",
+        "0",
+        # Do NOT append :leave — that jumps to 0x08000000 and can kill USB CDC.
+        "-s",
+        f"0x{address:08X}",
+        "-D",
+        str(bin_path),
+    ]
+    if serial:
+        cmd.extend(["-S", serial])
+    print("+", " ".join(cmd), flush=True)
+    # dfu-util prints "Invalid DFU suffix" for raw .bin — that is expected.
+    subprocess.run(cmd, check=True)
+
+
+def _cubeprog_flash(image: Path, *, serial: Optional[str]) -> None:
+    cli = shutil.which("STM32_Programmer_CLI") or shutil.which(
+        "STM32_Programmer_CLI.exe"
+    )
+    if not cli:
+        raise RuntimeError("STM32_Programmer_CLI not found on PATH")
+    cmd = [cli, "-c", "port=USB1", "-w", str(image), "-v"]
+    if serial:
+        # CubeProg uses sn= for USB DFU serial when multiple devices present.
+        cmd = [cli, "-c", f"port=USB1 sn={serial}", "-w", str(image), "-v"]
+    print("+", " ".join(cmd), flush=True)
+    subprocess.run(cmd, check=True)
+
+
+def flash_firmware(
+    image: Optional[os.PathLike[str] | str] = None,
+    *,
+    serial: Optional[str] = None,
+    flash_address: int = _APP_FLASH_BASE,
+    confirm: bool = True,
+) -> str:
+    """One-shot USB soft-DFU: enter (if needed) → program → Leave trampoline.
+
+    ``image`` may be an ``.elf`` or ``.bin``. Default: repo Debug ELF.
+    Returns the CDC device path after the app re-enumerates.
+    """
+    if not confirm:
+        raise ValueError("flash_firmware() requires confirm=True")
+
+    img = Path(image) if image is not None else default_firmware_elf()
+    if not img.is_file():
+        raise FileNotFoundError(
+            f"firmware not found: {img} — build in CubeIDE or pass --image"
+        )
+
+    # Prefer DFU if already there (re-flash without re-enter).
+    in_dfu = wait_for_dfu(serial=serial, timeout_s=0.5)
+    if not in_dfu:
+        port = enter_bootloader(confirm=True, serial=serial)
+        print(f"entered DFU from {port}", flush=True)
+        if not wait_for_dfu(serial=serial, timeout_s=10.0):
+            raise RuntimeError(
+                "DFU device 0483:DF11 did not appear — check USB / udev rules"
+            )
+    else:
+        print("already in DFU (0483:DF11)", flush=True)
+
+    tmp_bin: Optional[Path] = None
+    try:
+        if img.suffix.lower() == ".bin":
+            bin_path = img
+        else:
+            fd, tmp_name = tempfile.mkstemp(prefix="soft_dfu_", suffix=".bin")
+            os.close(fd)
+            tmp_bin = Path(tmp_name)
+            print(f"objcopy {img} → {tmp_bin}", flush=True)
+            elf_to_bin(img, tmp_bin)
+            bin_path = tmp_bin
+
+        os_name = host_os()
+        if os_name == "windows" and shutil.which("dfu-util") is None:
+            _cubeprog_flash(img if img.suffix.lower() == ".elf" else bin_path, serial=serial)
+        else:
+            _dfu_util_flash(bin_path, serial=serial, address=flash_address)
+    finally:
+        if tmp_bin is not None:
+            try:
+                tmp_bin.unlink()
+            except OSError:
+                pass
+
+    print("leaving DFU via reset trampoline…", flush=True)
+    if not leave_bootloader(serial=serial):
+        raise RuntimeError("Leave DFU timed out — DF11 still present")
+
+    cdc = wait_for_cdc(serial=serial, timeout_s=12.0)
+    if not cdc:
+        raise RuntimeError(
+            "app CDC did not reappear after Leave — power-cycle or ST-Link reset"
+        )
+    print(f"flash ok — CDC at {cdc}", flush=True)
+    return cdc
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI: ``python -m deft_controls_sdk.bench.soft_dfu flash``."""
+    p = argparse.ArgumentParser(
+        prog="soft_dfu",
+        description="USB soft-DFU helpers (no ST-Link)",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    f = sub.add_parser("flash", help="enter DFU, program image, leave trampoline")
+    f.add_argument(
+        "--image",
+        default=None,
+        help="path to .elf or .bin (default: repo Debug/*.elf)",
+    )
+    f.add_argument("--serial", default=None, help="USB serial to select board")
+    f.add_argument(
+        "--address",
+        default=f"0x{_APP_FLASH_BASE:08X}",
+        help="flash base for dfu-util (default 0x08000000)",
+    )
+
+    e = sub.add_parser("enter", help="reset board into ROM DFU")
+    e.add_argument("--serial", default=None)
+    e.add_argument("--port", default=None)
+
+    l = sub.add_parser("leave", help="AN3156 Leave to reset trampoline")
+    l.add_argument("--serial", default=None)
+
+    s = sub.add_parser("scan", help="list STM32 CDC / DFU presence")
+    s.add_argument("--serial", default=None)
+
+    args = p.parse_args(list(argv) if argv is not None else None)
+
+    if args.cmd == "scan":
+        for row in list_cdc_ports(serial=args.serial):
+            mark = "CDC" if row.is_stm32_cdc else "   "
+            print(f"  [{mark}] {row.device}  sn={row.serial}  "
+                  f"vid={row.vid} pid={row.pid}  {row.description}")
+        try:
+            present = wait_for_dfu(serial=args.serial, timeout_s=0.3)
+        except RuntimeError as exc:
+            print(f"  DFU: ({exc})")
+        else:
+            print(f"  DFU 0483:DF11: {'yes' if present else 'no'}")
+        return 0
+
+    if args.cmd == "enter":
+        print(enter_bootloader(confirm=True, port=args.port, serial=args.serial))
+        return 0
+
+    if args.cmd == "leave":
+        ok = leave_bootloader(serial=args.serial)
+        print("left" if ok else "timeout")
+        return 0 if ok else 1
+
+    if args.cmd == "flash":
+        addr = int(args.address, 0)
+        flash_firmware(
+            args.image,
+            serial=args.serial,
+            flash_address=addr,
+            confirm=True,
+        )
+        return 0
+
+    p.error(f"unknown cmd {args.cmd}")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
