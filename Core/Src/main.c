@@ -112,6 +112,19 @@ int main(void)
    * Must run before HAL_Init()/SystemClock_Config() -- see soft_dfu.h. */
   soft_dfu_check_and_jump();
 
+  /* AN3156: ROM DFU Leave jumps into the app without a system reset, so the
+   * USB FS core / IRQs can still be live from the bootloader. Tear that down
+   * before HAL/USB re-init or CDC may never re-enumerate. */
+  __HAL_RCC_USB_CLK_ENABLE();
+  __HAL_RCC_USB_FORCE_RESET();
+  __HAL_RCC_USB_RELEASE_RESET();
+  NVIC_DisableIRQ(USB_HP_IRQn);
+  NVIC_DisableIRQ(USB_LP_IRQn);
+  NVIC_DisableIRQ(USBWakeUp_IRQn);
+  NVIC_ClearPendingIRQ(USB_HP_IRQn);
+  NVIC_ClearPendingIRQ(USB_LP_IRQn);
+  NVIC_ClearPendingIRQ(USBWakeUp_IRQn);
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/

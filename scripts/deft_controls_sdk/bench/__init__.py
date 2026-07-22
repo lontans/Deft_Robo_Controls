@@ -26,9 +26,22 @@ if TYPE_CHECKING:
     from deft_controls_sdk.link import Connection
     from deft_controls_sdk.telemetry import TelemetryCache
 
-__all__ = ["DebugAPI", "lease", "PROTO_ZEROERR"]
+__all__ = [
+    "DebugAPI",
+    "lease",
+    "PROTO_ZEROERR",
+    "find_cdc_port",
+    "list_cdc_ports",
+    "enter_bootloader",
+    "leave_bootloader",
+]
 
 PROTO_ZEROERR = _zeroerr.PROTO_ZEROERR
+
+find_cdc_port = _soft_dfu.find_cdc_port
+list_cdc_ports = _soft_dfu.list_cdc_ports
+enter_bootloader = _soft_dfu.enter_bootloader
+leave_bootloader = _soft_dfu.leave_bootloader
 
 
 class DebugAPI:
@@ -130,11 +143,38 @@ class DebugAPI:
 
     # -- Soft-DFU (reboot into ROM bootloader, no ST-Link needed) --------------------
 
-    def enter_bootloader(self, *, confirm: bool = False) -> None:
-        """Resets the board straight into the ROM bootloader over USB CDC —
-        see bench/soft_dfu.py and App/Inc/host/soft_dfu.h. UNVERIFIED WITHOUT
-        HARDWARE as of this writing; keep the ST-Link handy the first time."""
-        _soft_dfu.enter_bootloader(self._connection, confirm=confirm)
+    def enter_bootloader(
+        self,
+        *,
+        confirm: bool = False,
+        port: Optional[str] = None,
+        serial: Optional[str] = None,
+    ) -> str:
+        """Reset into ROM USB DFU (CDC drops). Uses this hub's port by default.
+
+        Pass ``port`` / ``serial`` to override; omit hub usage entirely via
+        ``deft_controls_sdk.bench.enter_bootloader(confirm=True)`` which
+        auto-finds 0483:5740 on Windows or Linux."""
+        if port is not None or serial is not None:
+            return _soft_dfu.enter_bootloader(
+                None, confirm=confirm, port=port, serial=serial
+            )
+        return _soft_dfu.enter_bootloader(self._connection, confirm=confirm)
+
+    def leave_bootloader(
+        self,
+        *,
+        serial: Optional[str] = None,
+        address: int = 0x0803F800,
+        timeout_s: float = 8.0,
+    ) -> bool:
+        """Leave ROM DFU over USB; default jumps to the reset trampoline.
+
+        Talks to 0483:DF11 via libusb (Windows WinUSB / Linux libusb). Returns
+        True if DFU went away; CDC should reappear shortly after."""
+        return _soft_dfu.leave_bootloader(
+            serial=serial, address=address, timeout_s=timeout_s
+        )
 
     # -- ZeroErr (CiA 402 PP) --------------------------------------------------------
 

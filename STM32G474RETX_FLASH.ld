@@ -380,6 +380,24 @@ SECTIONS
 
 
 
+  /* Soft-DFU Leave trampoline vector table (AN3156 Leave jumps here).
+
+     Fixed address so the host can Set Address Pointer without parsing the
+
+     ELF. Two words: initial MSP + reset handler that only NVIC_SystemReset()
+
+     — a direct Leave to 0x08000000 does not fully reset USB on this part. */
+
+  .soft_dfu_leave_vt 0x0803F800 :
+
+  {
+
+    KEEP(*(.soft_dfu_leave_vt))
+
+  } >FLASH
+
+
+
   /* Remove information from the compiler libraries */
 
   /DISCARD/ :
