@@ -155,18 +155,15 @@ def test_dfu_util_flash_retries_sudo_on_access_denied(
     bin_path.write_bytes(b"\x00" * 64)
     calls: List[List[str]] = []
 
-    def _run(argv, check=False, text=True, capture_output=True):
+    def _run(argv, check=False):
         calls.append(list(argv))
         if "sudo" in argv[0]:
-            return types.SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
-        return types.SimpleNamespace(
-            returncode=74,
-            stdout="",
-            stderr="dfu-util: Cannot open DFU device 0483:df11\n",
-        )
+            return types.SimpleNamespace(returncode=0)
+        return types.SimpleNamespace(returncode=74)
 
     monkeypatch.setattr(mod, "_which_dfu_util", lambda: "/usr/bin/dfu-util")
     monkeypatch.setattr(mod, "host_os", lambda: "linux")
+    monkeypatch.setattr(mod.os, "geteuid", lambda: 1000, raising=False)
     monkeypatch.setattr(
         mod.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None
     )

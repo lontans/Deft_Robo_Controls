@@ -205,10 +205,10 @@ def wait_for_dfu_access(
     serial: Optional[str] = None,
     timeout_s: float = 5.0,
 ) -> bool:
-    """Poll until 0483:DF11 can be opened+claimed (udev perms applied).
+    """Poll until 0483:DF11 can be opened (udev/sudo perms applied).
 
-    Listing the device can succeed while open still returns ACCESS — common
-    right after re-enumeration before udev finishes.
+    Listing can succeed while open still returns ACCESS. Only open+close —
+    do not claim the interface (that races with dfu-util).
     """
     try:
         import usb1
@@ -225,13 +225,6 @@ def wait_for_dfu_access(
             handle = None
             try:
                 handle = dev.open()
-                try:
-                    if handle.kernelDriverActive(0):
-                        handle.detachKernelDriver(0)
-                except Exception:
-                    pass
-                handle.claimInterface(0)
-                handle.releaseInterface(0)
                 return True
             except Exception:
                 pass
@@ -613,54 +606,41 @@ def _dfu_util_flash(bin_path: Path, *, serial: Optional[str], address: int) -> N
     if serial:
         cmd.extend(["-S", serial])
 
-    def _run(argv: List[str]) -> subprocess.CompletedProcess[str]:
+    def _run(argv: List[str]) -> int:
+        # Stream live — capture_output hides progress and looks hung on Ctrl+C.
         print("+", " ".join(argv), flush=True)
-        # dfu-util prints "Invalid DFU suffix" for raw .bin — that is expected.
-        return subprocess.run(argv, check=False, text=True, capture_output=True)
+        return subprocess.run(argv, check=False).returncode
 
-    result = _run(cmd)
-    if result.returncode == 0:
-        if result.stdout:
-            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
-        if result.stderr:
-            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+    rc = _run(cmd)
+    if rc == 0:
         return
 
-    out = (result.stdout or "") + (result.stderr or "")
-    if out:
-        print(out, end="" if out.endswith("\n") else "\n")
-
-    # Listing DFU works without write perms; opening often needs udev or sudo.
-    if host_os() == "linux" and _dfu_util_permission_error(out, result.returncode):
+    # soft_dfu_flash.sh already runs as root; skip nested sudo there.
+    already_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    if (
+        host_os() == "linux"
+        and not already_root
+        and _dfu_util_permission_error("", rc)
+    ):
         sudo = shutil.which("sudo")
         if sudo:
             for sudo_argv in (
-                [sudo, "-n", *cmd],  # passwordless sudo
-                [sudo, *cmd],  # interactive prompt if TTY
+                [sudo, "-n", *cmd],
+                [sudo, *cmd],
             ):
                 print(
                     "dfu-util could not open device — retrying with sudo…",
                     flush=True,
                 )
-                result = _run(sudo_argv)
-                if result.returncode == 0:
-                    if result.stdout:
-                        print(
-                            result.stdout,
-                            end="" if result.stdout.endswith("\n") else "\n",
-                        )
-                    if result.stderr:
-                        print(
-                            result.stderr,
-                            end="" if result.stderr.endswith("\n") else "\n",
-                        )
+                rc = _run(sudo_argv)
+                if rc == 0:
                     return
-                out = (result.stdout or "") + (result.stderr or "")
-                if out:
-                    print(out, end="" if out.endswith("\n") else "\n")
         raise RuntimeError(_DFU_UDEV_HINT.strip())
 
-    raise subprocess.CalledProcessError(result.returncode, cmd, out)
+    if host_os() == "linux" and _dfu_util_permission_error("", rc):
+        raise RuntimeError(_DFU_UDEV_HINT.strip())
+
+    raise subprocess.CalledProcessError(rc, cmd)
 
 
 def _cubeprog_flash(image: Path, *, serial: Optional[str]) -> None:
