@@ -1,4 +1,4 @@
-"""USB CDC transport: 562 B frame reader and background RX pump."""
+"""USB CDC transport: 672 B frame reader and background RX pump."""
 from __future__ import annotations
 
 import struct
@@ -157,7 +157,7 @@ def open_serial(port: str, baud: int = DEFAULT_BAUD) -> serial.Serial:
         # Legacy used timeout=0.05; on Windows that blocking read contended with
         # plant write/flush and left host_tx_gap_max ~27–35 ms even when idle.
         # Do NOT set write_timeout — a mid-frame timeout on Windows CDC can
-        # deliver a partial 562 B image and desync the MCU command stream.
+        # deliver a partial 672 B image and desync the MCU command stream.
         ser = serial.Serial(port, baud, timeout=0)
     except (serial.SerialException, PermissionError, OSError) as exc:
         raise serial.SerialException(format_serial_open_error(port, exc)) from exc

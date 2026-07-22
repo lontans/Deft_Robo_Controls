@@ -1,4 +1,4 @@
-"""562 B host command image builders — pack desires into wire bytes."""
+"""672 B host command image builders — pack desires into wire bytes."""
 from __future__ import annotations
 
 import struct

@@ -52,7 +52,7 @@
 #define PLANT_DIAG_RS2_QUIET_MS      3000u
 #define PLANT_DIAG_DM_QUIET_MS       3000u
 
-/* Why 500 Hz actuator apply was skipped (stamped in feedback system.reserved). */
+/* Why 500 Hz actuator apply was skipped (stamped in feedback system.plant_block). */
 typedef enum {
 	PLANT_BLOCK_NONE = 0,
 	PLANT_BLOCK_BENCH_SESSION = 1,

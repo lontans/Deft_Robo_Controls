@@ -320,7 +320,7 @@ def build_cfg_command(
 
 
 def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
-    """Parse a CFG response pdu (32 B slice at PDU_OFF, not the full 562 B frame).
+    """Parse a CFG response pdu (32 B slice at PDU_OFF, not the full 672 B frame).
 
     Paginated when ACTUATOR_COUNT exceeds one PDU's worth of slots (dual-arm, 14
     actuators): header (0..4) + count (5) + up to N slot records, 3 bytes each

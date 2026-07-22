@@ -55,7 +55,7 @@ def validate_slot(slot: int) -> None:
 
 
 class CommandImage:
-    """Mutable builder for one 562 B command frame."""
+    """Mutable builder for one 672 B command frame."""
 
     def __init__(self, seq: int = 0, mcu_state: McuState = McuState.NORMAL) -> None:
         self._buf = bytearray(IMAGE_BYTES)
@@ -129,7 +129,7 @@ class FeedbackState:
 
 
 class FeedbackImage:
-    """Parsed 562 B feedback frame — raises InvalidFrameError on bad magic/size."""
+    """Parsed 672 B feedback frame — raises InvalidFrameError on bad magic/size."""
 
     __slots__ = ("_raw", "_header", "_slots")
 

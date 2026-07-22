@@ -131,9 +131,10 @@ class DebugAPI:
         persist: bool = False,
         timeout_s: float = 1.5,
     ) -> dict:
-        """RAM apply (always) + flash persist (if persist=True). Flash SAVE is
-        unreliable in practice — a raised exception after persist=True means
-        RAM apply already took effect but the change will not survive reboot."""
+        """RAM apply (always) + flash persist (if persist=True).
+
+        Needs firmware with the G4 BKER NVM erase fix. A raised exception after
+        persist=True means RAM applied but flash did not — reboot would revert."""
         return _config.set_slot(
             self._connection,
             self._telemetry,

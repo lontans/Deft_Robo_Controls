@@ -125,7 +125,7 @@ Every action route returns the current `/api/state` snapshot on success, or `{"e
 | Fault-triggered dumps | `.deft_session/faults/fault_<time>_<n>_<reason>.ndjson` — automatic on a `plant_block`/actuator-fault/`ESTOP` transition, bounded ring window before + fixed tick count after; oldest pruned past `max_fault_files` (default 20). A `startup_grace_s` window (default 3.0s from first observed tick) suppresses triggers during connect — the first feedback frame can legitimately read `HOST_STALE` with `fb_hz` still ramping from cold before streaming stabilizes; without the grace window every connect fired a spurious dump (confirmed on a real bench capture: `plant_block=HOST_STALE` on tick 0, cleared 264 ms later, steady by ~1.25s). Dumps are written on the same background disk thread. |
 | Manual recording | `.deft_session/recordings/record_<time>.ndjson` — `hub.telemetry.start_recording()`/`stop_recording()`, or the Record button in the dashboard; every observed tick while on, unbounded until stopped (size/duration shown live in `state.json` and the dashboard so it's never silent). Appends are queued to the background writer (no per-tick `flush()` on the stream thread). |
 
-Works against currently flashed firmware (562 B `CMDH`/`HBHF`). No firmware changes — this is host-side only.
+Works against layout **v2** firmware (672 B `CMDH`/`HBHF`). Flash matching firmware after a layout bump.
 
 ## Porting status vs `scripts/legacy/`
 

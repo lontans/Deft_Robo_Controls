@@ -96,7 +96,7 @@ class Connection:
         set_actuators() mutating _desires mid-iteration in another thread's
         build_command() can raise 'dictionary changed size during iteration'."""
         self._write_lock = threading.Lock()
-        """Guards the actual ser.write() — two 562 B frames written from
+        """Guards the actual ser.write() — two 672 B frames written from
         different threads without this can interleave on the wire and corrupt
         the frame the MCU sees."""
         self._mcu_state = McuState.NORMAL

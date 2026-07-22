@@ -30,7 +30,8 @@ def _wait_cfg_response(
         frame = session.reader.pop()
         while frame is not None:
             if len(frame) == IMAGE_BYTES:
-                pdu = frame[530:562]
+                from controls_pcb_host.protocol.schema import PDU_OFF, HOST_PDU_PAYLOAD_BYTES
+                pdu = frame[PDU_OFF : PDU_OFF + HOST_PDU_PAYLOAD_BYTES]
                 parsed = parse_cfg_feedback(pdu)
                 if parsed is not None:
                     if expect_op is not None and parsed["op"] != expect_op:

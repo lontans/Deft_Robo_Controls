@@ -2,7 +2,7 @@
 
 How software talks to the flashed board today. Canonical package:
 [`scripts/deft_controls_sdk/`](../scripts/deft_controls_sdk/). Byte layout:
-[host-exchange-v1.md](host-exchange-v1.md). Architecture / modes:
+[host-exchange-v2.md](host-exchange-v2.md) (672 B; v1 was 562 B). Architecture / modes:
 [architecture.md](architecture.md). Bench how-to: [bringup.md](bringup.md).
 
 This page is the **call surface** — what to import, what each call does, and
@@ -27,7 +27,7 @@ flowchart TB
     Hub --> Log
   end
 
-  Link["USB CDC or UART<br/>562 B CMDH ↔ HBHF @ stream rate"]
+  Link["USB CDC or UART<br/>672 B CMDH ↔ HBHF @ stream rate"]
 
   subgraph mcu["MCU"]
     Super["app_run lap<br/>RX → diag? → plant service → LED/thermo → TX FB"]
@@ -159,7 +159,7 @@ craft PDU tags. While a lease/session is active, plant apply may show
 | `hub.debug.probe_robstride(bus=…, motor_id=…, timeout_s=…)` | Single-motor probe reply dict (or `None`). |
 | `hub.debug.discover_damiao(bus=…, start=…, end=…, known_ids=…)` | Damiao discover; pass `known_ids` for configured slots first (avoids bus flood). |
 | `hub.debug.cfg_get_table()` | List of actuator table rows (dual-arm: **14** slots). |
-| `hub.debug.cfg_set_slot(slot=…, bus=…, protocol=…, motor_id=…, master_id=0, enabled=True, persist=False)` | RAM apply always; `persist=True` attempts NVM SAVE (flash save is unreliable in practice — RAM may stick while reboot reverts). |
+| `hub.debug.cfg_set_slot(slot=…, bus=…, protocol=…, motor_id=…, master_id=0, enabled=True, persist=False)` | RAM apply always; `persist=True` also CFG SAVE to flash NVM (needs BKER erase fix in firmware). |
 | `hub.debug.calibrate_robstride(…)` | **Not ported** — raises `NotImplementedError`. Use legacy: `python scripts/legacy/control_hub.py calibrate --port COM5 --bus N --id 0xXX`. |
 
 Protocol enum for CFG (firmware `actuator_protocol_t`):
@@ -260,7 +260,7 @@ MCP holds are expensive on the MCU hot path (see
 |---------|----------------|
 | Arrow teleop, homing, brace, YAM soft limits | `scripts/legacy/control_hub/teleop/` |
 | RS02 encoder calibrate | Legacy CLI (`calibrate`) until ported |
-| Crafting raw PDU tags / 562 B layouts in apps | Don’t — use hub methods; bytes in [host-exchange-v1.md](host-exchange-v1.md) |
+| Crafting raw PDU tags / 672 B layouts in apps | Don’t — use hub methods; bytes in [host-exchange-v2.md](host-exchange-v2.md) |
 | Second COM session / mux daemon | Not yet — one process owns the port |
 
 ---

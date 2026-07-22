@@ -1,4 +1,4 @@
-"""Byte contract helpers for the 562 B host exchange image.
+"""Byte contract helpers for the 672 B host exchange image (layout v2).
 
   wire_layout.py — constants / offsets (plant path; renamed from schema.py —
                    "schema" already means something else in telemetry/cache.py)

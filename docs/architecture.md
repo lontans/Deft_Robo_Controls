@@ -247,21 +247,16 @@ On each TIM6 period:
 - Plant teleop: idle **kp=0 kd=0** (backdrivable); RS2 teleop via PDU uses separate path.
 - RS2 teleop exit does **not** call `RECOVERY` (avoids all-bus reset / LED flood). Damiao teleop may use `RECOVERY` on exit.
 
-## Wire contracts: current vs target
+## Wire contracts (layout v2 — shipped)
 
-| | Current (shipped) | Target (implement later) |
-|--|-------------------|--------------------------|
-| USB host image | **562 B**, [host-exchange-v1.md](host-exchange-v1.md) | **672 B** — see [decisions.md](decisions.md) ADR-001 |
-| System block | 4 B (health partly via USB `pdu` / SVD) | **32 B** dedicated health + soft-kill mirror |
-| Actuator slot | 20 B | **22 B** (20 MIT + 2 B meta; fb = identity, cmd = reserved zeros) |
-| USB `pdb[]` | none | **64 B** power-board mirror for host |
-| Plant USB debug mailbox | 32 B tagged `pdu` | Unused on PLANT path; DEBUG via lease / separate path |
-| Controls ↔ PDB UART | (TBD / not in tree) | **64 B** frames; soft-kill in-band; hard ESTOP = active-low wire |
-| Host stream rate | ~30–50 Hz typical | ~30 Hz product loop; USB FS has headroom at 672 B |
-
-**Do not change v1 offsets in place.** When implementing, bump `layout_version`, add `host-exchange-v2.md`, and update firmware + `deft_controls_sdk` together.
-
-### Target USB image (672 B)
+| | Current |
+|--|---------|
+| USB host image | **672 B**, [host-exchange-v2.md](host-exchange-v2.md) |
+| System block | **32 B** health + lap timing |
+| Actuator slot | **22 B** (20 MIT + 2 B meta identity on fb) |
+| USB `pdb[]` | **64 B**; DEBUG mailbox = `pdb[0..31]` until dedicated DEBUG messages |
+| Controls ↔ PDB UART | TBD — soft-kill in-band; hard ESTOP = active-low wire |
+| Host stream rate | ~30–50 Hz typical; USB FS has headroom at 672 B |
 
 ```text
 header       12
@@ -276,7 +271,7 @@ total       672
 
 Three-layer power path: **host ↔ controls (USB) ↔ PDB (UART + ESTOP wire)**. Soft-kill is staged on UART/status so actuators can reach a safe pose under power before the controls board asserts hard ESTOP.
 
-Full decision text, kill-state intent, USB bandwidth notes, and implementation checklist: **[decisions.md](decisions.md)**.
+Full decision text: **[decisions.md](decisions.md)** ADR-001.
 
 ## Deferred (other host API — document only)
 

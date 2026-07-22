@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Laptop USB CDC test for Deft controls PCB (562 B layout v1).
+Laptop USB CDC test for Deft controls PCB (672 B layout v2).
 
 Use this on a Windows/Linux laptop with the board on USB — no Jetson, no UART mode.
 Firmware must use HOST_TRANSPORT_UART 0 in App/Inc/host/host_transport.h.
@@ -127,10 +127,11 @@ except ImportError:
 
 HOST_COMMAND_MAGIC = 0x434D4448
 HOST_FEEDBACK_MAGIC = 0x46424848
-HOST_LAYOUT_VERSION = 1
-IMAGE_BYTES = 562
-ACTUATOR0_CMD_OFF = 16
-ACTUATOR0_FB_OFF = 16
+HOST_LAYOUT_VERSION = 2
+IMAGE_BYTES = 672
+ACTUATOR0_CMD_OFF = 44
+ACTUATOR0_FB_OFF = 44
+ACTUATOR_SLOT_BYTES = 22
 
 P_MIN, P_MAX = -12.57, 12.57
 # After encoder zero/cal, comm 0x02 p_raw can still decode near ±P_MIN — never sync to that.
@@ -285,7 +286,9 @@ def parse_feedback_image(data: bytes) -> Optional[dict]:
     if layout != HOST_LAYOUT_VERSION or byte_size != IMAGE_BYTES:
         return None
     sys_word, = struct.unpack_from("<I", data, 12)
-    pos, vel, torque, temp, fault = struct.unpack_from("<ffffI", data, ACTUATOR0_FB_OFF)
+    pos, vel, torque, temp, fault, _meta = struct.unpack_from(
+        "<ffffIH", data, ACTUATOR0_FB_OFF
+    )
     return {
         "tick": sys_word & 0xFFF,
         "last_cmd_seq": (sys_word >> 17) & 0xFF,
@@ -1911,7 +1914,7 @@ def _delegate_plant_teleop(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Laptop USB CDC host test (562 B images)")
+    ap = argparse.ArgumentParser(description="Laptop USB CDC host test (672 B images)")
     ap.add_argument("--list-ports", action="store_true", help="List COM / ttyACM ports and exit")
     ap.add_argument("--port", default=None, help="Serial port (e.g. COM5 or /dev/ttyACM0)")
     ap.add_argument("--baud", type=int, default=USB_BAUD,
@@ -1939,7 +1942,7 @@ def main() -> None:
     ap.add_argument("--bus", type=int, default=1, choices=list(range(1, MAX_CAN_BUS + 1)),
                     help=f"Schematic CAN bus for RS2 PDU modes (1..{MAX_CAN_BUS}; 4–6 = MCP2518)")
     ap.add_argument("--plant-teleop", action="store_true",
-                    help="Plant actuator slots in one 562 B frame (default CH1 0x76/0x74, CH3 Damiao, CH4 0x70)")
+                    help="Plant actuator slots in one 672 B frame (default CH1 0x76/0x74, CH3 Damiao, CH4 0x70)")
     ap.add_argument("--damiao-teleop", action="store_true",
                     help="Damiao slot 2 (CH3 0x06) plant teleop — actuator_commands[], no DM0 PDU")
     ap.add_argument("--servo-teleop", action="store_true",

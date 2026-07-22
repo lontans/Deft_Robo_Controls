@@ -7,9 +7,9 @@ Connection (no lease()). Telemetry mode is still published as "cfg" so the
 dashboard shows *why* nothing else is happening while a save is retrying.
 
 Flash SAVE is the one part of this that is NOT reliable in practice (legacy's
-own retry loop is the evidence) — callers must not assume --persist always
-succeeds. RAM apply (CFG_OP_SET) and flash persist (CFG_OP_SAVE) are reported
-as distinct outcomes; see save_nvm()'s docstring.
+own retry loop). RAM apply (CFG_OP_SET) and flash persist (CFG_OP_SAVE) are
+distinct outcomes; see save_nvm(). Requires firmware with the G4 BKER erase
+fix (otherwise SAVE returns flash_err).
 """
 from __future__ import annotations
 
@@ -118,10 +118,11 @@ def apply_slot(
 
 
 def save_nvm(connection: "Connection", *, timeout_s: float = 8.0, retries: int = 3) -> dict:
-    """Flash NVM save — unreliable in practice (this retry loop is ported as-is
-    from legacy, not added defensively). A raised exception here means RAM apply
-    already succeeded (if apply_slot() was called first) but the change will NOT
-    survive a reboot — surface that distinction to the caller, don't swallow it."""
+    """Flash NVM save (last flash page @ 0x0807F800). Retries on timeout.
+
+    A raised exception means RAM apply (if any) already succeeded but the
+    change will NOT survive reboot. Pre-BKER firmware always failed verify
+    with flash_err; current G4 erase path should return status ok."""
     last_err: Optional[Exception] = None
     for attempt in range(retries):
         try:

@@ -24,7 +24,7 @@ typedef struct {
 typedef host_actuator_command_t  actuator_desire_t;
 typedef host_actuator_feedback_t actuator_state_t;
 
-/* Plant table size matches host exchange (562 B image). */
+/* Plant table size matches host exchange wire slots (672 B layout v2). */
 #define ACTUATOR_COUNT HOST_EXCHANGE_ACTUATOR_SLOTS
 
 extern actuator_config_t actuator_table[ACTUATOR_COUNT];

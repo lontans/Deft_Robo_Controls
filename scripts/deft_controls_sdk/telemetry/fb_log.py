@@ -28,7 +28,7 @@ def build_fb_log_record(
     include_raw: bool = True,
     include_actuators: bool = True,
 ) -> Dict[str, Any]:
-    """Build one compact log dict from a 562 B feedback image.
+    """Build one compact log dict from a 672 B feedback image.
 
     This is cheap relative to ``SessionState.to_dict()`` + grading: header parse,
     optional 14-slot strip, optional base64 of the wire image.

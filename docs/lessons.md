@@ -17,7 +17,6 @@ Durable findings from bench work. **Current how-to:** [bringup.md](bringup.md).
 | Both USB+UART objects linked | Host project | Duplicate RX rings when one mode unused |
 | RS 3× MOTOR_CTRL / tick | `robstride_apply_cycle` | Extra CAN load (Damiao already 1× MIT/tick) |
 | RS2 session blocks plant | `plant_diag_skip_actuator_can` | Intentional — don’t mix with teleop |
-| NVM `--persist` `flash_err` | CFG SAVE | RAM config OK until power cycle |
 | MCP idle = no ACT LED | `actuator.c` | Blank desire skips SPI on CH4–6 (by design) |
 | Feedback `header.seq` always 0 | Firmware | Track via `ack_seq` for now |
 | CubeMars not in live build | workstreams | Empty live stubs; scaling + RX ID unknown |
@@ -27,6 +26,14 @@ Durable findings from bench work. **Current how-to:** [bringup.md](bringup.md).
 ---
 
 ## Closed lessons (keep)
+
+### NVM CFG SAVE
+
+- **`flash_err` on `--persist`:** G4 `FLASH_CR_PNB` is 7 bits; page 255 needs **`FLASH_CR_BKER`**. Without it, erase hit page 127 (`0x0803F800`) while program/verify used `0x0807F800` → verify always failed. Fixed in `plant_config_nvm.c` `ramfunc_flash_erase_page`. RAM SET still worked until power cycle.
+
+### Host exchange layout
+
+- **v1 562 B → v2 672 B:** expand `system` to 32 B (timing leaves the DEBUG mailbox), actuators 22 B (+2 meta), `pdb[64]` at offset 608. Hosts still on v1 are rejected (`layout_version` / `byte_size`). Soft-DFU flash both ends together.
 
 ### Damiao
 

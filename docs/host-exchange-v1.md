@@ -2,9 +2,9 @@
 
 Fixed **562-byte** binary images in both directions. Same layout on USB CDC and UART; only the Linux/Windows device path differs.
 
-**Target successor (not implemented):** **672 B** layout (system 32, actuators 25×22, `pdb[64]`) — see [decisions.md](decisions.md) ADR-001 and [architecture.md](architecture.md#wire-contracts-current-vs-target). Do not silently edit this v1 doc to match; ship `host-exchange-v2.md` when implementing.
+**Superseded by [host-exchange-v2.md](host-exchange-v2.md) (672 B, `HOST_LAYOUT_VERSION` 2).** This file is historical; do not use for new firmware or SDK work.
 
-**Source of truth (current firmware):** `App/Inc/host/host_exchange_schema.h` (C structs + `_Static_assert`), `scripts/deft_controls_sdk/link/exchange/wire_layout.py`, and legacy mirrors under `scripts/legacy/`.
+**Former source of truth (v1):** `App/Inc/host/host_exchange_schema.h` at layout version 1.
 
 ## Identifiers
 

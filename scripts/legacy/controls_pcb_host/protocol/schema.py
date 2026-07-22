@@ -1,17 +1,19 @@
 """
 Host exchange layout — mirrors App/Inc/host/host_exchange_schema.h and plant_command.h.
+Layout v2 (672 B). Prefer scripts/deft_controls_sdk for new work.
 """
 from __future__ import annotations
 
 HOST_COMMAND_MAGIC = 0x434D4448
 HOST_FEEDBACK_MAGIC = 0x46424848
-HOST_LAYOUT_VERSION = 1
-IMAGE_BYTES = 562
+HOST_LAYOUT_VERSION = 2
+IMAGE_BYTES = 672
 
 HOST_EXCHANGE_ACTUATOR_SLOTS = 25
 HOST_EXCHANGE_SERVO_SLOTS = 2
 HOST_EXCHANGE_LED_SLOTS = 1
 HOST_PDU_PAYLOAD_BYTES = 32
+HOST_PDB_PAYLOAD_BYTES = 64
 
 ACTUATOR_COUNT = 14  # dual YAM: slots 0-6 arm1 (CH1), 7-13 arm2 (CH2)
 
@@ -19,16 +21,18 @@ ACTUATOR_COUNT = 14  # dual YAM: slots 0-6 arm1 (CH1), 7-13 arm2 (CH2)
 # mirrors PLANT_CFG_GET_SLOTS_PER_PAGE in App/Src/plant/plant_config_nvm.c.
 CFG_GET_SLOTS_PER_PAGE = (HOST_PDU_PAYLOAD_BYTES - 6 - 2) // 3
 
-# Byte offsets in the 562 B command/feedback image (layout v1).
+# Byte offsets in the 672 B command/feedback image (layout v2).
 HEADER_OFF = 0
 SYSTEM_CMD_OFF = 12
-ACTUATOR0_OFF = 16
-ACTUATOR_SLOT_BYTES = 20
+SYSTEM_BYTES = 32
+ACTUATOR0_OFF = 44
+ACTUATOR_SLOT_BYTES = 22
 SERVO_SLOT_BYTES = 6
 SERVO0_CMD_OFF = ACTUATOR0_OFF + HOST_EXCHANGE_ACTUATOR_SLOTS * ACTUATOR_SLOT_BYTES
 SERVO0_FB_OFF = SERVO0_CMD_OFF
-LED_CMD_OFF = 528
-PDU_OFF = 530
+LED_CMD_OFF = SERVO0_CMD_OFF + HOST_EXCHANGE_SERVO_SLOTS * SERVO_SLOT_BYTES
+PDB_OFF = LED_CMD_OFF + 2
+PDU_OFF = PDB_OFF  # DEBUG mailbox = pdb[0..31]
 PDU_BUS_OFF = PDU_OFF + 11
 
 PLANT_MCU_STATE_NORMAL = 0

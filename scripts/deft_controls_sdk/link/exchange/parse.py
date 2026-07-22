@@ -1,11 +1,16 @@
-"""562 B host feedback parsers — parse wire bytes into dicts."""
+"""672 B host feedback parsers — parse wire bytes into dicts."""
 from __future__ import annotations
 
 import struct
 from typing import Optional
 
 from .pack import actuator_slot_offset
-from .wire_layout import HOST_FEEDBACK_MAGIC, IMAGE_BYTES, PDU_OFF
+from .wire_layout import (
+    HOST_FEEDBACK_MAGIC,
+    IMAGE_BYTES,
+    PDU_OFF,
+    SYSTEM_FB_OFF,
+)
 
 PDU_TAG_NAMES = {
     "r": "RS2 bench reply",
@@ -28,12 +33,23 @@ PLANT_BLOCK_NAMES = {
 }
 
 
-def parse_svd_plant_timing(pdu: bytes) -> Optional[dict]:
-    """Superloop timing from firmware plant_timing.c.
+def parse_system_timing(frame: bytes) -> Optional[dict]:
+    """Plant timing from system[32] (layout v2)."""
+    if len(frame) < SYSTEM_FB_OFF + 12:
+        return None
+    lap_ms, lap_max_ms, ticks_svc, ticks_pending = struct.unpack_from(
+        "<HHBB", frame, SYSTEM_FB_OFF + 4
+    )
+    return {
+        "lap_ms": lap_ms,
+        "lap_max_ms": lap_max_ms,
+        "ticks_svc": ticks_svc,
+        "ticks_pending": ticks_pending,
+    }
 
-    SVD PDU: bytes 23..28. Thermo 't' PDU: same 6 bytes at 16..21 (while
-    SPI3_ROLE_THERMO owns the mailbox and would otherwise hide SVD).
-    """
+
+def parse_svd_plant_timing(pdu: bytes) -> Optional[dict]:
+    """Deprecated: timing moved to system[] in layout v2. Kept for old traces."""
     if len(pdu) < 17:
         return None
     if len(pdu) >= 29 and pdu[:3] == b"SVD":
@@ -52,17 +68,27 @@ def parse_svd_plant_timing(pdu: bytes) -> Optional[dict]:
     }
 
 
+def parse_actuator_meta(meta: int) -> dict:
+    return {
+        "protocol": meta & 7,
+        "bus": (meta >> 3) & 7,
+        "motor_id": (meta >> 6) & 0xFF,
+        "enabled": bool((meta >> 14) & 1),
+        "fb_valid": bool((meta >> 15) & 1),
+    }
+
+
 def parse_feedback_header(frame: bytes) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
     magic, layout_version, byte_size, fb_seq = struct.unpack_from("<IHHI", frame, 0)
     if magic != HOST_FEEDBACK_MAGIC:
         return None
-    sys_word, = struct.unpack_from("<I", frame, 12)
+    sys_word, = struct.unpack_from("<I", frame, SYSTEM_FB_OFF)
     pdu = frame[PDU_OFF : PDU_OFF + 32]
     tag = chr(pdu[0]) if 32 <= pdu[0] < 127 else f"0x{pdu[0]:02X}"
     plant_block = (sys_word >> 25) & 0x7F
-    timing = parse_svd_plant_timing(pdu)
+    timing = parse_system_timing(frame)
     out = {
         "magic_ok": True,
         "magic_hex": f"0x{magic:08X}",
@@ -89,10 +115,10 @@ def parse_actuator_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:
     magic, = struct.unpack_from("<I", frame, 0)
     if magic != HOST_FEEDBACK_MAGIC:
         return None
-    sys_word, = struct.unpack_from("<I", frame, 12)
+    sys_word, = struct.unpack_from("<I", frame, SYSTEM_FB_OFF)
     off = actuator_slot_offset(slot)
-    pos, vel, torque, temp, fault = struct.unpack_from("<ffffI", frame, off)
-    return {
+    pos, vel, torque, temp, fault, meta = struct.unpack_from("<ffffIH", frame, off)
+    out = {
         "tick": sys_word & 0xFFF,
         "ack": (sys_word >> 17) & 0xFF,
         "position": pos,
@@ -100,4 +126,7 @@ def parse_actuator_feedback(frame: bytes, slot: int = 0) -> Optional[dict]:
         "torque": torque,
         "temperature": temp,
         "fault": fault,
+        "meta": meta,
     }
+    out.update(parse_actuator_meta(meta))
+    return out

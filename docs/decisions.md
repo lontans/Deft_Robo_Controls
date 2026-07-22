@@ -10,8 +10,8 @@ Related narrative: [architecture.md](architecture.md).
 
 | | |
 |--|--|
-| **Status** | Accepted (not implemented) |
-| **Date** | 2026-07-20 |
+| **Status** | Implemented (layout v2, 672 B) — see [host-exchange-v2.md](host-exchange-v2.md) |
+| **Date** | 2026-07-20 (implemented 2026-07-21) |
 | **Context** | Plant health was cannibalizing the 32 B USB `pdu` mailbox (SVD timing vs CFG/discover). Power-distribution (PDB) telemetry needs 8×(V,I) plus soft-kill choreography and does not fit cleanly in 32 B UART. Dual-arm plant keeps 25 wire actuator slots. Host control loop ~30 Hz; MCU plant 500 Hz hold-last. |
 
 ### Decision
@@ -100,14 +100,16 @@ NORMAL → SOFT_KILL_REQ → (controls safe pose) → SOFT_KILL_READY → HARD_E
 - Growing USB image only for DEBUG discover/cal (keep DEBUG off the plant cyclic path).
 - Exact 576 B “9×64 USB packets” sizing (short final packet preferred when choosing totals; 672 = 10×64 + 32 short — fine).
 
-### Implementation checklist (when ready)
+### Implementation checklist
 
-- [ ] Draft `docs/host-exchange-v2.md` with locked offsets + `_Static_assert` sizes
+- [x] Draft `docs/host-exchange-v2.md` with locked offsets + `_Static_assert` sizes
 - [ ] Draft `docs/pdb-uart-v1.md` (64 B cmd/fb, kill_state enum, LSB scales)
-- [ ] Firmware: schema structs, feedback identity fill, system health fill, PDB UART service, ESTOP policy
-- [ ] SDK: `wire_layout` IMAGE_BYTES=672, pack/parse, telemetry fields for pdb + kill_state
+- [x] Firmware: schema structs, feedback identity meta, system timing fill
+- [ ] PDB UART service + ESTOP policy
+- [x] SDK: `wire_layout` IMAGE_BYTES=672, pack/parse (timing from system[])
 - [ ] Dashboard / health strip: soft-kill visible before hard ESTOP
-- [ ] Bring-up note: layout_version negotiation / refuse mismatched hosts
+- [x] Layout version bump — mismatched v1 hosts rejected
+- [ ] Move DEBUG tags off `pdb[0..31]` to a dedicated DEBUG message (transitional: still on mailbox)
 
 ---
 

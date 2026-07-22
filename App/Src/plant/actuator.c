@@ -300,6 +300,17 @@ void actuator_feedback_snapshot(host_actuator_feedback_t *dst, uint8_t count)
 		dst[i] = actuator_state_stage[i];
 	plant_crit_exit();
 
+	for (uint8_t i = 0; i < n; i++) {
+		const actuator_config_t *cfg = &actuator_table[i];
+		bool fb_valid = (dst[i].fault == 0u) || cfg->enabled;
+		dst[i].meta = HOST_ACT_META_PACK(
+			(uint16_t)cfg->protocol,
+			(uint16_t)cfg->bus,
+			(uint16_t)(cfg->motor_id & 0xFFu),
+			cfg->enabled,
+			fb_valid);
+	}
+
 	for (uint8_t i = n; i < count; i++)
 		memset(&dst[i], 0, sizeof(dst[i]));
 }

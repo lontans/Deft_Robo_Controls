@@ -4,6 +4,7 @@
 #include "plant/plant_command.h"
 #include "plant/plant_feedback.h"
 #include "plant/plant_diag.h"
+#include "plant/plant_timing.h"
 #include "plant/control_loop.h"
 #include "main.h"
 #include <string.h>
@@ -139,7 +140,9 @@ static void host_feedback_image_fetch(host_feedback_image_t *out)
 	out->system.last_command_seq   = (uint32_t)(host_link_last_command_seq() & 0xFFu);
 	out->system.mcu_state_readback = (uint32_t)plant_command_mcu_state_readback();
 	(void)plant_runtime_actuator_can_apply();
-	out->system.reserved           = (uint32_t)plant_runtime_actuator_block_reason();
+	out->system.plant_block =
+		(uint32_t)plant_runtime_actuator_block_reason() & 0x7Fu;
+	plant_timing_system_fill(&out->system);
 
 	plant_feedback_image_fetch(out);
 }
