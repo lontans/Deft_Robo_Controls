@@ -1,0 +1,610 @@
+diff --git a/App/Inc/plant/plugins/cubemars.h b/App/Inc/plant/plugins/cubemars.h
+index 3ac9724..09ba78c 100644
+--- a/App/Inc/plant/plugins/cubemars.h
++++ b/App/Inc/plant/plugins/cubemars.h
+@@ -6,16 +6,23 @@
+ #include "plant/actuator.h"
+ 
+ /*
+- * CubeMars AK-series "Servo Mode" protocol (extended 29-bit CAN ID).
+- * Source: External_Documentation/CubeMars/CubeMars_AK_Driver_Doc_Generalised.pdf §5.1-5.2.
++ * CubeMars AK-series driver board, MIT Power Mode (default hot plant path).
++ * Source: External_Documentation/CubeMars/cubemars_motor_driver_doc.pdf §5.3
++ * "MIT power mode communication protocol". See docs/rfc-cubemars-mit-plant.md
++ * for the full derivation, the vendor PDF's own sample-code bugs (do not
++ * port CUBEMARS_MIT_P_MIN/MAX etc. from the PDF's `pack_cmd()` sample —
++ * those contradict the PDF's own per-module table two pages later), and why
++ * this mirrors damiao.c's apply_cycle/enable-latch shape rather than the
++ * stateless single-frame plugin_pack_tx()/plugin_parse_rx() path Servo Mode
++ * used.
+  *
+- * CAN ID bits [28:8] = control mode, bits [7:0] = source node ID.
+- * MVP implements Position-Speed Loop Mode (6) only — matches the existing
+- * teleop usage pattern (position + bounded speed). Duty/Current/CurrentBrake/
+- * Speed/SetOrigin are intentionally NOT implemented here; they belong on a
+- * future bench/diagnostic path (same shape as the RS2/DM PDU probes), not
+- * the hot plant path, until there's a concrete need for them.
++ * Servo Mode (Position-Speed Loop, control mode 6, extended 29-bit ID) is
++ * kept behind CUBEMARS_ENABLE_SERVO_MODE (default off) for reference / a
++ * future bench diagnostic path — it is no longer what PROTO_CUBEMARS means
++ * on the hot apply/RX path. See CubeMars_AK_Driver_Doc_Generalised.pdf
++ * §5.1-5.2 for that mode; nothing in this header changes its behavior.
+  */
++#define CUBEMARS_ENABLE_SERVO_MODE 0
+ 
+ typedef enum {
+ 	CUBEMARS_MODE_DUTY          = 0u,
+@@ -27,22 +34,79 @@ typedef enum {
+ 	CUBEMARS_MODE_POS_SPEED     = 6u,
+ } cubemars_control_mode_t;
+ 
+-/* TODO(hardware, P0 — do not power a motor against these unverified):
+- * The vendor doc's Position/Speed sections mix "electrical degrees"/
+- * "electrical RPM" language inconsistently. Converting ActuatorDesire's
+- * mechanical rad / rad*s^-1 to whatever this protocol actually expects may
+- * require the motor's pole-pair count, which is unknown until hardware is
+- * in hand. cubemars_pack_tx() currently passes desire->position/velocity
+- * through as if they were already in the wire's native units — this is a
+- * placeholder, not a verified scaling. Confirm against real hardware before
+- * ever commanding a loaded joint. */
+-#define CUBEMARS_POS_SCALE   10000.0f   /* documented: deg * 10000 -> int32 LSB */
+-#define CUBEMARS_SPEED_SCALE (1.0f / 10.0f)  /* documented: eRPM / 10 -> int16 LSB */
+-#define CUBEMARS_ACCEL_SCALE (1.0f / 10.0f)  /* documented: (eRPM/s^2) / 10 -> int16 LSB */
++/* --------------------------------------------------------------------- */
++/* MIT Power Mode (PDF §5.3)                                              */
++/* --------------------------------------------------------------------- */
++
++/* "Special Can code" — FF*7 + opcode, std ID = motor ID. Byte-identical to
++ * Damiao's damiao_pack_cmd() opcodes; CubeMars documents no separate
++ * clear-fault opcode (unlike Damiao's 0xFB) — do not invent one. */
++#define CUBEMARS_MIT_CMD_ENABLE   0xFCu
++#define CUBEMARS_MIT_CMD_DISABLE  0xFDu
++#define CUBEMARS_MIT_CMD_SET_ZERO 0xFEu
++
++/* Shared across every AK module per the §5.3 table (p.44) — do NOT use the
++ * PDF's own `pack_cmd()` sample constants (P_MIN=-95.5/P_MAX=95.5), which
++ * contradict this table and appear to be copy-pasted from an unrelated
++ * example. See docs/rfc-cubemars-mit-plant.md "PDF sample bugs". */
++#define CUBEMARS_MIT_P_MIN  (-12.5f)
++#define CUBEMARS_MIT_P_MAX  ( 12.5f)
++#define CUBEMARS_MIT_KP_MIN (0.0f)
++#define CUBEMARS_MIT_KP_MAX (500.0f)
++#define CUBEMARS_MIT_KD_MIN (0.0f)
++#define CUBEMARS_MIT_KD_MAX (5.0f)
++
++/* Per-module velocity/torque span (§5.3 p.44 table) — position/Kp/Kd above
++ * are shared across all six; only these two vary per AK part number. */
++typedef enum {
++	CUBEMARS_AK10_9 = 0,
++	CUBEMARS_AK60_6,
++	CUBEMARS_AK70_10,
++	CUBEMARS_AK80_6,
++	CUBEMARS_AK80_9,
++	CUBEMARS_AK80_80,
++	CUBEMARS_AK_MODEL_COUNT,
++} cubemars_ak_model_t;
++
++/* No per-slot model selection is wired to CFG in this patch (would need a
++ * new CFG SET field or to double-purpose master_id, and actuator_config_t
++ * has no other spare slot). Matches Damiao's own current maturity level —
++ * damiao_limits() hardcodes DM4310 for every slot too, ignoring cfg
++ * entirely. cubemars_set_model() exists so a future CFG/diag hook can call
++ * it; nothing calls it yet. Do not build that wiring speculatively. */
++#define CUBEMARS_MIT_DEFAULT_MODEL CUBEMARS_AK80_9
++
++void cubemars_set_model(uint8_t slot, cubemars_ak_model_t model);
+ 
+ uint32_t cubemars_build_ext_id(cubemars_control_mode_t mode, uint8_t node_id);
+ bool     cubemars_parse_ext_id(uint32_t ext_id, cubemars_control_mode_t *mode, uint8_t *node_id);
+ 
++plugin_status_t cubemars_send_enable(const actuator_config_t *cfg, can_frame_t *frame_out);
++plugin_status_t cubemars_send_disable(const actuator_config_t *cfg, can_frame_t *frame_out);
++plugin_status_t cubemars_send_set_zero(const actuator_config_t *cfg, can_frame_t *frame_out);
++
++void cubemars_reset_enable_latch(uint8_t slot);
++void cubemars_apply_cycle(const actuator_config_t *cfg,
++                          const actuator_desire_t *desire,
++                          actuator_state_t *state_out);
++void cubemars_on_rx_frame(const actuator_config_t *cfg, uint8_t slot,
++                         const can_frame_t *frame, actuator_state_t *state_out);
++
+ /* cubemars_ops (plugin_ops_t) is declared in plugin_table.c, not here —
+- * plugin_ops_t isn't visible from plugin_types.h alone, same as
+- * robstride.h/damiao.h; only plugin_table.c includes plugin.h for it. */
++ * plugin_ops_t isn't visible from plugin_types.h alone, same convention as
++ * robstride.h/damiao.h. PROTO_CUBEMARS is already registered there; this
++ * patch only changes what cubemars_ops's pack_tx/parse_rx do (MIT instead
++ * of Servo) plus the new apply_cycle/on_rx_frame/recovery entry points
++ * actuator.c calls directly, mirroring PROTO_DAMIAO. */
++
++#if CUBEMARS_ENABLE_SERVO_MODE
++/* TODO(hardware, P0 — do not power a motor against these unverified):
++ * The vendor doc's Servo-mode Position/Speed sections mix "electrical
++ * degrees"/"electrical RPM" language inconsistently. Converting
++ * ActuatorDesire's mechanical rad / rad*s^-1 to whatever this protocol
++ * actually expects may require the motor's pole-pair count, unknown until
++ * hardware is in hand. Kept for reference only — not on the hot path. */
++#define CUBEMARS_POS_SCALE   10000.0f   /* documented: deg * 10000 -> int32 LSB */
++#define CUBEMARS_SPEED_SCALE (1.0f / 10.0f)  /* documented: eRPM / 10 -> int16 LSB */
++#define CUBEMARS_ACCEL_SCALE (1.0f / 10.0f)  /* documented: (eRPM/s^2) / 10 -> int16 LSB */
++#endif
+diff --git a/App/Src/plant/plugins/cubemars.c b/App/Src/plant/plugins/cubemars.c
+index fd8520c..a0b0a09 100644
+--- a/App/Src/plant/plugins/cubemars.c
++++ b/App/Src/plant/plugins/cubemars.c
+@@ -1,17 +1,14 @@
+ #include "plant/plugins/cubemars.h"
+ #include "plant/plugin_schema/plugin.h"
++#include "plant/can/can_router.h"
++#include "plant/actuator.h"
++#include <string.h>
+ 
+ /*
+- * CubeMars Servo Mode, Position-Speed Loop Mode (control mode 6) only.
+- * See cubemars.h for the scope decision and the unverified-units caveat.
+- *
+- * No enable/handshake is documented for Servo Mode (unlike RobStride's
+- * maintain_enable or Damiao's clear-fault+enable latch), so this plugin is
+- * stateless per-frame and needs no actuator.c special-casing — it goes
+- * through the generic plugin_pack_tx()/plugin_parse_rx() single-frame path.
+- * If bench testing later shows a keep-alive frame is actually required,
+- * promote to a hand-written cubemars_apply_cycle() (mirroring
+- * robstride_apply_cycle) as a fast-follow — do not build that speculatively.
++ * CubeMars AK-series driver board — MIT Power Mode is the hot plant path.
++ * See cubemars.h for the full scope note and docs/rfc-cubemars-mit-plant.md
++ * for the derivation, including the vendor PDF's own sample-code bugs this
++ * implementation deliberately does NOT reproduce.
+  */
+ 
+ uint32_t cubemars_build_ext_id(cubemars_control_mode_t mode, uint8_t node_id)
+@@ -28,9 +25,300 @@ bool cubemars_parse_ext_id(uint32_t ext_id, cubemars_control_mode_t *mode, uint8
+ 	return true;
+ }
+ 
+-static plugin_status_t cubemars_pack_tx(const actuator_config_t *cfg,
+-                                        const actuator_desire_t *desire,
+-                                        can_frame_t *frame_out)
++/* --------------------------------------------------------------------- */
++/* MIT Power Mode (PDF §5.3)                                              */
++/* --------------------------------------------------------------------- */
++
++typedef struct {
++	float v_min, v_max;
++	float t_min, t_max;
++} cubemars_ak_limits_t;
++
++/* Per-module velocity/torque span (PDF §5.3 p.44 table) — NOT the PDF's own
++ * pack_cmd() sample constants, which contradict this table (see cubemars.h
++ * and docs/rfc-cubemars-mit-plant.md). Position/Kp/Kd are shared across all
++ * six modules (CUBEMARS_MIT_P_MIN/MAX etc.). */
++static const cubemars_ak_limits_t k_ak_limits[CUBEMARS_AK_MODEL_COUNT] = {
++	[CUBEMARS_AK10_9]  = { -50.0f,  50.0f,  -65.0f,  65.0f },
++	[CUBEMARS_AK60_6]  = { -50.0f,  50.0f,  -15.0f,  15.0f },
++	[CUBEMARS_AK70_10] = { -50.0f,  50.0f,  -25.0f,  25.0f },
++	[CUBEMARS_AK80_6]  = { -76.0f,  76.0f,  -12.0f,  12.0f },
++	[CUBEMARS_AK80_9]  = { -50.0f,  50.0f,  -18.0f,  18.0f },
++	[CUBEMARS_AK80_80] = {  -8.0f,   8.0f, -144.0f, 144.0f },
++};
++
++/* No CFG plumbing selects this per slot yet (see cubemars.h) — every slot
++ * defaults to CUBEMARS_MIT_DEFAULT_MODEL until cubemars_set_model() grows a
++ * caller. */
++static cubemars_ak_model_t s_model[ACTUATOR_COUNT];
++static bool                s_model_init;
++
++void cubemars_set_model(uint8_t slot, cubemars_ak_model_t model)
++{
++	if (slot >= ACTUATOR_COUNT || model >= CUBEMARS_AK_MODEL_COUNT)
++		return;
++	s_model[slot] = model;
++}
++
++static void cubemars_ensure_model_defaults(void)
++{
++	if (s_model_init)
++		return;
++	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
++		s_model[i] = CUBEMARS_MIT_DEFAULT_MODEL;
++	s_model_init = true;
++}
++
++static uint8_t cubemars_actuator_slot(const actuator_config_t *cfg)
++{
++	if (cfg == NULL)
++		return ACTUATOR_COUNT;
++
++	if (cfg >= &actuator_table[0] && cfg < &actuator_table[ACTUATOR_COUNT])
++		return (uint8_t)(cfg - actuator_table);
++
++	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
++		if (actuator_table[i].bus == cfg->bus &&
++		    actuator_table[i].motor_id == cfg->motor_id &&
++		    actuator_table[i].protocol == PROTO_CUBEMARS)
++			return i;
++	}
++	return ACTUATOR_COUNT;
++}
++
++static const cubemars_ak_limits_t *cubemars_limits_for_slot(uint8_t slot)
++{
++	cubemars_ensure_model_defaults();
++	if (slot >= ACTUATOR_COUNT)
++		return &k_ak_limits[CUBEMARS_MIT_DEFAULT_MODEL];
++	return &k_ak_limits[s_model[slot]];
++}
++
++/* Same linear-map shape as damiao.c's float_to_uint/uint_to_float (kept
++ * local/static rather than shared — see the RFC's note on a possible future
++ * common mit_codec.c, not built speculatively here). Uses (1<<bits)-1 both
++ * ways, unlike the PDF's own sample which is asymmetric
++ * ((1<<bits) vs (1<<bits)-1) — see docs/rfc-cubemars-mit-plant.md. */
++static int cubemars_float_to_uint(float x, float x_min, float x_max, unsigned bits)
++{
++	float span = x_max - x_min;
++	unsigned max_val;
++
++	if (x > x_max)
++		x = x_max;
++	else if (x < x_min)
++		x = x_min;
++	if (bits == 0u || bits > 16u)
++		return 0;
++	max_val = (1u << bits) - 1u;
++	return (int)((x - x_min) * ((float)max_val / span));
++}
++
++static float cubemars_uint_to_float(unsigned raw, float x_min, float x_max, unsigned bits)
++{
++	unsigned max_val = (bits >= 16u) ? 65535u : ((1u << bits) - 1u);
++	return x_min + ((float)raw * (x_max - x_min) / (float)max_val);
++}
++
++static void cubemars_pack_cmd(uint8_t motor_id, uint8_t opcode, can_frame_t *frame_out)
++{
++	frame_out->id_type = CAN_ID_STD;
++	frame_out->id      = (uint32_t)motor_id & CAN_STD_ID_MASK;
++	frame_out->dlc     = 8;
++	memset(frame_out->data, 0xFF, 8);
++	frame_out->data[7] = opcode;
++}
++
++plugin_status_t cubemars_send_enable(const actuator_config_t *cfg, can_frame_t *frame_out)
++{
++	if (cfg == NULL || frame_out == NULL)
++		return PLUGIN_ERR_PARAM;
++	cubemars_pack_cmd((uint8_t)(cfg->motor_id & 0x7FFu), CUBEMARS_MIT_CMD_ENABLE, frame_out);
++	return PLUGIN_OK;
++}
++
++plugin_status_t cubemars_send_disable(const actuator_config_t *cfg, can_frame_t *frame_out)
++{
++	if (cfg == NULL || frame_out == NULL)
++		return PLUGIN_ERR_PARAM;
++	cubemars_pack_cmd((uint8_t)(cfg->motor_id & 0x7FFu), CUBEMARS_MIT_CMD_DISABLE, frame_out);
++	return PLUGIN_OK;
++}
++
++plugin_status_t cubemars_send_set_zero(const actuator_config_t *cfg, can_frame_t *frame_out)
++{
++	if (cfg == NULL || frame_out == NULL)
++		return PLUGIN_ERR_PARAM;
++	cubemars_pack_cmd((uint8_t)(cfg->motor_id & 0x7FFu), CUBEMARS_MIT_CMD_SET_ZERO, frame_out);
++	return PLUGIN_OK;
++}
++
++static plugin_status_t cubemars_pack_mit(const actuator_config_t *cfg,
++                                         const actuator_desire_t *desire,
++                                         can_frame_t *frame_out)
++{
++	const cubemars_ak_limits_t *lim;
++	uint8_t slot;
++	unsigned p_u, v_u, kp_u, kd_u, t_u;
++	uint8_t motor_id;
++
++	if (cfg == NULL || desire == NULL || frame_out == NULL)
++		return PLUGIN_ERR_PARAM;
++	if (!cfg->enabled || cfg->protocol != PROTO_CUBEMARS)
++		return PLUGIN_ERR_UNSUPPORTED;
++
++	slot = cubemars_actuator_slot(cfg);
++	lim = cubemars_limits_for_slot(slot);
++
++	p_u  = (unsigned)cubemars_float_to_uint(desire->position, CUBEMARS_MIT_P_MIN, CUBEMARS_MIT_P_MAX, 16);
++	v_u  = (unsigned)cubemars_float_to_uint(desire->velocity, lim->v_min, lim->v_max, 12);
++	kp_u = (unsigned)cubemars_float_to_uint(desire->kp, CUBEMARS_MIT_KP_MIN, CUBEMARS_MIT_KP_MAX, 12);
++	kd_u = (unsigned)cubemars_float_to_uint(desire->kd, CUBEMARS_MIT_KD_MIN, CUBEMARS_MIT_KD_MAX, 12);
++	t_u  = (unsigned)cubemars_float_to_uint(desire->torque, lim->t_min, lim->t_max, 12);
++
++	motor_id = (uint8_t)(cfg->motor_id & 0x7FFu);
++
++	frame_out->id_type = CAN_ID_STD;
++	frame_out->id      = motor_id;
++	frame_out->dlc     = 8;
++
++	/* PDF §5.3 command layout — byte-for-byte the same nibble interleave as
++	 * damiao_pack_tx(). The PDF's own "Sends routine code" sample has a real
++	 * bug here (data[6] reuses kp_int>>8 instead of t_int>>8) — do not port
++	 * it; see docs/rfc-cubemars-mit-plant.md. */
++	frame_out->data[0] = (uint8_t)(p_u >> 8);
++	frame_out->data[1] = (uint8_t)(p_u & 0xFFu);
++	frame_out->data[2] = (uint8_t)(v_u >> 4);
++	frame_out->data[3] = (uint8_t)(((v_u & 0x0Fu) << 4) | ((kp_u >> 8) & 0x0Fu));
++	frame_out->data[4] = (uint8_t)(kp_u & 0xFFu);
++	frame_out->data[5] = (uint8_t)(kd_u >> 4);
++	frame_out->data[6] = (uint8_t)(((kd_u & 0x0Fu) << 4) | ((t_u >> 8) & 0x0Fu));
++	frame_out->data[7] = (uint8_t)(t_u & 0xFFu);
++
++	return PLUGIN_OK;
++}
++
++static plugin_status_t cubemars_parse_mit(const actuator_config_t *cfg,
++                                          const can_frame_t *frame_in,
++                                          actuator_state_t *state_out)
++{
++	const cubemars_ak_limits_t *lim;
++	uint8_t slot;
++	unsigned p_u, v_u, t_u;
++
++	if (cfg == NULL || frame_in == NULL || state_out == NULL)
++		return PLUGIN_ERR_PARAM;
++	if (frame_in->id_type != CAN_ID_STD)
++		return PLUGIN_ERR_UNSUPPORTED;
++	/* PDF: feedback Identifier = "0x00 + Drive ID" — the same numeric ID
++	 * space as the command's own target, unlike Damiao's separate ESC-ID /
++	 * Master-ID split. No master_id indirection needed here. */
++	if ((frame_in->id & CAN_STD_ID_MASK) != (cfg->motor_id & CAN_STD_ID_MASK))
++		return PLUGIN_ERR_UNSUPPORTED;
++	if (frame_in->dlc < 6u)
++		return PLUGIN_ERR_UNSUPPORTED;
++
++	slot = cubemars_actuator_slot(cfg);
++	lim = cubemars_limits_for_slot(slot);
++
++	p_u = ((unsigned)frame_in->data[1] << 8) | frame_in->data[2];
++	v_u = ((unsigned)frame_in->data[3] << 4) | (frame_in->data[4] >> 4);
++	t_u = (((unsigned)frame_in->data[4] & 0x0Fu) << 8) | frame_in->data[5];
++
++	state_out->position    = cubemars_uint_to_float(p_u, CUBEMARS_MIT_P_MIN, CUBEMARS_MIT_P_MAX, 16);
++	state_out->velocity    = cubemars_uint_to_float(v_u, lim->v_min, lim->v_max, 12);
++	state_out->torque      = cubemars_uint_to_float(t_u, lim->t_min, lim->t_max, 12);
++	/* PDF text says "DLC: 6 bytes" but the field table lists 8 (temp @6,
++	 * error @7) — a documented contradiction (see the RFC). Accept the
++	 * shorter 6-byte form for motion-only frames; temp/fault default to 0
++	 * when the frame is short rather than reading past dlc. */
++	state_out->temperature = (frame_in->dlc >= 7u) ? (float)frame_in->data[6] : 0.0f;
++	state_out->fault       = (frame_in->dlc >= 8u) ? (uint32_t)frame_in->data[7] : 0u;
++
++	return PLUGIN_OK;
++}
++
++static bool s_cubemars_enable_latched[ACTUATOR_COUNT];
++
++void cubemars_reset_enable_latch(uint8_t slot)
++{
++	if (slot < ACTUATOR_COUNT)
++		s_cubemars_enable_latched[slot] = false;
++}
++
++/*
++ * Deliberately Damiao-shaped, not ZeroErr-shaped: this plugin never sends
++ * the exit-mode (0xFD) frame from the routine apply path, only from
++ * plant_recovery_all() (mirrors damiao_apply_cycle, which never calls
++ * damiao_send_disable() either — only plant_recovery_all does). A "blank"
++ * desire (kp=kd=0, vel=0, torque=0) is itself a legitimate MIT zero-effort
++ * command once entered, so idle is just streamed as-is, continuously, the
++ * same as Damiao streams its idle MIT frame every tick rather than
++ * toggling in and out of control mode. This keeps the joint ready to react
++ * the instant a real desire arrives, at the cost of the drive staying in
++ * MIT mode (not fully de-energized) between commands — the right trade for
++ * an arm-class actuator (this RFC's whole premise, §1), unlike ZeroErr
++ * (lift/gripper-shaped) which shuts down on idle instead.
++ *
++ * The enable latch itself is TX-driven (fires once per session, first
++ * enable frame before the first MIT frame), not RX-gated like Damiao's
++ * ERR==1 confirmation — CubeMars's PDF documents no fault/status semantics
++ * for MIT mode to gate on, and inventing one would be exactly the kind of
++ * guess docs/rfc-cubemars-mit-plant.md §6 says not to make.
++ */
++void cubemars_apply_cycle(const actuator_config_t *cfg,
++                          const actuator_desire_t *desire,
++                          actuator_state_t *state_out)
++{
++	can_frame_t frame;
++	uint8_t slot;
++
++	if (cfg == NULL || desire == NULL || !cfg->enabled ||
++	    cfg->protocol != PROTO_CUBEMARS)
++		return;
++
++	(void)state_out;
++
++	slot = cubemars_actuator_slot(cfg);
++	if (slot >= ACTUATOR_COUNT)
++		slot = 0u;
++
++	/* "motor control mode must be entered before using CAN communication
++	 * control motor" (PDF §5.3) — one enter-mode frame per session. */
++	if (!s_cubemars_enable_latched[slot]) {
++		if (cubemars_send_enable(cfg, &frame) == PLUGIN_OK)
++			(void)can_tx_enqueue(cfg->bus, &frame);
++		s_cubemars_enable_latched[slot] = true;
++	}
++
++	/* One MIT frame per slot per tick, every tick (idle or not) — Damiao
++	 * already learned the hard way that redundant per-tick bursts
++	 * oversubscribe the bus once more than a couple of slots are active
++	 * (see damiao_apply_cycle's own comment); this sends exactly one. */
++	if (cubemars_pack_mit(cfg, desire, &frame) == PLUGIN_OK)
++		(void)can_tx_enqueue(cfg->bus, &frame);
++}
++
++void cubemars_on_rx_frame(const actuator_config_t *cfg, uint8_t slot,
++                         const can_frame_t *frame, actuator_state_t *state_out)
++{
++	(void)slot;
++	if (cfg == NULL || frame == NULL || state_out == NULL)
++		return;
++	(void)cubemars_parse_mit(cfg, frame, state_out);
++}
++
++#if CUBEMARS_ENABLE_SERVO_MODE
++/*
++ * Servo Mode, Position-Speed Loop Mode (control mode 6) — reference only,
++ * not on the hot apply/RX path (see cubemars.h). No enable/handshake is
++ * documented for Servo Mode, so this stays a stateless single-frame plugin
++ * reachable only through the generic plugin_pack_tx()/plugin_parse_rx()
++ * path if some future diagnostic explicitly selects it.
++ */
++static plugin_status_t cubemars_servo_pack_tx(const actuator_config_t *cfg,
++                                              const actuator_desire_t *desire,
++                                              can_frame_t *frame_out)
+ {
+ 	if (cfg == NULL || desire == NULL || frame_out == NULL)
+ 		return PLUGIN_ERR_PARAM;
+@@ -40,10 +328,6 @@ static plugin_status_t cubemars_pack_tx(const actuator_config_t *cfg,
+ 	uint8_t node_id = (uint8_t)(cfg->motor_id & 0xFFu);
+ 	uint32_t ext_id = cubemars_build_ext_id(CUBEMARS_MODE_POS_SPEED, node_id);
+ 
+-	/* TODO(hardware): position/speed passed through as placeholder units —
+-	 * see the P0 caveat in cubemars.h. accel has no ActuatorDesire field,
+-	 * defaults to 0 (TODO: confirm what accel=0 means for this firmware —
+-	 * doc-derivable, not hardware-gated, just not yet double-checked). */
+ 	int32_t pos_raw   = (int32_t)(desire->position * CUBEMARS_POS_SCALE);
+ 	int16_t speed_raw = (int16_t)(desire->velocity * CUBEMARS_SPEED_SCALE);
+ 	int16_t accel_raw = 0;
+@@ -52,8 +336,6 @@ static plugin_status_t cubemars_pack_tx(const actuator_config_t *cfg,
+ 	frame_out->id      = ext_id & CAN_EXT_MASK;
+ 	frame_out->dlc     = 8;
+ 
+-	/* Big-endian (MSB first) — matches the vendor doc's buffer_append_int32/
+-	 * int16 helpers and RobStride's own big-endian wire convention. */
+ 	frame_out->data[0] = (uint8_t)((uint32_t)pos_raw >> 24);
+ 	frame_out->data[1] = (uint8_t)((uint32_t)pos_raw >> 16);
+ 	frame_out->data[2] = (uint8_t)((uint32_t)pos_raw >> 8);
+@@ -66,26 +348,13 @@ static plugin_status_t cubemars_pack_tx(const actuator_config_t *cfg,
+ 	return PLUGIN_OK;
+ }
+ 
+-static plugin_status_t cubemars_parse_rx(const actuator_config_t *cfg,
+-                                         const can_frame_t *frame_in,
+-                                         actuator_state_t *state_out)
++static plugin_status_t cubemars_servo_parse_rx(const actuator_config_t *cfg,
++                                               const can_frame_t *frame_in,
++                                               actuator_state_t *state_out)
+ {
+ 	if (cfg == NULL || frame_in == NULL || state_out == NULL)
+ 		return PLUGIN_ERR_PARAM;
+ 
+-	/*
+-	 * TODO(hardware, P0): the periodic upload frame's CAN ID is NOT
+-	 * documented in the vendor PDF and is unknown until a bench CAN sniff
+-	 * (motor in servo mode, no host TX, observe the periodic broadcast).
+-	 * cfg->master_id (actuator.h: "feedback CAN ID; protocol-specific") is
+-	 * repurposed as that ID for CubeMars. Default 0 means "never matches" —
+-	 * a safe no-op until the real ID is bench-discovered and set at runtime
+-	 * via the CFG SET path (no firmware redeploy needed once known).
+-	 * This exact-match-or-ignore behavior also satisfies the mixed-frame-
+-	 * type bus requirement (CH1/CH3 accept both std and ext IDs now, with
+-	 * no bus-wide type-routing layer) — this plugin can never misparse a
+-	 * Damiao (standard-ID) frame sharing the same bus.
+-	 */
+ 	if (cfg->master_id == 0u)
+ 		return PLUGIN_ERR_UNSUPPORTED;
+ 	if (frame_in->id_type != CAN_ID_EXT || frame_in->id != cfg->master_id)
+@@ -99,23 +368,17 @@ static plugin_status_t cubemars_parse_rx(const actuator_config_t *cfg,
+ 	int8_t  temp_raw  = (int8_t)frame_in->data[6];
+ 	uint8_t err_code  = frame_in->data[7];
+ 
+-	/* Doc: position *0.1 -> deg, speed *10 -> electrical RPM, current *0.01 -> A.
+-	 * Same placeholder-units caveat as cubemars_pack_tx applies here — these
+-	 * are stored as-is (deg into "position", eRPM into "velocity") pending
+-	 * the same hardware verification, not silently relabeled as SI. */
+ 	state_out->position    = (float)pos_raw * 0.1f;
+ 	state_out->velocity    = (float)speed_raw * 10.0f;
+-	/* No true torque (Nm) is reported by Servo Mode — this carries raw
+-	 * current (A) instead, same "protocol-specific" convention already used
+-	 * for the fault field elsewhere in this codebase. */
+ 	state_out->torque      = (float)cur_raw * 0.01f;
+ 	state_out->temperature = (float)temp_raw;
+ 	state_out->fault       = (uint32_t)err_code;
+ 
+ 	return PLUGIN_OK;
+ }
++#endif /* CUBEMARS_ENABLE_SERVO_MODE */
+ 
+ const plugin_ops_t cubemars_ops = {
+-	.pack_tx  = cubemars_pack_tx,
+-	.parse_rx = cubemars_parse_rx,
++	.pack_tx  = cubemars_pack_mit,
++	.parse_rx = cubemars_parse_mit,
+ };
+diff --git a/App/Src/plant/actuator.c b/App/Src/plant/actuator.c
+index a558eab..55443a8 100644
+--- a/App/Src/plant/actuator.c
++++ b/App/Src/plant/actuator.c
+@@ -5,6 +5,7 @@
+ #include "plant/can/spi_can_router.h"
+ #include "plant/plugins/robstride.h"
+ #include "plant/plugins/damiao.h"
++#include "plant/plugins/cubemars.h"
+ #include "plant/plugins/zeroerr.h"
+ #include "plant/plant_diag.h"
+ #include "plant/plant_command.h"
+@@ -130,6 +131,13 @@ void plant_recovery_all(void)
+ 			continue;
+ 		}
+ 
++		if (actuator_table[i].protocol == PROTO_CUBEMARS) {
++			cubemars_reset_enable_latch(i);
++			if (cubemars_send_disable(&actuator_table[i], &frame) == PLUGIN_OK)
++				(void)can_tx_enqueue(actuator_table[i].bus, &frame);
++			continue;
++		}
++
+ 		if (actuator_table[i].protocol == PROTO_ZEROERR) {
+ 			zeroerr_reset_slot(i);
+ 			if (zeroerr_send_shutdown(&actuator_table[i], &frame))
+@@ -220,6 +228,16 @@ static void actuator_dispatch_bus_rx(can_bus_id_t bus)
+ 				continue;
+ 			}
+ 
++			if (actuator_table[i].protocol == PROTO_CUBEMARS) {
++				/* Direct/immediate, unlike Damiao's deferred had_rx array —
++				 * the CubeMars enable latch is TX-driven only (see
++				 * cubemars.c), so there is no daisy-chain hazard from
++				 * reacting to RX content here. */
++				cubemars_on_rx_frame(&actuator_table[i], i, &frame,
++				                     &actuator_state_live[i]);
++				continue;
++			}
++
+ 			(void)plugin_parse_rx(&actuator_table[i], &frame,
+ 			                      &actuator_state_live[i]);
+ 		}
+@@ -283,8 +301,12 @@ void actuator_apply_desire(void)
+ 
+ 		/* Blank FDCAN on a bus with no commanded slot — skip unless all-idle sync.
+ 		 * Damiao (CH3) is exempt: enable-latch clear-fault/enable must run every
+-		 * cycle while idle, and RX must drain for feedback before host raises kp. */
++		 * cycle while idle, and RX must drain for feedback before host raises kp.
++		 * CubeMars is exempt for the same reason — cubemars_apply_cycle streams
++		 * a continuous MIT frame + one-time enable latch every tick regardless
++		 * of blank desire (Damiao-shaped, not ZeroErr-shaped; see cubemars.c). */
+ 		if (bus < CAN_BUS_CH4 && actuator_table[i].protocol != PROTO_DAMIAO &&
++		    actuator_table[i].protocol != PROTO_CUBEMARS &&
+ 		    actuator_desire_is_blank(desire) &&
+ 		    commanded_buses != 0u &&
+ 		    (commanded_buses & (1u << (unsigned)bus)) == 0u)
+@@ -305,6 +327,12 @@ void actuator_apply_desire(void)
+ 			continue;
+ 		}
+ 
++		if (actuator_table[i].protocol == PROTO_CUBEMARS) {
++			cubemars_apply_cycle(&actuator_table[i], desire,
++			                    &actuator_state_live[i]);
++			continue;
++		}
++
+ 		if (actuator_table[i].protocol == PROTO_ZEROERR) {
+ 			zeroerr_apply_cycle(&actuator_table[i], desire,
+ 			                    &actuator_state_live[i]);

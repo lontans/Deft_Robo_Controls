@@ -34,6 +34,13 @@ extern actuator_state_t  actuator_state_live[ACTUATOR_COUNT];
 void actuator_init(void);
 void actuator_command_mount(const host_command_image_t *cmd);
 
+/* Rebuild the per-bus RX-dispatch slot index from actuator_table. O(25) —
+ * call after any actuator_table mutation (CFG SET / factory defaults / NVM
+ * load), never per-tick. actuator_init() already calls this once; CFG-apply
+ * call sites in plant_config_nvm.c must call it too (see
+ * docs/rfc-per-bus-rx-index.md). */
+void actuator_rebuild_bus_index(void);
+
 void actuator_apply_desire(void);
 void actuator_capture_state(void);
 

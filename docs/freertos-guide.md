@@ -71,14 +71,13 @@ timebase is **TIM7** (SysTick owned entirely by the FreeRTOS port) — a
 `Core/Src/stm32g4xx_hal_timebase_tim.c` override, not the CubeMX default.
 
 **Prior bring-up history exists and is worth reading before touching any of
-this** — `RTOS_BRINGUP_HANDOFF.txt` (repo root) documents a real, painful
-first attempt: NVIC priority conflicts, a floating UART4 RX line firing
-interrupts at priority 6 and starving the scheduler bootstrap, `MX_USB_Device_Init()`
-blocked behind a slow `mcp2518_init_all()`, and a silent `configASSERT` hang
-with zero LED indication. The current architecture (task split, TIM6 notify
-guarded on scheduler state, deferred mutex creation) is the result of chasing
-those down — every "why is it done this way" question below likely has an
-answer in that file.
+this** — [bringup.md](bringup.md) and [lessons.md](lessons.md) capture the
+painful first FreeRTOS attempt: NVIC priority conflicts, a floating UART4 RX
+line firing interrupts at priority 6 and starving the scheduler bootstrap,
+`MX_USB_Device_Init()` blocked behind a slow `mcp2518_init_all()`, and a silent
+`configASSERT` hang with zero LED indication. The current architecture (task
+split, TIM6 notify guarded on scheduler state, deferred mutex creation) is the
+result of chasing those down.
 
 ---
 
@@ -269,9 +268,9 @@ independent tasks off the same event group with zero cross-talk.
 ISR-to-task handoff uses a task notification instead (§0/§5), and there's
 only ever one waiter per ISR source today (PlantTask on TIM6; the MCP2518FD
 EXTI lines just set a flag byte checked later, not an RTOS primitive at all —
-see `mcp2518_isr_rx_pending()`, confirmed in `RTOS_BRINGUP_HANDOFF.txt` as
-"only sets a flag, no blocking/RTOS calls from real ISR context," which is
-the correct call regardless of which primitive is used). **Where this would
+see `mcp2518_isr_rx_pending()` — EXTI only sets a flag, no blocking/RTOS calls
+from real ISR context, which is the correct call regardless of which primitive
+is used). **Where this would
 become directly relevant:** if a future ISR (e.g. the PDB link's UART RX/TX
 complete callbacks, or a future hard-ESTOP sense interrupt) needs to wake
 *more than one* task, or a task needs to wait on *either of two* independent
@@ -329,11 +328,10 @@ silent corruption"). `vApplicationStackOverflowHook()` (`app_freertos.c`)
 currently just calls `Error_Handler()` — matching the tutorial's own guidance
 that the hook should be a terminal diagnostic stop, not attempt recovery, though
 without the tutorial's UART-message-identifying-the-task step; **worth
-considering **adding that** (transmit `pcTaskName` before halting) given how
-much this project's own bring-up history (`RTOS_BRINGUP_HANDOFF.txt`) has
-struggled with silent, undiagnosable hangs — a stack overflow that just calls
-`Error_Handler()` with no task-name output is exactly the kind of "which
-component died" ambiguity that handoff document is full of.**
+considering adding that** (transmit `pcTaskName` before halting) given how
+much early FreeRTOS bring-up struggled with silent, undiagnosable hangs — a
+stack overflow that just calls `Error_Handler()` with no task-name output is
+exactly the kind of "which component died" ambiguity that bit those sessions.**
 
 All three tasks are currently sized at a flat **1024 words** (`app_freertos.c`)
 — no high-water-mark measurement has been done yet per this doc's research
@@ -358,8 +356,7 @@ directly, not paraphrased:
   is UM1722's own literal reference example (Figure 4). Not a guess.
 - **SVC_Handler / PendSV_Handler must not be redefined** in `stm32g4xx_it.c` —
   UM1722 states this explicitly ("must be removed... to avoid a duplicate
-  definition"); confirmed absent in this repo's `stm32g4xx_it.c` per
-  `RTOS_BRINGUP_HANDOFF.txt`'s own audit.
+  definition"); confirmed absent in this repo's `stm32g4xx_it.c`.
 - **`xPortSysTickHandler` must NOT also be defined as `SysTick_Handler`
   elsewhere** if HAL is generating its own — this repo's resolution (TIM7 HAL
   timebase, SysTick owned by the FreeRTOS port exclusively) is precisely
@@ -397,9 +394,9 @@ directly, not paraphrased:
 - **Any ISR calling an RTOS-safe API must be configured at NVIC priority ≥
   `configMAX_SYSCALL_INTERRUPT_PRIORITY`** (numerically — higher number = lower
   logical priority on Cortex-M) — UM1722's central rule, and the exact bug
-  class `RTOS_BRINGUP_HANDOFF.txt` hit with UART4 at priority 6 vs SVCall/PendSV
-  at 15. Check this explicitly for any new ISR touching FreeRTOS state (the
-  new PDB UART4 RX/TX-complete callbacks included).
+  class early bring-up hit with UART4 at priority 6 vs SVCall/PendSV at 15.
+  Check this explicitly for any new ISR touching FreeRTOS state (the new PDB
+  UART4 RX/TX-complete callbacks included).
 - **`SPI3_IRQHandler` must call `HAL_SPI_IRQHandler(&hspi3)`** — Cube often
   enables SPI3 NVIC in `HAL_SPI_MspInit` without generating the vector body.
   Missing handler → `Default_Handler` infinite loop on the first
@@ -428,8 +425,8 @@ directly, not paraphrased:
 
 ## Related
 
-- `RTOS_BRINGUP_HANDOFF.txt` (repo root) — the real bring-up history behind
-  most of the choices documented above.
+- [bringup.md](bringup.md), [lessons.md](lessons.md) — durable bring-up history
+  behind most of the choices documented above.
 - `Core/Src/app_freertos.c`, `Core/Inc/FreeRTOSConfig.h`, `App/Inc/plant/plant_crit.h`,
   `App/Src/plant/can/can_router.c`, `App/Src/plant/can/spi_can_port.c` — the
   live source this guide is grounded in.

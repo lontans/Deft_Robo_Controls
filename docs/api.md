@@ -166,20 +166,43 @@ with ControlsPcbHub.connect("COM5") as hub:
 
 ---
 
-## Soft-DFU — USB flash (no ST-Link)
+## deft_vbeta adapters (`deft_controls_sdk.vbeta`)
 
-Supported. One-shot helper (auto-finds CDC, enter → program → leave):
+YAM-shaped drivers that own plant slots via one `PcbRobotSession` (exclusive COM):
 
-```powershell
-# Windows (CubeProg if no dfu-util)
-python scripts/soft_dfu_flash.py
+- `PcbArmDriver` — I2RT-compatible Damiao arms (slots 0–6 / 7–13)
+- `PcbPlatformClient` — Feather-compatible base/neck; **lift cmds are stubs**
+- `PcbNeckDriver` / `set_led` — DXL neck + SK9822
 
-# Linux / Jetson (dfu-util; script uses sudo for DFU open)
-./scripts/soft_dfu_flash.sh
-# or: python scripts/soft_dfu_flash.py
+Contract + slot map: [vbeta-pcb-adapter.md](vbeta-pcb-adapter.md) (includes YAMAIMobile patch sketch).
+Script hygiene: [scripts-hygiene.md](scripts-hygiene.md). Smokes: `scripts/vbeta_arm_smoke.py`, `vbeta_base_smoke.py`, `vbeta_neck_led_smoke.py`.
+
+```python
+from deft_controls_sdk.vbeta import PcbRobotSession, PcbArmDriver, PcbPlatformClient
+
+with PcbRobotSession.connect(apply_yam_cfg=False) as session:
+    arm = PcbArmDriver(session, side="left")
+    arm.connect()
+    print(arm.read("Position_Rad"))
 ```
 
-Module API (also on `hub.debug`):
+---
+
+## Soft-DFU — USB flash (no ST-Link)
+
+**Preferred (one-liner):**
+
+```powershell
+python scripts/soft_dfu_flash.py
+# optional: --image Debug/DeftRoboticsControlsPCB.elf
+```
+
+Auto-finds STM32 CDC, enters ROM DFU, programs, leaves via reset trampoline.
+You do **not** need to know PDU tags or enter/leave APIs for routine flash.
+
+Linux / Jetson: same Python entry, or `./scripts/soft_dfu_flash.sh` (dfu-util).
+
+Advanced module API (also on `hub.debug`) — enter/leave only for custom flows:
 
 ```python
 from deft_controls_sdk.bench import (
@@ -189,9 +212,8 @@ from deft_controls_sdk.bench import (
     flash_firmware,
 )
 
-print(find_cdc_port())                 # e.g. COM5 or /dev/ttyACM0
-flash_firmware(confirm=True)           # default: repo Debug/*.elf
-# or: enter_bootloader(confirm=True) → external programmer → leave_bootloader()
+print(find_cdc_port())
+flash_firmware(confirm=True)  # default: repo Debug/*.elf
 ```
 
 Leave targets the app reset trampoline (`0x0803F800`), not a bare jump to `0x08000000` (that can leave USB CDC dead). Details: `bench/soft_dfu.py`.

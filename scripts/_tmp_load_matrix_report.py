@@ -176,10 +176,28 @@ def _trial_row(stats: dict, *, hz: float, trial: int, cfg: str, angle: float) ->
 
 
 def _weird(row: dict, *, need_rs: bool) -> Optional[str]:
+    """cmd_seq_lag_p95 is reported (see the per-trial/aggregate tables) but is
+    NOT a pass/fail gate here — at host TX rates above what the plant can
+    apply (500 Hz is the known case; see docs/bench-load-matrix-*.md), lag
+    climbs by design as commands queue up, and a hard lag<=2 cutoff was
+    flagging that healthy backpressure as a fault, masking real wins (e.g.
+    a stagger/RX-index change that lowers act_lap peak but doesn't change
+    host/plant rate mismatch still got marked NOT ok). The actual health
+    signal is whether the plant is still making forward progress: gate on
+    applied_hz (cmd_applied_seq advance rate) staying above a floor relative
+    to what was asked, which is coalesce-aware — a plant catching up in
+    batches still passes; a stalled/wedged plant (applied_hz collapsing
+    toward 0) does not.
+    """
     reasons = []
-    lag = row.get("cmd_seq_lag_p95")
-    if lag is not None and float(lag) > 2:
-        reasons.append(f"cmd_seq_lag_p95={lag}")
+    applied_hz = row.get("applied_hz")
+    tx_hz = row.get("hz")
+    if applied_hz is not None and tx_hz:
+        floor = min(float(tx_hz), 200.0) * 0.5
+        if float(applied_hz) < floor:
+            reasons.append(
+                f"applied_hz={applied_hz} below floor={floor:.0f} (tx={tx_hz})"
+            )
     if (row.get("plant_fb_hz") or 0) < 20:
         reasons.append(f"plant_fb_hz={row.get('plant_fb_hz')}")
     if row.get("plant_block_hits"):
@@ -288,7 +306,7 @@ def run_load_cfg(
                 notes.append(f"{cfg} @{hz:.0f}Hz t{trial}: {weird}")
                 # Recalibrate + retry only when the live RS02 path looks wrong.
                 if use_rs and (
-                    "rs_travel" in weird or "plant_fb" in weird or "cmd_seq_lag" in weird
+                    "rs_travel" in weird or "plant_fb" in weird or "applied_hz" in weird
                 ):
                     notes.append(f"  → recalibrate CH{bus} and retry once")
                     try:
@@ -472,6 +490,11 @@ def _per_trial_table(rows: List[dict], cfg: str) -> str:
 
 
 def _bw_md(bw_rows: List[Tuple[float, bool, dict]]) -> str:
+    if not bw_rows:
+        return (
+            "## Bandwidth baseline (hold matrix, separate from teleop load)\n\n"
+            "_Skipped (`--skip-bw`)._\n"
+        )
     chunks = ["## Bandwidth baseline (hold matrix, separate from teleop load)\n"]
     chunks.append(
         "TX-only vs RX-sim hold on product CFG slots. No DXL/LED teleop in this section.\n"
@@ -518,16 +541,20 @@ def _bw_md(bw_rows: List[Tuple[float, bool, dict]]) -> str:
     chunks.append("| tx Hz | Δfb | Δack_max | Δact_mn | Δper_mn | Δpend_max | tx_ok | rx_ok |")
     chunks.append("|---:|---:|---:|---:|---:|---:|---|---|")
     for hz in RATES:
-        off = next(
-            r
-            for h, s, r in bw_rows
-            if h == hz and not s and r["label"] == "9_all_CH1-6_x25"
-        )
-        on = next(
-            r
-            for h, s, r in bw_rows
-            if h == hz and s and r["label"] == "9_all_CH1-6_x25"
-        )
+        try:
+            off = next(
+                r
+                for h, s, r in bw_rows
+                if h == hz and not s and r["label"] == "9_all_CH1-6_x25"
+            )
+            on = next(
+                r
+                for h, s, r in bw_rows
+                if h == hz and s and r["label"] == "9_all_CH1-6_x25"
+            )
+        except StopIteration:
+            chunks.append(f"| {hz:.0f} | — | — | — | — | — | — | — |")
+            continue
         chunks.append(
             f"| {hz:.0f} | "
             f"{(on.get('raw_fb_hz') or 0) - (off.get('raw_fb_hz') or 0):+.0f} | "

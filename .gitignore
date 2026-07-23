@@ -22,3 +22,16 @@ scripts/.pytest_cache/
 # deft_controls_sdk live telemetry mirror
 .deft_session/
 scripts/.deft_session/
+
+# Bench / agent run logs (keep the .py helpers)
+scripts/_tmp_*_run.log
+scripts/_tmp_*.log
+
+# Root / agent scratch — never commit dumps or recovery trees
+/*.csv
+/tmp_*.txt
+/RTOS_BRINGUP_HANDOFF.txt
+.tmp_recover/
+
+# Dated agent handoffs (durable notes live in bringup/lessons/bench docs)
+docs/handoff-*.md

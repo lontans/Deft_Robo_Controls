@@ -1,4 +1,5 @@
 #include "plant/plugins/dynamixel.h"
+#include "plant/plant_timing.h"
 #include "app.h"
 #include "usart.h"
 #include "main.h"
@@ -195,14 +196,19 @@ void dxl_port_bus_lock(void)
 {
 #if USE_FREERTOS_SCHEDULER
 	/* Polled UART5 @ 2 Mbaud: any Plant/Host preempt during RX overruns
-	 * the 1-byte FIFO and kills Dynamixel ACKs. */
+	 * the 1-byte FIFO and kills Dynamixel ACKs. Mark SuspendAll time
+	 * only while the scheduler is already stopped so Plant cannot race
+	 * between ResumeAll and suspend_end (that underflowed act_lap to
+	 * 65535). */
 	vTaskSuspendAll();
+	plant_timing_scheduler_suspend_begin();
 #endif
 }
 
 void dxl_port_bus_unlock(void)
 {
 #if USE_FREERTOS_SCHEDULER
+	plant_timing_scheduler_suspend_end();
 	(void)xTaskResumeAll();
 #endif
 }

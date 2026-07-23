@@ -26,6 +26,33 @@ actuator_config_t actuator_table[ACTUATOR_COUNT];
 actuator_desire_t actuator_desire_live[ACTUATOR_COUNT];
 actuator_state_t  actuator_state_live[ACTUATOR_COUNT];
 
+/* Per-bus slot fan-out for RX dispatch. actuator_table[i].bus only changes on
+ * CFG apply (init / factory defaults / NVM load / host CFG SET), never per
+ * tick, so actuator_dispatch_bus_rx() has no business re-scanning all
+ * ACTUATOR_COUNT slots for every RX frame on every bus. Rebuild is O(25) and
+ * only needs to run on those CFG-apply edges, not in the hot path. */
+static uint8_t s_bus_slot_idx[CAN_BACKEND_COUNT][ACTUATOR_COUNT];
+static uint8_t s_bus_slot_count[CAN_BACKEND_COUNT];
+
+void actuator_rebuild_bus_index(void)
+{
+	memset(s_bus_slot_count, 0, sizeof(s_bus_slot_count));
+
+	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		can_bus_id_t bus;
+
+		if (!actuator_table[i].enabled)
+			continue;
+
+		bus = actuator_table[i].bus;
+		if ((uint8_t)bus >= CAN_BACKEND_COUNT)
+			continue;
+
+		s_bus_slot_idx[bus][s_bus_slot_count[bus]] = i;
+		s_bus_slot_count[bus]++;
+	}
+}
+
 void actuator_init(void)
 {
 	memset(actuator_table, 0, sizeof(actuator_table));
@@ -34,6 +61,7 @@ void actuator_init(void)
 	memset(actuator_desire_stage, 0, sizeof(actuator_desire_stage));
 	memset(actuator_state_stage, 0, sizeof(actuator_state_stage));
 	actuator_desire_pending = false;
+	actuator_rebuild_bus_index();
 }
 
 void actuator_command_mount(const host_command_image_t *cmd)
@@ -151,14 +179,22 @@ static void actuator_dispatch_bus_rx(can_bus_id_t bus)
 {
 	can_frame_t frame;
 	bool damiao_had_rx[ACTUATOR_COUNT];
+	uint8_t count;
 
 	memset(damiao_had_rx, 0, sizeof(damiao_had_rx));
 
+	if ((uint8_t)bus >= CAN_BACKEND_COUNT)
+		return;
+	count = s_bus_slot_count[bus];
+
 	while (can_rx_pop(bus, &frame) == CAN_OK) {
-		for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+		for (uint8_t k = 0; k < count; k++) {
+			uint8_t i = s_bus_slot_idx[bus][k];
+
+			/* enabled/bus already guaranteed by the index build; re-check
+			 * enabled only in case a CFG SET landed between rebuild and this
+			 * dispatch without a rebuild in between (defensive, not expected). */
 			if (!actuator_table[i].enabled)
-				continue;
-			if (actuator_table[i].bus != bus)
 				continue;
 
 			if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
@@ -189,7 +225,9 @@ static void actuator_dispatch_bus_rx(can_bus_id_t bus)
 		}
 	}
 
-	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
+	for (uint8_t k = 0; k < count; k++) {
+		uint8_t i = s_bus_slot_idx[bus][k];
+
 		if (damiao_had_rx[i])
 			damiao_post_rx_dispatch(i, true);
 	}

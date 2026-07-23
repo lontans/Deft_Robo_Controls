@@ -1,38 +1,52 @@
 # Deft Robotics Controls PCB
 
-STM32G474 firmware for the Deft controls board: 500 Hz plant loop, cyclic USB host exchange (562 B v1), plugins over FDCAN (RobStride / Damiao, mixed std+ext) and MCP2518 SPI-CAN on CH4–6.
+STM32G474 firmware for the Deft controls board: ~500 Hz plant loop, **672 B**
+USB host exchange (layout v2), plugins over FDCAN (RobStride / Damiao / ZeroErr)
+and MCP2518 SPI-CAN on CH4–6, Dynamixel neck UART, SK9822 LEDs.
 
-**Bench status (Jul 2026):** Dual YAM Damiao arms (14 slots: arm1 CH1, arm2 CH2) teleop validated. RobStride FDCAN + MCP CH4–6 previously validated. CubeMars = workstream draft only (not in live build).
+**Bench (Jul 2026):** Dual YAM Damiao arms + MCP CH4–6 + DXL/LED load matrix on
+`main`. Equal-rate freshness path is the product trunk; MCP-decouple experiments
+parked on `feat/mcp-decoupled-optimzation`.
 
 ## Docs (start here)
 
 | Doc | Contents |
 |-----|----------|
-| [docs/bringup.md](docs/bringup.md) | **How to run** + bench stories (Damiao, dual-arm, plant cadence, MCP2562/CH4) |
-| [docs/ch4-mcp2518-bringup-postmortem.md](docs/ch4-mcp2518-bringup-postmortem.md) | Full CH4 MCP2518FD + MCP2562 debug timeline |
-| [docs/lessons.md](docs/lessons.md) | Open bugs + durable one-liner lessons |
-| [docs/architecture.md](docs/architecture.md) | Runtime, host API modes, wire current vs target |
-| [docs/decisions.md](docs/decisions.md) | ADR — target 672 B host image + PDB UART 64 B |
-| [docs/host-exchange-v1.md](docs/host-exchange-v1.md) | Current 562 B layout |
-| [docs/fdcan-dual-id-mixed-bus.md](docs/fdcan-dual-id-mixed-bus.md) | Mixed std/ext FDCAN detail |
+| [docs/bringup.md](docs/bringup.md) | How to run + bench stories |
+| [docs/api.md](docs/api.md) | Host SDK call surface |
+| [docs/host-exchange-v2.md](docs/host-exchange-v2.md) | **672 B** wire layout |
+| [docs/vbeta-pcb-adapter.md](docs/vbeta-pcb-adapter.md) | deft_vbeta / YAM slot map + adapters |
+| [docs/architecture.md](docs/architecture.md) | Runtime / tasks |
+| [docs/decisions.md](docs/decisions.md) | ADR — 672 B + PDB UART |
+| [docs/scripts-hygiene.md](docs/scripts-hygiene.md) | `_tmp_*` / legacy retirement |
+| [docs/lessons.md](docs/lessons.md) | Open bugs + lessons |
 
 ## Host software
 
 ```powershell
 cd scripts
 pip install -r requirements.txt
-python -m deft_controls_sdk.debug_dashboard --port COM5
-# or: from deft_controls_sdk import ControlsPcbHub
+
+# Flash (no ST-Link) — preferred one-liner
+python soft_dfu_flash.py
+# python soft_dfu_flash.py --image ../Debug/DeftRoboticsControlsPCB.elf
+
+# Dashboard (owns COM)
+python -m deft_controls_sdk.debug_dashboard
+
+# Plant / vbeta adapters
+python -c "from deft_controls_sdk import ControlsPcbHub; ..."
+python vbeta_neck_led_smoke.py
 ```
 
-Frozen legacy CLIs: [scripts/legacy/](scripts/legacy/README.md).
+Canonical API: [docs/api.md](docs/api.md). Frozen legacy tree: [scripts/legacy/](scripts/legacy/) (do not extend; see hygiene doc).
 
 ## Hardware (short)
 
 - **MCU:** STM32G474RE  
-- **Plant:** FDCAN1/2/3 @ 1 Mbps, SPI-CAN CH4–6, UART4/5, TIM6 @ 500 Hz  
-- **Host:** USB CDC (laptop) or UART4 (Jetson) — see bringup  
-- **LEDs:** PC3 heartbeat; CH1–3 activity PC7/PC6/PB15  
+- **Plant:** FDCAN1/2/3 @ 1 Mbps, SPI-CAN CH4–6, UART4/5, TIM6 plant tick  
+- **Host:** USB CDC (laptop) or UART4 (Jetson)  
+- **LEDs:** SK9822 chain + per-channel ACT LEDs  
 
 ## Repository layout
 
@@ -40,10 +54,9 @@ Frozen legacy CLIs: [scripts/legacy/](scripts/legacy/README.md).
 App/           Application: host link, actuators, plugins, control_loop
 Core/          Cube HAL
 USB_Device/    USB CDC
-scripts/       deft_controls_sdk/ (preferred), legacy/, requirements.txt
-docs/          bringup, lessons, architecture, decisions, wire v1
+scripts/       deft_controls_sdk/, vbeta smokes, soft_dfu_flash.py, legacy/
+docs/          bringup, api, architecture, decisions, wire v2
 External_Documentation/   Vendor PDFs
-2026-07-10 workstreams/   Unmerged CubeMars + thermo draft
 ```
 
-Firmware builds from tracked Cube + App sources. `Debug/` / `Release/` gitignored.
+Build with STM32CubeIDE / `Debug/makefile`. Flash via soft-DFU above (not ST-Link for routine work).

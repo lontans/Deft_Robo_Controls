@@ -130,10 +130,35 @@ def test_find_cdc_port_linux_style(monkeypatch: pytest.MonkeyPatch) -> None:
     assert find_cdc_port() == "/dev/ttyACM0"
 
 
-def test_default_firmware_elf_points_at_repo_debug() -> None:
+def test_default_firmware_elf_prefers_release_then_debug() -> None:
+    """Release ELF wins when present; otherwise Debug (explicit fallback)."""
     elf = default_firmware_elf()
     assert elf.name == "DeftRoboticsControlsPCB.elf"
-    assert elf.parent.name == "Debug"
+    assert elf.parent.name in ("Release", "Debug")
+    root = elf.parents[1]
+    release = root / "Release" / "DeftRoboticsControlsPCB.elf"
+    if release.is_file():
+        assert elf == release
+    else:
+        assert elf.parent.name == "Debug"
+
+
+def test_default_firmware_elf_checks_release_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import deft_controls_sdk.bench.soft_dfu as mod
+
+    real_is_file = Path.is_file
+
+    def spy_is_file(self: Path) -> bool:
+        if self.name == "DeftRoboticsControlsPCB.elf" and self.parent.name == "Release":
+            return True
+        return real_is_file(self)
+
+    monkeypatch.setattr(mod.Path, "is_file", spy_is_file)
+    elf = default_firmware_elf()
+    assert elf.parent.name == "Release"
+    assert elf.name == "DeftRoboticsControlsPCB.elf"
 
 
 def test_main_flash_wires_to_flash_firmware(monkeypatch: pytest.MonkeyPatch) -> None:

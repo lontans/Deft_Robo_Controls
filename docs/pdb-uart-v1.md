@@ -170,6 +170,66 @@ claims it). Update `PDB_ESTOP_GPIO_PORT`/`PDB_ESTOP_GPIO_PIN` in
 
 ---
 
+## Jetson sim (bring-up without real PDB firmware)
+
+`scripts/pdb_uart_sim.py` stands in for the PDB MCU on a spare UART (Jetson
+header or USB-UART adapter — **never** the Controls board's own USB CDC
+port) so the physical UART4 wiring and the USB `pdb[64]` mirror can be
+exercised before real PDB firmware exists:
+
+```bash
+python pdb_uart_sim.py --port /dev/ttyTHS1 --hz 20
+python pdb_uart_sim.py --port /dev/ttyUSB0 --hz 20 --rail-v 4800 1900 1200 500
+python pdb_uart_sim.py --port /dev/ttyUSB0 --simulate-kill-after 10   # exercise the soft-kill handshake
+
+# Continuous randomized telemetry + repeated random fault-cycling, live
+# ESTOP sense off a Jetson header pin (BOARD numbering, e.g. 16 = GPIO08):
+python pdb_uart_sim.py --port /dev/ttyTHS1 --hz 20 --random --gpio-estop 16 --seed 1
+```
+
+It sends valid `PDBF` frames forever at `--hz`, parses incoming `PDBC`
+frames, echoes the last-seen `heartbeat` into `heartbeat_echo`, and stubs
+the soft-kill state machine (`--simulate-kill-after` injects a single
+`SOFT_KILL_REQ`, then transitions to `SOFT_KILL_READY` only once it sees the
+controls board's ack in a command frame — same non-negotiable ordering as
+the real handshake). TX is non-blocking: with nothing on the other end
+(board unplugged, wiring not connected), the sim keeps running and printing
+its `tx_seq`/status line rather than blocking on a full serial buffer.
+
+**`--random`** replaces the fixed `--pack-v`/`--rail-v`/`--pack-i`/`--rail-i`
+values with a bounded random walk around those same centers (`--voltage-
+jitter-pct`, default ±2%; `--current-jitter-pct`, default ±40% — currents
+swing more in reality) and repeats the soft-kill handshake indefinitely at
+random intervals (`--fault-interval-s`, default 20–60 s) with a randomly
+chosen plausible reason (undervoltage/overcurrent/overtemp/button), holding
+`SOFT_KILL_READY` for a random duration (`--fault-hold-s`, default 3–10 s)
+before auto-recovering to `NORMAL` and repeating. It still never reports
+contactors open without the controls-board ack — same invariant as the
+scripted `--simulate-kill-after` path, just looped. `contactor_state`
+readback is forced to `0` while `SOFT_KILL_READY` regardless of
+`--contactor-state`, so that byte reflects the simulated open/closed state
+rather than always echoing the CLI flag.
+
+**`--gpio-estop BOARD_PIN`** live-reads the hard-ESTOP wire off a Jetson
+header pin instead of the fixed `--estop-sense` value — needs `Jetson.GPIO`
+and must run on the Jetson itself. This is a **read only**: Controls drives
+the wire (active-low, HIGH = power allowed / LOW = asserted), the sim/PDB
+side only cross-checks it into the `estop_sense` feedback byte, matching the
+real PDB's documented role above.
+
+The pack/parse/CRC contract it uses (`deft_controls_sdk/pdb/`) is a
+bit-exact Python port of `App/Src/host/pdb_link.c` — see
+`scripts/tests/test_pdb_link_frames.py` for the golden vectors.
+
+### Cursor prove-out notes (2026-07-23)
+
+| Check | Result |
+|-------|--------|
+| Agent1 pytest `test_pdb_link_frames.py` | 16 passed |
+| USB CDC `pdb[64]` with **no** UART4 peer | all zeros |
+| USB `system.kill_state` / `kill_reason` (no peer) | `HARD_ESTOP` (3) / `COMMS_LOSS` (5) — fail-safe as designed |
+| Live Jetson/USB-UART ↔ UART4 (PC10/PC11) + fresh `PDBF` mirror | **blocked** this sprint — no spare USB-UART on the bench COM list (only COM5 CDC + ST-Link VCP + com0com pairs). Needs Jetson `ttyTHS*` or a USB-UART wired TX→PC11 / RX←PC10 / GND @ 115200 8N1, then re-run sim + confirm non-zero `pdb[64]` + `kill_state==NORMAL` while fresh. |
+
 ## Related
 
 - [decisions.md](decisions.md) — ADR-001, the decision record this implements

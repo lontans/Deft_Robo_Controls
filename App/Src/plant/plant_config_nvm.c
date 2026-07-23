@@ -282,6 +282,7 @@ static void nvm_slots_to_table(const plant_cfg_nvm_slot_t *src)
 		                              DM_MASTER_ID_AUTO : 0u;
 		actuator_table[i].enabled = (src[i].flags & 1u) != 0u;
 	}
+	actuator_rebuild_bus_index();
 }
 
 static bool nvm_image_valid(const plant_cfg_nvm_image_t *img)
@@ -354,6 +355,7 @@ void plant_config_load_factory_defaults(void)
 			.enabled = false,
 		};
 	}
+	actuator_rebuild_bus_index();
 }
 
 bool plant_config_nvm_load(void)
@@ -430,6 +432,7 @@ void plant_config_on_command(const host_command_image_t *cmd)
 			actuator_table[slot].master_id = 0u;
 		}
 		actuator_table[slot].enabled = (p[12] & 1u) != 0u;
+		actuator_rebuild_bus_index();
 		stage_response(op, PLANT_CFG_STATUS_OK, 0u);
 		return;
 

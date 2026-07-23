@@ -6,13 +6,20 @@
 /* Dual-path timing — published in system feedback (layout v2).
  * act_lap_ms / act_lap_peak_ms / ticks_*: PlantTask (apply+TX).
  * periph_lap_ms / periph_lap_peak_ms: PeripheralTask (DXL/LED/SPI3).
- * *_peak_ms are sticky until plant_timing_reset_peaks(). */
+ * *_peak_ms are sticky until plant_timing_reset_peaks().
+ *
+ * act_lap wall-clock excludes intervals where dxl_port_bus_lock() held
+ * vTaskSuspendAll — otherwise same-priority DXL UART critical sections
+ * inflate sticky act_lap peaks without reflecting plant/CAN work. */
 void plant_timing_lap_begin(void);
 void plant_timing_lap_end(void);
 void plant_timing_periph_lap_begin(void);
 void plant_timing_periph_lap_end(void);
 void plant_timing_note_pending_at_lap(uint8_t pending);
 void plant_timing_note_service(uint8_t ticks_serviced);
+/* Pair with dxl_port_bus_lock / unlock while a plant lap may be open. */
+void plant_timing_scheduler_suspend_begin(void);
+void plant_timing_scheduler_suspend_end(void);
 void plant_timing_system_fill(host_system_feedback_t *sys);
 void plant_timing_svd_fill(host_pdu_feedback_t *pdu);
 void plant_timing_thermo_fill(host_pdu_feedback_t *pdu);

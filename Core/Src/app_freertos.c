@@ -60,7 +60,9 @@ osThreadId_t peripheralTaskHandle;
 const osThreadAttr_t peripheralTask_attributes = {
   .name = "PeripheralTask",
   /* Same band as Host/Plant: BelowNormal starved under ×25 plant load so
-   * DXL/LED never ran. dxl_port_bus_lock() covers polled UART critical. */
+   * DXL/LED never ran. dxl_port_bus_lock() covers polled UART critical.
+   * Plant-only High killed act_lap peaks but starved Host lag @200/500 and
+   * ballooned periph_lap — keep same-band; act_lap excludes SuspendAll. */
   .priority = (osPriority_t) osPriorityAboveNormal,
   /* DXL/LED paths are deep; 1024–1536 words overflowed into Error_Handler. */
   .stack_size = 2048 * 4

@@ -96,7 +96,14 @@ One process owns COM. Plant motion = top-level hub methods (`set_actuator`, `sta
 
 ---
 
-## 4. Legacy teleop / joint CLI
+## 4. Legacy teleop / joint CLI (frozen — prefer SDK/vbeta for new work)
+
+New teleop work should use `vbeta_arm_smoke.py --side left|right` (see §3) or
+`hub.set_actuator(...)` directly. The commands below are the legacy
+`scripts/legacy/control_hub.py` CLI — kept only for the full daisy-chain
+Damiao discover (`--discover --host-only`, lists **every** ID on the bus;
+`hub.debug.discover_damiao()` is first-hit only, no SDK replacement for the
+full listing yet):
 
 ```powershell
 cd scripts
@@ -111,7 +118,7 @@ python legacy/damiao_scan.py --port COM5 --discover --host-only --bus 1 --start 
 
 User teleop releases COM (`q`) before AI / `joint goto`. Absolute `--to` refused without `--i-know-zeros`.
 
-**Gain / velocity direction** (bench Jul 2026, `teleop/defaults.py`):
+**Gain / velocity direction** (bench Jul 2026, legacy `teleop/defaults.py` — not ported to the SDK):
 
 | Setting | History | Current |
 |---------|---------|---------|
@@ -143,7 +150,7 @@ python rs02_channel_bringup.py --bus N
 
 Un-enabled motors mid-harness block teleop behind them — map+enable every unit (harness lesson, not FIFO). Isolated DM-J4340P-2EC on CH1 (`0x01`/`0x11`) discover+enable+MIT OK before multi-motor work.
 
-Discover (list all IDs — hub discover is first-hit only):
+Discover (list all IDs — hub discover is first-hit only; legacy CLI, no SDK replacement yet):
 
 ```powershell
 python legacy/damiao_scan.py --port COM5 --discover --host-only --bus 1 --start 0 --end 32 --listen-ms 60
@@ -171,9 +178,15 @@ Damiao = 11-bit std; RobStride = 29-bit ext. One HW RX FIFO; demux by `IdType`. 
 Deep reference: [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md) (§0 as-built; ignore any older “CH2 ext-only” line).
 
 ```powershell
-# Example mixed plant on CH3 (legacy)
-python legacy/control_hub.py recover --port COM5 --bus 3
-python legacy/control_hub.py --plant-teleop --plant-slots 1,2 --port COM5
+# Example mixed plant on CH3 — SDK
+python -c "
+from deft_controls_sdk import ControlsPcbHub, ActuatorDesire
+with ControlsPcbHub.connect('COM5') as hub:
+    hub.recover()
+    hub.start_streaming()
+    hub.set_actuator(1, ActuatorDesire(position=0.0, kp=8.0, kd=0.5))
+    hub.set_actuator(2, ActuatorDesire(position=0.0, kp=8.0, kd=0.5))
+"
 ```
 
 All nodes on a shared branch: **1 Mbps** nominal + 120 Ω termination at each end.
@@ -205,11 +218,8 @@ Early `lap≈52 ms` looked like CAN/MCP polling — it was **Dynamixel** (`DXL_R
 ### Check
 
 ```powershell
-python legacy/control_hub.py --port COM5 recover --bus 2
-python legacy/control_hub.py --port COM5 teleop --slot 1   # CH2 FDCAN
-
-python legacy/control_hub.py --port COM5 recover --bus 4
-python legacy/control_hub.py --port COM5 teleop --slot 3   # CH4 MCP — expect ACT LED on arrow hold
+python rs02_channel_bringup.py --bus 2   # CH2 FDCAN
+python rs02_channel_bringup.py --bus 4   # CH4 MCP — expect ACT LED on arrow hold
 ```
 
 ---
@@ -337,12 +347,11 @@ Full ranked bugs + DoD: [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-
 
 Constants: `App/Inc/plant/can/mcp2518fd.h` (`MCP2518_NBT_*`).
 
-### Bench smoke (legacy)
+### Bench smoke (SDK)
 
 ```powershell
-python legacy/rs02_can_scan.py --port COM5 --mcp-smoke --bus 4 --target 0x70
-python legacy/rs02_can_scan.py --port COM5 --mcp-wake --bus 4 --target 0x70
-python legacy/rs02_can_scan.py --port COM5 --probe-id 0x70 --bus 4
+python rs02_channel_bringup.py --bus 4 --motor-id 0x70 --skip-cali
+# or: hub.debug.discover_robstride(bus=4); hub.debug.calibrate_robstride(bus=4, motor_id=0x70)
 ```
 
 ---
@@ -352,9 +361,8 @@ python legacy/rs02_can_scan.py --port COM5 --probe-id 0x70 --bus 4
 After plant teleop on CH2, calibrate showed prep HIT but no shaft spin. Cause: FDCAN path skipped the pre-`0x05` reset that MCP gets (`CALI_SKIP_RESET`). Fix: same **250 ms settle + reset before 0x05** as MCP; teleop exit runs `recovery_on_exit`.
 
 ```powershell
-python legacy/control_hub.py --port COM5 recover --bus 2
-python legacy/control_hub.py --port COM5 teleop --slot 1
-python legacy/controls_pcb_host.py --port COM5 calibrate --bus 2 --id 0x70
+python rs02_channel_bringup.py --bus 2
+# or: hub.recover(); hub.debug.calibrate_robstride(bus=2, motor_id=0x70)
 ```
 
 Expect `... cali listen` and shaft spin. Cold cali fail (no prior teleop) → harness/termination, not this path.

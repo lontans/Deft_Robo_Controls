@@ -61,9 +61,21 @@ class ServoDesire:
     operating_mode: int = 3  # position control
 
 
+# host_led_command_t.mode (5-bit). See docs/rfc-led-factory-patterns.md.
+LED_MODE_OFF = 0
+LED_MODE_TEST = 1  # single-pixel chase (snake)
+LED_MODE_FLASH = 2  # ~2 Hz full-strip red blink (bringup)
+LED_MODE_SOLID_GREEN = 3
+LED_MODE_SOLID_YELLOW = 4
+LED_MODE_SOLID_RED = 5
+LED_MODE_BLINK_YELLOW_SLOW = 6  # caution, 1 Hz 50%
+LED_MODE_BLINK_RED_FAST = 7  # estop/fault, 5 Hz 50%
+
+
 @dataclass(frozen=True)
 class LedDesire:
-    """SK9822 host command (2 B). mode 0=OFF, 1=TEST chase, 2=FLASH. led_count 0 ⇒ max (300)."""
+    """SK9822 host command (2 B). mode 0=OFF, 1=TEST, 2=FLASH, 3..7 factory
+    traffic-light (see LED_MODE_*). led_count 0 ⇒ max (300)."""
 
     mode: int = 0
     master_brightness: int = 8

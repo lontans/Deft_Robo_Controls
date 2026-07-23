@@ -501,9 +501,17 @@ def _dfu_leave(handle, *, address: int) -> None:
 
 
 def default_firmware_elf() -> Path:
-    """Repo ``Debug/DeftRoboticsControlsPCB.elf`` relative to this package."""
+    """Prefer ``Release/DeftRoboticsControlsPCB.elf``; fall back to ``Debug/``.
+
+    See docs/rfc-release-build.md — load-matrix / production flashes should use
+    Release when built; Debug remains the explicit fallback when Release is
+    missing.
+    """
     # scripts/deft_controls_sdk/bench/soft_dfu.py → repo root
     root = Path(__file__).resolve().parents[3]
+    release = root / "Release" / "DeftRoboticsControlsPCB.elf"
+    if release.is_file():
+        return release
     return root / "Debug" / "DeftRoboticsControlsPCB.elf"
 
 
@@ -706,7 +714,8 @@ def flash_firmware(
 ) -> str:
     """One-shot USB soft-DFU: enter (if needed) → program → Leave trampoline.
 
-    ``image`` may be an ``.elf`` or ``.bin``. Default: repo Debug ELF.
+    ``image`` may be an ``.elf`` or ``.bin``. Default: repo Release ELF if
+    present, else Debug ELF (see ``default_firmware_elf``).
     Returns the CDC device path after the app re-enumerates.
 
     Backend: dfu-util when present (Linux/Jetson; needs .bin via objcopy for
@@ -808,7 +817,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     f.add_argument(
         "--image",
         default=None,
-        help="path to .elf or .bin (default: repo Debug/*.elf)",
+        help="path to .elf or .bin (default: Release/*.elf if present, else Debug)",
     )
     f.add_argument("--serial", default=None, help="USB serial to select board")
     f.add_argument(

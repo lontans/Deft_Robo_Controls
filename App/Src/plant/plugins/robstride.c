@@ -604,10 +604,21 @@ static plugin_status_t robstride_probe_tx(can_bus_id_t bus, const can_frame_t *f
 static uint32_t s_robstride_plant_tick;
 static uint8_t s_mcp_flush_rails; /* bit0=CH4 … bit2=CH6 */
 static bool s_heavy_multi_domain; /* FDCAN and MCP both commanded */
+/* Per-tick budget for maintain enable+run_mode pairs (reset in plant_tick_begin). */
+static uint8_t s_maintain_budget;
+
+/* Re-arm cadence for robstride_maintain_enable. Named so the stagger below
+ * can reference the same period it stripes across. */
+#define ROBSTRIDE_MAINTAIN_PERIOD_MS 2000u
+/* Cap enable+run_mode pairs per plant tick. Slot visit order is equal-rate RR:
+ * first-arm of ×25 would otherwise stack 50 frames in one tick; sticky
+ * act_lap peak captured that burst even after phase-stagger of later re-arms. */
+#define ROBSTRIDE_MAINTAIN_MAX_PER_TICK 2u
 
 static void robstride_maintain_enable(const actuator_config_t *cfg,
                                       const actuator_desire_t *desire,
-                                      uint32_t *last_ms)
+                                      uint32_t *last_ms,
+                                      uint8_t slot)
 {
 	can_frame_t frame;
 	can_bus_id_t bus;
@@ -626,10 +637,24 @@ static void robstride_maintain_enable(const actuator_config_t *cfg,
 	first_arm = (*last_ms == 0u);
 	/* First entry (last_ms==0) always arms. Otherwise re-arm every 2s even
 	 * while kp>0 — MIT alone does not recover enable after cali/reset/blank. */
-	if (!first_arm && (now - *last_ms) < 2000u)
+	if (!first_arm && (now - *last_ms) < ROBSTRIDE_MAINTAIN_PERIOD_MS)
 		return;
+	/* Defer when this tick's budget is gone; leave *last_ms unchanged so the
+	 * slot stays due and is served on a later tick (equal treatment). */
+	if (s_maintain_budget == 0u)
+		return;
+	s_maintain_budget--;
 
-	*last_ms = now;
+	if (first_arm) {
+		/* Backdate so subsequent periodic re-arms do not realign into one
+		 * tick. This enable still goes out as soon as budget allows
+		 * (spread across ticks by ROBSTRIDE_MAINTAIN_MAX_PER_TICK). */
+		uint32_t stagger_ms = ((uint32_t)slot * ROBSTRIDE_MAINTAIN_PERIOD_MS) /
+		                      ACTUATOR_COUNT;
+		*last_ms = now - stagger_ms;
+	} else {
+		*last_ms = now;
+	}
 	/* Always non-blocking on the plant path. MCP frames join the tick coalesce
 	 * flush (no per-slot prepare/flush). Probe/cali still use send_now. */
 	if (robstride_set_run_mode(cfg, RS02_RUN_MODE_MOVE, &frame) == PLUGIN_OK) {
@@ -806,6 +831,7 @@ void robstride_plant_tick_begin(uint32_t commanded_buses)
 
 	s_robstride_plant_tick++;
 	s_mcp_flush_rails = 0u;
+	s_maintain_budget = ROBSTRIDE_MAINTAIN_MAX_PER_TICK;
 	s_heavy_multi_domain = fdcan && mcp;
 }
 
@@ -895,7 +921,7 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	}
 
 	/* Enable maintain keeps its own ms cadence even on decimated-out ticks. */
-	robstride_maintain_enable(cfg, desire, &last_maintain_ms[slot]);
+	robstride_maintain_enable(cfg, desire, &last_maintain_ms[slot], slot);
 
 	if (mcp) {
 		if (((s_robstride_plant_tick + (uint32_t)slot) % RS02_MCP_APPLY_DIV) != 0u)
@@ -1014,7 +1040,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 		if (param_index == 0u)
 			param_index = RS02_PARAM_MECH_ANGLE;
 
-		robstride_maintain_enable(&cfg, NULL, &ctrl_fast_maintain_ms);
+		robstride_maintain_enable(&cfg, NULL, &ctrl_fast_maintain_ms, 0u);
 		can_router_poll_bus(bus);
 		HAL_Delay(3);
 		can_rx_drain(bus);
@@ -1073,7 +1099,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 	}
 
 	if (proactive) {
-		robstride_maintain_enable(&cfg, NULL, &ctrl_fast_maintain_ms);
+		robstride_maintain_enable(&cfg, NULL, &ctrl_fast_maintain_ms, 0u);
 		can_router_poll_bus(bus);
 		HAL_Delay(3);
 
@@ -1297,7 +1323,7 @@ bool robstride_probe_id(can_bus_id_t bus,
 	}
 
 	if (ctrl_fast) {
-		robstride_maintain_enable(&cfg, NULL, &ctrl_fast_maintain_ms);
+		robstride_maintain_enable(&cfg, NULL, &ctrl_fast_maintain_ms, 0u);
 		if (plugin_pack_tx(&cfg, desire, &frame) != PLUGIN_OK)
 			return false;
 		if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
