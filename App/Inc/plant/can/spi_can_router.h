@@ -23,6 +23,7 @@ bool spi_can_router_send_now(can_bus_id_t bus, const can_frame_t *frame);
 can_status_t spi_can_router_rx_pop(can_bus_id_t bus, can_frame_t *frame);
 void spi_can_router_rx_drain(can_bus_id_t bus);
 bool spi_can_router_rx_available(can_bus_id_t bus);
+can_status_t spi_can_router_rx_push(can_bus_id_t bus, const can_frame_t *frame);
 
 static inline bool spi_can_bus_valid(can_bus_id_t bus)
 {

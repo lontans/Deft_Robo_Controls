@@ -10,14 +10,19 @@ bool host_link_poll_tx_once(void);
 void host_link_poll_rx(void);
 
 /* Mount the latest staged plant command, if any. Call from
- * control_loop_service() so mount cost is paid at most once per TIM6 tick,
- * not once per superloop spin. */
+ * control_loop_service() so actuator mount cost is paid at most once per
+ * TIM6 tick, not once per superloop spin. */
 void host_link_apply_pending_plant(void);
+
+/* Mount servo/LED from the image staged by apply_pending_plant.
+ * Call from the post-FB peripheral service path. */
+void host_link_apply_pending_peripheral(void);
 
 bool host_command_image_valid(const host_command_image_t *cmd);
 void host_command_image_dispatch(const host_command_image_t *cmd);
 
 uint32_t host_link_last_command_seq(void);
+uint32_t host_link_last_applied_seq(void);
 
 /* True if a valid host command arrived within max_age_ms. */
 bool host_link_command_is_fresh(uint32_t max_age_ms);

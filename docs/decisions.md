@@ -103,9 +103,9 @@ NORMAL → SOFT_KILL_REQ → (controls safe pose) → SOFT_KILL_READY → HARD_E
 ### Implementation checklist
 
 - [x] Draft `docs/host-exchange-v2.md` with locked offsets + `_Static_assert` sizes
-- [ ] Draft `docs/pdb-uart-v1.md` (64 B cmd/fb, kill_state enum, LSB scales)
+- [x] Draft `docs/pdb-uart-v1.md` (64 B cmd/fb, kill_state enum, LSB scales — LSB scales still placeholder pending real sensor spec)
 - [x] Firmware: schema structs, feedback identity meta, system timing fill
-- [ ] PDB UART service + ESTOP policy
+- [x] PDB UART service + ESTOP policy (`App/Src/host/pdb_link.c` — UART4/PC10-PC11, `UART4_MODE_PDB`; ESTOP GPIO pin still placeholder, see doc)
 - [x] SDK: `wire_layout` IMAGE_BYTES=672, pack/parse (timing from system[])
 - [ ] Dashboard / health strip: soft-kill visible before hard ESTOP
 - [x] Layout version bump — mismatched v1 hosts rejected

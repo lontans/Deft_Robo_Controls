@@ -1,8 +1,11 @@
 #include "plant/servo.h"
 #include "plant/plant_diag.h"
 #include "plant/plant_timing.h"
+#include "plant/rx_sim/rx_sim.h"
+#include "plant/rx_sim/rx_sim_servo.h"
 #include "host/host_link.h"
 #include "plant/plant_crit.h"
+#include "main.h"
 #include <string.h>
 
 static servo_desire_t servo_desire_stage[SERVO_COUNT];
@@ -22,18 +25,26 @@ static bool           g_torque_done;
 static uint8_t        g_slot;
 static uint16_t       g_bus_cycles;
 static volatile bool  g_servo_host_session;
+static bool           g_session_was;
+static bool           g_pose_latched[SERVO_COUNT];
 
 static uint8_t  g_hw_error[SERVO_COUNT];
 static uint8_t  g_recover_slot;
 static uint8_t  g_recover_phase;
 static uint32_t g_recover_t0_ms;
 
-#define SERVO_HW_POLL_CYCLES 40u
+#define SERVO_HW_POLL_CYCLES 80u
 #define SERVO_RECOVER_WAIT_MS 500u
+/* Each DXL R/W may block ≤ DXL_PLANT_RX_TIMEOUT_MS. Rate-limit so we do
+ * not stack multiple TXNs every app_run spin. */
+#define SERVO_BUS_MIN_PERIOD_MS 10u
 
 static uint8_t g_diag_wr_ok;
 static uint8_t g_diag_rd_ok;
 static uint8_t g_diag_torque_ok;
+static uint32_t g_last_bus_poll_ms;
+
+
 
 static bool servo_host_command_stale(void)
 {
@@ -155,17 +166,67 @@ static void servo_advance_slot(uint8_t *slot)
 	} while (*slot < SERVO_COUNT && !servo_table[*slot].enabled);
 }
 
+static bool servo_write_motion_profile(uint8_t slot, uint8_t id)
+{
+	const servo_config_t *cfg = &servo_table[slot];
+
+	/* RAM items — safe with torque off. Profile vel 0 = max speed (jerk). */
+	if (!dxl_write_u16(id, DXL_ADDR_POSITION_D_GAIN, cfg->position_d_gain))
+		return false;
+	if (!dxl_write_u16(id, DXL_ADDR_POSITION_P_GAIN, cfg->position_p_gain))
+		return false;
+	if (!dxl_write_u32(id, DXL_ADDR_PROFILE_ACCEL,
+	                   (uint32_t)cfg->default_profile_accel))
+		return false;
+	if (!dxl_write_u32(id, DXL_ADDR_PROFILE_VELOCITY,
+	                   (uint32_t)cfg->default_profile_vel))
+		return false;
+	return true;
+}
+
 static bool servo_torque_on_step(void)
 {
 	uint8_t id;
+	uint32_t present;
 
 	while (g_torque_slot < SERVO_COUNT) {
-		if (!servo_table[g_torque_slot].enabled) {
+		if (!servo_table[g_torque_slot].enabled ||
+		    servo_desire_live[g_torque_slot].servo_id == 0u) {
 			g_torque_slot++;
 			continue;
 		}
 
 		id = servo_table[g_torque_slot].id;
+
+		/* Prior noreply experiment may have left Status Return Level=READ
+		 * (ACK writes then hang). Always force ALL with a noreply TX first. */
+		if (!dxl_write_u8_noreply(id, DXL_ADDR_STATUS_RETURN_LEVEL,
+		                          DXL_STATUS_RETURN_ALL))
+			return false;
+
+		/* Soft-start: latch goal to present before torque so we never
+		 * slew from an unknown host seed (e.g. table mid). */
+		if (dxl_read_u32(id, DXL_ADDR_PRESENT_POSITION, &present)) {
+			if (present < servo_table[g_torque_slot].pos_min)
+				present = servo_table[g_torque_slot].pos_min;
+			if (present > servo_table[g_torque_slot].pos_max)
+				present = servo_table[g_torque_slot].pos_max;
+			if (!dxl_write_u32(id, DXL_ADDR_GOAL_POSITION, present))
+				return false;
+			servo_state_live[g_torque_slot].present_position =
+				(int16_t)present;
+			servo_state_live[g_torque_slot].motor_source_id = id;
+			servo_desire_live[g_torque_slot].native_step_position =
+				(int16_t)present;
+			servo_desire_stage[g_torque_slot].native_step_position =
+				(int16_t)present;
+			g_pose_latched[g_torque_slot] = true;
+		}
+
+		/* Profile/gains before torque — without this XL330 wakes at max vel.
+		 * Non-fatal: still torque-on if a RAM write NACKs so we don't wedge. */
+		(void)servo_write_motion_profile(g_torque_slot, id);
+
 		if (!dxl_write_u8(id, DXL_ADDR_TORQUE_ENABLE, DXL_TORQUE_ON))
 			return false;
 
@@ -187,7 +248,20 @@ static void servo_bus_reset(void)
 	g_slot        = 0u;
 	g_bus_cycles  = 0u;
 	memset(g_hw_error, 0, sizeof(g_hw_error));
+	memset(g_pose_latched, 0, sizeof(g_pose_latched));
 	g_recover_phase = 0u;
+}
+
+static void servo_torque_off_all(void)
+{
+	uint8_t i;
+
+	for (i = 0; i < SERVO_COUNT; i++) {
+		if (!servo_table[i].enabled)
+			continue;
+		(void)dxl_write_u8(servo_table[i].id, DXL_ADDR_TORQUE_ENABLE,
+		                   DXL_TORQUE_OFF);
+	}
 }
 
 static void servo_bus_service(void)
@@ -197,9 +271,8 @@ static void servo_bus_service(void)
 	if (plant_diag_skip_servo_bus())
 		return;
 
-	/* Plant teleop does not mount servo commands. Unsolicited DXL unicast
-	 * read/write waits DXL_RX_TIMEOUT_MS (~50 ms) when no servo answers —
-	 * that alone pegs app_run lap≈52 ms and starves the 500 Hz plant. */
+	/* Plant teleop does not mount servo commands. DXL runs in
+	 * servo_bus_poll() after FB TX — not on the TIM6 autonomy path. */
 	if (!g_servo_host_session)
 		return;
 
@@ -254,6 +327,7 @@ void servo_init(void)
 	g_diag_wr_ok = 0u;
 	g_diag_rd_ok = 0u;
 	g_diag_torque_ok = 0u;
+	g_last_bus_poll_ms = 0u;
 	servo_bus_reset();
 }
 
@@ -289,16 +363,27 @@ void servo_desire_clear(void)
 	memset(servo_desire_stage, 0, sizeof(servo_desire_stage));
 	servo_desire_pending = false;
 	g_servo_host_session = false;
-	servo_bus_reset();
 	plant_crit_exit();
+	/* Torque-off runs on next servo_bus_poll session falling edge. */
+	servo_bus_reset();
 }
 
 void servo_apply_desire(void)
 {
 	plant_crit_enter();
 	if (servo_desire_pending) {
-		for (uint8_t i = 0; i < SERVO_COUNT; i++)
-			servo_desire_live[i] = servo_desire_stage[i];
+		for (uint8_t i = 0; i < SERVO_COUNT; i++) {
+			/* During soft-start, host may still stream a stale pose.
+			 * Keep the present-position latch until torque phase ends. */
+			if (!g_torque_done && g_pose_latched[i]) {
+				int16_t hold = servo_desire_live[i].native_step_position;
+
+				servo_desire_live[i] = servo_desire_stage[i];
+				servo_desire_live[i].native_step_position = hold;
+			} else {
+				servo_desire_live[i] = servo_desire_stage[i];
+			}
+		}
 		servo_desire_pending = false;
 	}
 	plant_crit_exit();
@@ -306,12 +391,42 @@ void servo_apply_desire(void)
 
 void servo_capture_state(void)
 {
-	servo_bus_service();
+	/* Soft servo sim does not arm host session / block actuator CAN.
+	 * Real DXL UART runs in servo_bus_poll() after host FB TX. */
+	if (rx_sim_servo_enabled() && !servo_host_session_active())
+		rx_sim_servo_tick();
 
 	plant_crit_enter();
 	for (uint8_t i = 0; i < SERVO_COUNT; i++)
 		servo_state_stage[i] = servo_state_live[i];
 	plant_crit_exit();
+}
+
+void servo_bus_poll(void)
+{
+	uint32_t now;
+
+	if (rx_sim_servo_enabled() && !servo_host_session_active())
+		return;
+
+	/* Session end: drop torque so leave_idle / clear_servos actually stop. */
+	if (!g_servo_host_session) {
+		if (g_session_was) {
+			servo_torque_off_all();
+			servo_bus_reset();
+			g_session_was = false;
+		}
+		return;
+	}
+	g_session_was = true;
+
+	now = HAL_GetTick();
+	if ((now - g_last_bus_poll_ms) < SERVO_BUS_MIN_PERIOD_MS)
+		return;
+	g_last_bus_poll_ms = now;
+
+	/* One unicast TXN; blocking RX is OK here — not on the TIM6 path. */
+	servo_bus_service();
 }
 
 void servo_feedback_snapshot(host_servo_feedback_t *dst, uint8_t count)

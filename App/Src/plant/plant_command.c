@@ -6,8 +6,10 @@
 #include "plant/plant_config_nvm.h"
 #include "plant/plugins/robstride.h"
 #include "plant/thermo.h"
+#include "plant/rx_sim/rx_sim.h"
 #include "host/host_uart_bridge.h"
 #include "host/soft_dfu.h"
+#include "host/pdb_link.h"
 #include <stdbool.h>
 
 static uint8_t g_mcu_state_readback;
@@ -25,6 +27,14 @@ void plant_command_image_dispatch_plant(const host_command_image_t *cmd)
 	uint8_t mcu_state = (uint8_t)cmd->system.mcu_state;
 	g_mcu_state_readback = mcu_state;
 
+	/* system.reserved bits0..3 (wire bits5..8): rx_sim children. */
+	rx_sim_apply_from_reserved(cmd->system.reserved);
+
+	/* Host ESTOP latches the PDB hard-ESTOP request; anything else clears
+	 * it -- only an explicit ESTOP command should assert the wire from
+	 * this path (link-loss fail-safe in pdb_link.c is independent). */
+	pdb_link_request_estop(mcu_state == PLANT_MCU_STATE_ESTOP);
+
 	if (mcu_state == PLANT_MCU_STATE_RECOVERY || mcu_state == PLANT_MCU_STATE_ESTOP) {
 		plant_recovery_all();
 		return;
@@ -35,6 +45,14 @@ void plant_command_image_dispatch_plant(const host_command_image_t *cmd)
 
 	plant_diag_release_actuator_can();
 	actuator_command_mount(cmd);
+	/* Servo/LED: peripheral_command_mount() after host FB TX. */
+}
+
+void peripheral_command_mount(const host_command_image_t *cmd)
+{
+	if (cmd == NULL)
+		return;
+
 	servo_command_mount(cmd);
 	led_command_mount(cmd);
 }
@@ -56,6 +74,8 @@ void plant_command_image_dispatch_debug(const host_command_image_t *cmd)
 		plant_config_on_command(cmd);
 		return;
 	}
+
+	pdb_link_request_estop(mcu_state == PLANT_MCU_STATE_ESTOP);
 
 	if (mcu_state == PLANT_MCU_STATE_RECOVERY || mcu_state == PLANT_MCU_STATE_ESTOP) {
 		plant_recovery_all();
@@ -92,6 +112,5 @@ void plant_command_image_dispatch_debug(const host_command_image_t *cmd)
 
 	plant_diag_release_actuator_can();
 	actuator_command_mount(cmd);
-	servo_command_mount(cmd);
-	led_command_mount(cmd);
+	peripheral_command_mount(cmd);
 }

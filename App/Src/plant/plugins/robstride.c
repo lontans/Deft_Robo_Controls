@@ -118,6 +118,46 @@ static plugin_status_t robstride_parse_rx(const actuator_config_t *cfg,
 	return PLUGIN_OK;
 }
 
+bool robstride_pack_feedback(const actuator_config_t *cfg,
+                             float position,
+                             float velocity,
+                             float torque,
+                             float temp_c,
+                             can_frame_t *frame_out)
+{
+	uint8_t motor_id;
+	uint16_t p, v, t, temp_raw;
+
+	if (cfg == NULL || frame_out == NULL || !cfg->enabled)
+		return false;
+
+	motor_id = (uint8_t)(cfg->motor_id & 0xFF);
+	/* data16 low byte = motor id (matches robstride_parse_rx). */
+	frame_out->id_type = CAN_ID_EXT;
+	frame_out->id = robstride_build_ext_id(RS02_COMM_FEEDBACK, motor_id, RS02_HOST_ID) &
+	                CAN_EXT_MASK;
+	frame_out->dlc = 8;
+
+	p = (uint16_t)float_to_uint(position, RS02_P_MIN, RS02_P_MAX, 16);
+	v = (uint16_t)float_to_uint(velocity, RS02_V_MIN, RS02_V_MAX, 16);
+	t = (uint16_t)float_to_uint(torque, RS02_T_MIN, RS02_T_MAX, 16);
+	if (temp_c < 0.0f)
+		temp_c = 0.0f;
+	if (temp_c > 200.0f)
+		temp_c = 200.0f;
+	temp_raw = (uint16_t)(temp_c * 10.0f);
+
+	frame_out->data[0] = (uint8_t)(p >> 8);
+	frame_out->data[1] = (uint8_t)(p & 0xFF);
+	frame_out->data[2] = (uint8_t)(v >> 8);
+	frame_out->data[3] = (uint8_t)(v & 0xFF);
+	frame_out->data[4] = (uint8_t)(t >> 8);
+	frame_out->data[5] = (uint8_t)(t & 0xFF);
+	frame_out->data[6] = (uint8_t)(temp_raw >> 8);
+	frame_out->data[7] = (uint8_t)(temp_raw & 0xFF);
+	return true;
+}
+
 plugin_status_t robstride_set_run_mode(const actuator_config_t *cfg,
                                        uint8_t run_mode,
                                        can_frame_t *frame_out)

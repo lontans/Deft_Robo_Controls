@@ -37,11 +37,12 @@ void plant_config_init(void)
 		.default_profile_accel = DXL_DEFAULT_PROFILE_ACCEL,
 	};
 
+	/* Top neck (ID 2): usable ~575..2656 on bench; keep margin inside stops. */
 	servo_table[1] = (servo_config_t){
 		.id = 2,
 		.enabled = true,
-		.pos_min = 512,
-		.pos_max = 3072,
+		.pos_min = 700,
+		.pos_max = 2500,
 		.position_p_gain = DXL_DEFAULT_POSITION_P_GAIN,
 		.position_d_gain = DXL_DEFAULT_POSITION_D_GAIN,
 		.default_profile_vel = 180,

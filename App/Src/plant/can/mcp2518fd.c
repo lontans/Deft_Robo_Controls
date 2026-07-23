@@ -767,7 +767,10 @@ static bool mcp_txq_service_nonblock(mcp2518_dev_t *d)
 		return false;
 
 	if ((sta & TXQ_STA_TXQEIF) != 0u) {
-		/* Empty: only clear ABAT if we armed it — skip C1CON SPI otherwise. */
+		/* Empty: only clear ABAT if we armed it — skip C1CON SPI otherwise.
+		 * Do not merge TXQUA here: empty-bus NACK keeps TXQ busy most of the
+		 * time, and an 8-byte STA+UA read taxes that common path. Ready-path
+		 * UA stays a separate read in mcp_hw_txq_load. */
 		if (s_aborting[rail])
 			mcp_txq_clear_abat(d);
 		s_busy_since_ms[rail] = 0u;
@@ -857,16 +860,6 @@ static void mcp_enable_rx_irq(mcp2518_dev_t *d)
 
 	ciint |= C1INT_RXIE;
 	mcp_write32(d, REG_C1INT, ciint);
-}
-
-static bool mcp_rx_fifo_not_empty(mcp2518_dev_t *d)
-{
-	uint8_t sta = 0u;
-
-	if (!mcp_read_buf(d, REG_C1FIFOSTA(MCP_RX_FIFO_REG), &sta, 1u))
-		return false;
-
-	return (sta & FIFO_STA_TFNRFNIF) != 0u;
 }
 
 static void mcp_rx_fifo_uinc(mcp2518_dev_t *d)
@@ -985,13 +978,21 @@ static void mcp_unpack_to_frame(uint32_t r0, uint32_t r1,
 
 static bool mcp_hw_pop_rx(mcp2518_dev_t *d, can_frame_t *frame)
 {
-	if (!mcp_rx_fifo_not_empty(d))
-		return false;
-
-	uint32_t ua = mcp_read32(d, REG_C1FIFOUA(MCP_RX_FIFO_REG));
-	uint16_t ram = (uint16_t)(MCP_RAM_BASE + (ua & 0x0FFFu));
+	/* FIFOSTA (0x060+12n) and FIFOUA (+4) are adjacent — one SPI for both. */
+	uint8_t blk[8];
+	uint32_t ua;
+	uint16_t ram;
 	uint8_t raw[16];
 	uint32_t r0, r1, r2, r3;
+
+	if (!mcp_read_buf(d, REG_C1FIFOSTA(MCP_RX_FIFO_REG), blk, 8u))
+		return false;
+	if ((blk[0] & FIFO_STA_TFNRFNIF) == 0u)
+		return false;
+
+	ua = (uint32_t)blk[4] | ((uint32_t)blk[5] << 8) |
+	     ((uint32_t)blk[6] << 16) | ((uint32_t)blk[7] << 24);
+	ram = (uint16_t)(MCP_RAM_BASE + (ua & 0x0FFFu));
 
 	if (!mcp_read_buf(d, ram, raw, 16u))
 		return false;

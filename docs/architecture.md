@@ -2,14 +2,15 @@
 
 ## Overview
 
-Two execution contexts share data through **staging buffers** — no malloc on the hot path.
+Two execution contexts share data through **staging buffers** under bare-metal; under RTOS there are three tasks. No malloc on the hot path.
 
 | Context | Rate | Entry | Job |
 |---------|------|-------|-----|
-| **Main loop** | As fast as `app_run()` spins | `app_run()` | Host RX/TX, command dispatch |
-| **Plant loop** | 500 Hz (TIM6) | `control_loop_tick()` | CAN apply/capture for all enabled actuators |
+| **Host** | As fast as HostTask / `app_run` spins | `app_host_service()` | USB RX, diag, pdb, light heartbeat |
+| **Plant** | 500 Hz (TIM6 notify) | `app_plant_service()` | Actuator apply/capture + FB TX |
+| **Peripheral** | Best-effort (below plant) | `app_peripheral_service()` | Servo/LED mount, DXL bus, SPI3, CAN router poll |
 
-`USE_FREERTOS_SCHEDULER` in `App/Inc/app.h` selects bare-metal superloop (`0`, default) vs FreeRTOS (`1`). Both paths keep the same staging handoffs; RTOS only moves *where* `app_run` and the plant tick run.
+`USE_FREERTOS_SCHEDULER` in `App/Inc/app.h` selects bare-metal superloop (`0`) vs FreeRTOS CMSIS-RTOS **v2** (`1`, default; `osThreadNew`, heap 48 KB). Bare-metal `app_run` calls host → plant → peripheral sequentially. Under RTOS: **Host**, **Plant**, and **Peripheral** share `osPriorityAboveNormal` (time-slice keeps USB ack + DXL/LED alive under plant load); Plant waits on TIM6 `vTaskNotifyGiveFromISR` (TIM6 NVIC=6; USB NVIC 0); DXL polled UART is wrapped in `vTaskSuspendAll`. Metrics: `act_lap_ms` / `act_lap_peak_ms` = PlantTask; `periph_lap_ms` / `periph_lap_peak_ms` = PeripheralTask; `cmd_rx_seq` = USB RX stage; `cmd_applied_seq` = plant mount.
 
 The host publishes **desire** commands at its own rate (hold-last-command). The plant runs at 500 Hz independently.
 
@@ -257,7 +258,7 @@ On each TIM6 period:
 | System block | **32 B** health + lap timing |
 | Actuator slot | **22 B** (20 MIT + 2 B meta identity on fb) |
 | USB `pdb[]` | **64 B**; DEBUG mailbox = `pdb[0..31]` until dedicated DEBUG messages |
-| Controls ↔ PDB UART | TBD — soft-kill in-band; hard ESTOP = active-low wire |
+| Controls ↔ PDB UART | **LIVE** (`UART4_MODE_PDB`): UART4 PC10/PC11, IT RX-to-idle + IT TX, `pdb_link` on HostTask; soft-kill park / rail-enable APIs still unfinished; hard ESTOP GPIO placeholder PA0 |
 | Host stream rate | ~30–50 Hz typical; USB FS has headroom at 672 B |
 
 ```text

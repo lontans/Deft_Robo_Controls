@@ -61,20 +61,27 @@ def test_system_timing_parse() -> None:
         "<IHHI", buf, 0, HOST_FEEDBACK_MAGIC, HOST_LAYOUT_VERSION, IMAGE_BYTES, 1
     )
     struct.pack_into("<IHHBB", buf, 12, 0, 15, 40, 2, 3)
-    struct.pack_into("<II", buf, 12 + 18, 0xAABBCCDD, 0x11223344)
+    struct.pack_into("<IIHH", buf, 12 + 18, 0xAABBCCDD, 0x11223344, 7, 12)
     timing = parse_system_timing(bytes(buf))
     assert timing is not None
-    assert timing["lap_ms"] == 15
-    assert timing["lap_max_ms"] == 40
+    assert timing["act_lap_ms"] == 15
+    assert timing["act_lap_peak_ms"] == 40
     assert timing["ticks_svc"] == 2
     assert timing["ticks_pending"] == 3
+    assert timing["cmd_rx_seq"] == 0xAABBCCDD
+    assert timing["cmd_applied_seq"] == 0x11223344
+    assert timing["periph_lap_ms"] == 7
+    assert timing["periph_lap_peak_ms"] == 12
+    # legacy aliases
+    assert timing["lap_ms"] == 15
     assert timing["last_image_id"] == 0xAABBCCDD
-    assert timing["last_applied_image_id"] == 0x11223344
     hdr = parse_feedback_header(bytes(buf))
     assert hdr is not None
-    assert hdr["lap_ms"] == 15
-    assert hdr["last_image_id"] == 0xAABBCCDD
-    assert hdr["last_applied_image_id"] == 0x11223344
+    assert hdr["act_lap_ms"] == 15
+    assert hdr["cmd_rx_seq"] == 0xAABBCCDD
+    assert hdr["cmd_applied_seq"] == 0x11223344
+    assert hdr["periph_lap_ms"] == 7
+    assert hdr["periph_lap_peak_ms"] == 12
 
 
 def test_debug_command_magic() -> None:

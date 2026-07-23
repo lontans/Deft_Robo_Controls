@@ -179,6 +179,8 @@ def measure(
     stage_vs_applied: List[int] = []
     lap_ms: List[int] = []
     lap_max: List[int] = []
+    periph_lap_ms: List[int] = []
+    periph_lap_max: List[int] = []
     ticks_pend: List[int] = []
     ticks_svc: List[int] = []
     last_sent: Optional[int] = None
@@ -200,8 +202,8 @@ def measure(
                     lag = (last_sent - ack) & 0xFF
                     if lag <= 128:
                         ack_lags.append(lag)
-                img_id = hdr.get("last_image_id")
-                app_id = hdr.get("last_applied_image_id")
+                img_id = hdr.get("cmd_rx_seq", hdr.get("last_image_id"))
+                app_id = hdr.get("cmd_applied_seq", hdr.get("last_applied_image_id"))
                 if img_id is not None and app_id is not None:
                     img_id_samples.append(
                         (time.perf_counter(), int(img_id), int(app_id))
@@ -210,10 +212,17 @@ def measure(
                         img_lags.append(int(last_sent_full) - int(img_id))
                         applied_lags.append(int(last_sent_full) - int(app_id))
                     stage_vs_applied.append(int(img_id) - int(app_id))
-                if hdr.get("lap_ms") is not None:
-                    lap_ms.append(int(hdr["lap_ms"]))
-                if hdr.get("lap_max_ms") is not None:
-                    lap_max.append(int(hdr["lap_max_ms"]))
+                act = hdr.get("act_lap_ms", hdr.get("lap_ms"))
+                if act is not None:
+                    lap_ms.append(int(act))
+                act_pk = hdr.get("act_lap_peak_ms", hdr.get("lap_max_ms"))
+                if act_pk is not None:
+                    lap_max.append(int(act_pk))
+                if hdr.get("periph_lap_ms") is not None:
+                    periph_lap_ms.append(int(hdr["periph_lap_ms"]))
+                per_pk = hdr.get("periph_lap_peak_ms", hdr.get("periph_lap_max_ms"))
+                if per_pk is not None:
+                    periph_lap_max.append(int(per_pk))
                 if hdr.get("ticks_pending") is not None:
                     ticks_pend.append(int(hdr["ticks_pending"]))
                 if hdr.get("ticks_svc") is not None:
@@ -274,17 +283,19 @@ def measure(
         f"  raw_fb_hz~{raw_fb_hz:.1f}" if raw_fb_hz is not None else "  raw_fb_hz=n/a",
         f"  frames={raw_fb}",
     )
-    print(f"  ack_lag(8b): {istat(ack_lags)}")
-    print(f"  img_lag(u32 staged):   {istat(img_lags)}")
-    print(f"  app_lag(u32 applied):  {istat(applied_lags)}")
-    print(f"  stage-applied gap:     {istat(stage_vs_applied)}")
+    print(f"  cmd_seq_lag (8b last_command_seq): {istat(ack_lags)}")
+    print(f"  cmd_rx_lag (host−cmd_rx_seq):      {istat(img_lags)}")
+    print(f"  cmd_applied_lag (host−applied):    {istat(applied_lags)}")
+    print(f"  cmd_rx−applied gap:                {istat(stage_vs_applied)}")
     if staged_hz is not None and applied_hz is not None:
         print(
-            f"  image_id advance: staged_hz~{staged_hz:.1f}  "
+            f"  cmd seq advance: rx_hz~{staged_hz:.1f}  "
             f"applied_hz~{applied_hz:.1f}  (host target {hz:.0f})"
         )
-    print(f"  lap_ms:  {istat(lap_ms)}")
-    print(f"  lap_max: {istat(lap_max)}")
+    print(f"  act_lap_ms:         {istat(lap_ms)}")
+    print(f"  act_lap_peak_ms:    {istat(lap_max)}")
+    print(f"  periph_lap_ms:      {istat(periph_lap_ms)}")
+    print(f"  periph_lap_peak_ms: {istat(periph_lap_max)}")
     print(f"  ticks_pending: {istat(ticks_pend)}")
     print(f"  ticks_svc:     {istat(ticks_svc)}")
     if held and rx_sim:
@@ -303,9 +314,9 @@ def measure(
     )
     ok_img = (not img_lags) or (max(img_lags) <= 2)
     print(
-        f"  PASS_ack_lag<=2: {ok_lag}  PASS_ack_lag_p95<=2: {ok_lag_p95}  "
+        f"  PASS_cmd_seq_lag<=2: {ok_lag}  PASS_cmd_seq_lag_p95<=2: {ok_lag_p95}  "
         f"PASS_fb_hz>=20: {fb_ok}  PASS_rx_fresh: {ok_rx}  "
-        f"PASS_img_lag<=2: {ok_img}"
+        f"PASS_cmd_rx_lag<=2: {ok_img}"
     )
     return {
         "label": label,
@@ -323,6 +334,8 @@ def measure(
         "applied_hz": applied_hz,
         "lap_mean": statistics.mean(lap_ms) if lap_ms else None,
         "lap_max_max": max(lap_max) if lap_max else None,
+        "periph_lap_mean": statistics.mean(periph_lap_ms) if periph_lap_ms else None,
+        "periph_lap_max_max": max(periph_lap_max) if periph_lap_max else None,
         "pend_max": max(ticks_pend) if ticks_pend else None,
         "svc_mean": statistics.mean(ticks_svc) if ticks_svc else None,
         "rx_fresh_max": rx_fresh_max,
@@ -422,9 +435,15 @@ def main() -> int:
         app_s = f"{app_hz:.0f}" if app_hz is not None else "-"
         app_lag = r.get("app_lag_max")
         al_s = str(app_lag) if app_lag is not None else "-"
+        act = r.get("lap_mean")
+        act_s = f"{act:.1f}" if act is not None else "-"
+        per = r.get("periph_lap_mean")
+        per_s = f"{per:.1f}" if per is not None else "-"
         print(
             f"  {r['label']:18s}  n={r['n_slots']:2d}  fb_hz={fb_s:>5s}  "
             f"ack_lag_max={lag_s:>3s}  "
+            f"act_lap={act_s:>4s}  "
+            f"periph_lap={per_s:>4s}  "
             f"app_lag_max={al_s:>3s}  "
             f"applied_hz={app_s:>4s}  "
             f"rx_fresh={rx_s:>3s}  "

@@ -22,8 +22,10 @@ void spi_can_port_init(void)
 	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11 | GPIO_PIN_1, GPIO_PIN_SET);
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
 #if USE_FREERTOS_SCHEDULER
-	if (g_spi1_mutex == NULL)
-		g_spi1_mutex = xSemaphoreCreateMutex();
+	/* Defer xSemaphoreCreateMutex until first lock after osKernelStart —
+	 * creating a mutex before the scheduler runs uses portENTER_CRITICAL
+	 * while uxCriticalNesting is still 0xaaaaaaaa, which leaves BASEPRI
+	 * raised and deadlocks HAL_Delay (TIM7) in mcp2518_init. */
 #else
 	g_spi1_locked = false;
 #endif
@@ -72,12 +74,21 @@ bool spi_can_port_int_active(uint8_t rail)
 #if USE_FREERTOS_SCHEDULER
 static bool spi1_lock(void)
 {
+	if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED)
+		return true;
+	if (g_spi1_mutex == NULL)
+		g_spi1_mutex = xSemaphoreCreateMutex();
+	if (g_spi1_mutex == NULL)
+		return true;
 	return xSemaphoreTake(g_spi1_mutex, SPI1_MUTEX_WAIT_TICKS) == pdTRUE;
 }
 
 static void spi1_unlock(void)
 {
-	xSemaphoreGive(g_spi1_mutex);
+	if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED)
+		return;
+	if (g_spi1_mutex != NULL)
+		xSemaphoreGive(g_spi1_mutex);
 }
 #else
 static void spi1_lock(void)

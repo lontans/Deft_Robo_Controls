@@ -79,9 +79,7 @@ void MX_SPI3_Init(void)
   hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
-  /* APB1 ~= 85 MHz: /8 ~= 10.6 MHz exceeds MAX31855 (~5 MHz max).
-   * /32 ~= 2.7 MHz is safe for thermo and still fine for SK9822. */
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -149,7 +147,9 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN SPI3_MspInit 1 */
-
+    /* Priority 6: same band as UART4/TIM6; safe under configMAX_SYSCALL=5. */
+    HAL_NVIC_SetPriority(SPI3_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(SPI3_IRQn);
   /* USER CODE END SPI3_MspInit 1 */
   }
 }
@@ -192,7 +192,7 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* spiHandle)
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5);
 
   /* USER CODE BEGIN SPI3_MspDeInit 1 */
-
+    HAL_NVIC_DisableIRQ(SPI3_IRQn);
   /* USER CODE END SPI3_MspDeInit 1 */
   }
 }

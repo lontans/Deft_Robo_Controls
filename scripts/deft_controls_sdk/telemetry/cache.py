@@ -63,6 +63,8 @@ class SessionState:
     stream_ack_lag: Optional[int] = None
     lap_ms: Optional[int] = None
     lap_max_ms: Optional[int] = None
+    periph_lap_ms: Optional[int] = None
+    periph_lap_max_ms: Optional[int] = None
     ticks_pending: Optional[int] = None
     svd_present: bool = False
     pdu_tag: Optional[str] = None
@@ -379,6 +381,8 @@ class TelemetryCache:
         pdu_tag: Optional[str],
         lap_ms: Optional[int],
         lap_max_ms: Optional[int],
+        periph_lap_ms: Optional[int] = None,
+        periph_lap_max_ms: Optional[int] = None,
         ticks_pending: Optional[int],
         svd_present: bool,
         actuators: List[Optional[Dict[str, Any]]],
@@ -398,6 +402,8 @@ class TelemetryCache:
             self._state.age_s = 0.0
             self._state.lap_ms = lap_ms
             self._state.lap_max_ms = lap_max_ms
+            self._state.periph_lap_ms = periph_lap_ms
+            self._state.periph_lap_max_ms = periph_lap_max_ms
             self._state.ticks_pending = ticks_pending
             self._state.svd_present = svd_present
             self._state.pdu_tag = pdu_tag

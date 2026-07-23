@@ -2,23 +2,29 @@
 #include "plant/actuator.h"
 #include "plant/servo.h"
 #include "plant/plant_timing.h"
+#include "plant/rx_sim/rx_sim_pdu.h"
 #include "host/host_link.h"
+#include "app.h"
 #include "main.h"
 #include "tim.h"
+
+#if USE_FREERTOS_SCHEDULER
+#include "FreeRTOS.h"
+#include "task.h"
+#endif
 
 #define HEARTBEAT_PORT GPIOC
 #define HEARTBEAT_PIN  GPIO_PIN_3
 #define HEARTBEAT_TOGGLE_EVERY 250u
-/* Was 8: under all×25 overload one apply already ≥2 ms, so draining 8 ticks
- * in one superloop lap made lap≈16–20 ms and starved host_link_poll_tx
- * (plant FB ≤1/lap → fb_hz≈63 while ticks_svc≈8). Cap at 1 so each lap
- * returns to USB RX/TX; when apply fits in the TIM6 period, pending stays
- * 0–1 and plant still runs at 500 Hz with full per-tick MIT. */
 #define CONTROL_TICK_BURST_MAX 1u
 #define CONTROL_TICK_PENDING_MAX 255u
 
 volatile uint32_t g_control_tick_count = 0;
 static volatile uint8_t g_control_ticks_pending;
+
+#if USE_FREERTOS_SCHEDULER
+static TaskHandle_t s_plant_task;
+#endif
 
 void control_loop_start(void)
 {
@@ -30,17 +36,18 @@ void control_loop_init(void)
 {
 }
 
+#if USE_FREERTOS_SCHEDULER
+void control_loop_set_plant_task(void *task_handle)
+{
+	s_plant_task = (TaskHandle_t)task_handle;
+}
+#endif
+
 void control_loop_service(void)
 {
 	uint32_t primask;
 	uint8_t n;
 
-	/* g_control_ticks_pending is also written (increment only) from the
-	 * priority-0 TIM6 ISR (control_loop_tick()). Reading it and clearing the
-	 * serviced count with a plain "-=" is two separate accesses -- if the ISR
-	 * fires between this function's load and store, its increment would be
-	 * silently overwritten by our stale-based store. Short critical section,
-	 * same pattern already used for other main<->TIM6 shared state. */
 	primask = __get_PRIMASK();
 	__disable_irq();
 	n = g_control_ticks_pending;
@@ -52,9 +59,6 @@ void control_loop_service(void)
 	if (n == 0u)
 		return;
 
-	/* Mount the latest staged plant command here (not in host_link_poll_rx)
-	 * so mount cost is paid once per serviced tick, not once per superloop
-	 * spin -- see host_link_apply_pending_plant(). */
 	host_link_apply_pending_plant();
 
 	plant_timing_note_service(n);
@@ -63,8 +67,10 @@ void control_loop_service(void)
 		actuator_apply_desire();
 		actuator_capture_state();
 		if (n == 0u) {
+			/* FB snapshot only — no UART; PeripheralTask owns DXL bus TXN. */
 			servo_apply_desire();
 			servo_capture_state();
+			rx_sim_pdu_tick();
 		}
 	}
 }
@@ -76,6 +82,17 @@ void control_loop_tick(void)
 		HAL_GPIO_TogglePin(HEARTBEAT_PORT, HEARTBEAT_PIN);
 	if (g_control_ticks_pending < CONTROL_TICK_PENDING_MAX)
 		g_control_ticks_pending++;
+
+#if USE_FREERTOS_SCHEDULER
+	/* Handle is NULL until PlantTask starts (after osKernelStart).
+	 * TIM6 NVIC must be ≥6 so FromISR is legal (syscall ceiling 5). */
+	if (s_plant_task != NULL) {
+		BaseType_t hpw = pdFALSE;
+
+		vTaskNotifyGiveFromISR(s_plant_task, &hpw);
+		portYIELD_FROM_ISR(hpw);
+	}
+#endif
 }
 
 uint8_t control_loop_pending_get(void)

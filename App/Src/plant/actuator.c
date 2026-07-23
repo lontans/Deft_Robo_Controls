@@ -1,12 +1,15 @@
 #include "plant/actuator.h"
 #include "plant/plugin_schema/plugin_table.h"
 #include "plant/can/can_router.h"
+#include "plant/can/mcp2518fd.h"
 #include "plant/can/spi_can_router.h"
 #include "plant/plugins/robstride.h"
 #include "plant/plugins/damiao.h"
 #include "plant/plugins/zeroerr.h"
 #include "plant/plant_diag.h"
 #include "plant/plant_command.h"
+#include "plant/rx_sim/rx_sim.h"
+#include "plant/rx_sim/rx_sim_actuator.h"
 #include "host/host_link.h"
 #include "plant/plant_crit.h"
 #include <math.h>
@@ -74,6 +77,7 @@ bool actuator_any_non_idle_live(void)
 void plant_recovery_all(void)
 {
 	can_frame_t frame;
+	uint8_t mcp_rails = 0u;
 
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
 		if (!actuator_table[i].enabled)
@@ -82,12 +86,12 @@ void plant_recovery_all(void)
 		if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
 			if (robstride_send_reset(&actuator_table[i], &frame) != PLUGIN_OK)
 				continue;
-			/* MCP: blocking send_now (probe path). Enqueue+try_flush often
-			 * drops before rail TX completes — only FDCAN LEDs blinked. */
+			/* Non-blocking on MCP — send_now/mcp2518_send uses HAL_Delay and
+			 * pegs the superloop (multi-tick backlog under burst=1). Enqueue +
+			 * bounded prepare/flush below; plant tick drains any remainder. */
+			(void)can_tx_enqueue(actuator_table[i].bus, &frame);
 			if (actuator_table[i].bus >= CAN_BUS_CH4)
-				(void)spi_can_router_send_now(actuator_table[i].bus, &frame);
-			else
-				(void)can_tx_enqueue(actuator_table[i].bus, &frame);
+				mcp_rails |= (uint8_t)(1u << (uint8_t)(actuator_table[i].bus - CAN_BUS_CH4));
 			continue;
 		}
 
@@ -105,9 +109,28 @@ void plant_recovery_all(void)
 		}
 	}
 
+	/* Push queued MCP resets onto the 1-deep TXQ without blocking waits. */
+	for (uint8_t pass = 0u; pass < 4u; pass++) {
+		for (uint8_t rail = 0u; rail < 3u; rail++) {
+			can_bus_id_t bus;
+			can_status_t st;
+
+			if ((mcp_rails & (1u << rail)) == 0u)
+				continue;
+			bus = (can_bus_id_t)(CAN_BUS_CH4 + rail);
+			mcp2518_prepare_tx(bus);
+			st = spi_can_router_tx_flush(bus);
+			if (st == CAN_ERR_EMPTY)
+				mcp_rails &= (uint8_t)~(1u << rail);
+		}
+		if (mcp_rails == 0u)
+			break;
+	}
+
 	can_router_poll();
 	plant_diag_release_actuator_can();
 	actuator_desire_clear();
+	rx_sim_clear();
 }
 
 static bool actuator_desire_is_idle(const actuator_desire_t *d)
@@ -234,6 +257,7 @@ void actuator_apply_desire(void)
 		if (actuator_table[i].protocol == PROTO_ROBSTRIDE) {
 			robstride_apply_cycle(&actuator_table[i], desire,
 			                      &actuator_state_live[i], i);
+			rx_sim_actuator_on_apply(&actuator_table[i], desire);
 			continue;
 		}
 

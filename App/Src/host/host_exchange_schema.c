@@ -42,7 +42,14 @@ _Static_assert(offsetof(host_actuator_feedback_t, temperature) == 12u, "");
 _Static_assert(offsetof(host_actuator_feedback_t, fault)       == 16u, "");
 _Static_assert(offsetof(host_actuator_feedback_t, meta)        == 20u, "");
 
-_Static_assert(offsetof(host_system_feedback_t, lap_ms) == 4u, "system timing");
+_Static_assert(offsetof(host_system_feedback_t, act_lap_ms) == 4u, "act lap");
+_Static_assert(offsetof(host_system_feedback_t, act_lap_peak_ms) == 6u, "act peak");
+_Static_assert(offsetof(host_system_feedback_t, cmd_rx_seq) == 18u, "cmd rx seq");
+_Static_assert(offsetof(host_system_feedback_t, cmd_applied_seq) == 22u,
+	"cmd applied seq");
+_Static_assert(offsetof(host_system_feedback_t, periph_lap_ms) == 26u, "periph lap");
+_Static_assert(offsetof(host_system_feedback_t, periph_lap_peak_ms) == 28u,
+	"periph peak");
 
 /*
  * HOST_LAYOUT_VERSION 2

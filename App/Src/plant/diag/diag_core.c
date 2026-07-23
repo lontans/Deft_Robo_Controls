@@ -215,7 +215,9 @@ bool plant_diag_skip_actuator_can(void)
 	if (plant_diag_quiet_period_active())
 		return true;
 
-	return servo_host_session_active();
+	/* Servo host session used to skip actuator CAN (DXL 50 ms miss timeout
+	 * pegged the lap). Real DXLs answer quickly — allow RS02 + DXL together. */
+	return false;
 }
 
 bool plant_diag_skip_servo_bus(void)

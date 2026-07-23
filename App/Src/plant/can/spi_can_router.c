@@ -68,6 +68,15 @@ static void spi_rx_push(can_bus_id_t bus, const can_frame_t *frame)
 	rx_rings[rail].head = (rx_rings[rail].head + 1u) % SPI_CAN_QUEUE_DEPTH;
 }
 
+can_status_t spi_can_router_rx_push(can_bus_id_t bus, const can_frame_t *frame)
+{
+	if (!spi_can_bus_valid(bus) || frame == NULL)
+		return CAN_ERR_PARAM;
+
+	spi_rx_push(bus, frame);
+	return CAN_OK;
+}
+
 static can_status_t spi_backend_send(can_bus_id_t bus, const can_frame_t *frame)
 {
 	if (!spi_can_bus_valid(bus) || frame == NULL)

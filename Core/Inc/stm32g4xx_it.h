@@ -57,7 +57,10 @@ void UART4_IRQHandler(void);
 void TIM6_DAC_IRQHandler(void);
 void TIM7_DAC_IRQHandler(void);
 /* USER CODE BEGIN EFP */
-
+void SPI3_IRQHandler(void);
+void EXTI0_IRQHandler(void);
+void EXTI3_IRQHandler(void);
+void EXTI15_10_IRQHandler(void);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus

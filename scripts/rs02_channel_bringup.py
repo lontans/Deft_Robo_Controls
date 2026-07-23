@@ -39,9 +39,65 @@ CANONICAL_SLOT: Dict[int, int] = {
 DEFAULT_TELEOP_ANGLE_RAD = 2.0 * math.pi
 DEFAULT_TELEOP_RATE_RAD_S = math.pi / 4.0
 
+# MIT encode range in firmware (robstride.h RS02_P_MIN/MAX). Commands outside
+# this clamp; FB near ±12.57 can look like a ~25 rad jump if probe vs plant disagree.
+RS02_P_MIN = -12.57
+RS02_P_MAX = 12.57
+RS02_P_SPAN = RS02_P_MAX - RS02_P_MIN
+
 
 def _conn(hub: ControlsPcbHub):
     return hub._connection  # noqa: SLF001
+
+
+def rs02_near(a: float, b: float, eps: float = 0.40) -> bool:
+    """True if poses match linearly or as opposite ends of the MIT rail."""
+    d = abs(float(a) - float(b))
+    return d <= eps or abs(d - RS02_P_SPAN) <= eps
+
+
+def rs02_resolve_start(
+    probe_pos: Optional[float], plant_fb: Optional[float]
+) -> Optional[float]:
+    """Prefer probe when plant FB is stale across the ±12.57 rail."""
+    if probe_pos is None and plant_fb is None:
+        return None
+    if probe_pos is None:
+        return float(plant_fb)  # type: ignore[arg-type]
+    if plant_fb is None:
+        return float(probe_pos)
+    if rs02_near(probe_pos, plant_fb):
+        return float(plant_fb)
+    return float(probe_pos)
+
+
+def rs02_plan_angle(
+    start: float,
+    want_angle: float,
+    *,
+    margin: float = 0.20,
+) -> float:
+    """Signed travel that stays inside the MIT range (flip/shrink if needed)."""
+    travel = abs(float(want_angle))
+    if travel < 1e-6:
+        return 0.0
+    prefer = 1.0 if want_angle >= 0.0 else -1.0
+    lo = RS02_P_MIN + margin
+    hi = RS02_P_MAX - margin
+    room_pos = max(0.0, hi - float(start))
+    room_neg = max(0.0, float(start) - lo)
+
+    def _fit(sign: float) -> float:
+        room = room_pos if sign > 0.0 else room_neg
+        return sign * min(travel, room)
+
+    primary = _fit(prefer)
+    alternate = _fit(-prefer)
+    if abs(primary) >= travel - 1e-3:
+        return primary
+    if abs(alternate) > abs(primary) + 1e-6:
+        return alternate
+    return primary
 
 
 def _parse_motor_id(raw: Optional[str]) -> Optional[int]:
@@ -197,7 +253,7 @@ def tiny_teleop(
     plant_fb = sample_position(hub, slot)
     if start_pos is not None:
         pos_cmd = float(start_pos)
-        if plant_fb is not None and abs(plant_fb - pos_cmd) > 0.35:
+        if plant_fb is not None and not rs02_near(plant_fb, pos_cmd, 0.40):
             print(
                 f"  note: plant FB {plant_fb:+.4f} disagrees with probe "
                 f"{pos_cmd:+.4f} — soft-engage from probe (avoid stale snap)"
@@ -207,9 +263,20 @@ def tiny_teleop(
     else:
         return False, "no plant feedback for start position"
 
-    sign = 1.0 if angle_rad >= 0.0 else -1.0
+    planned = rs02_plan_angle(pos_cmd, angle_rad)
+    if abs(planned) < 0.5:
+        return False, (
+            f"no MIT room for teleop at {pos_cmd:+.4f} "
+            f"(range [{RS02_P_MIN}, {RS02_P_MAX}])"
+        )
+    if abs(abs(planned) - abs(angle_rad)) > 0.05:
+        print(
+            f"  note: angle {angle_rad:+.4f} → {planned:+.4f} to stay in "
+            f"MIT [{RS02_P_MIN}, {RS02_P_MAX}]"
+        )
+    sign = 1.0 if planned >= 0.0 else -1.0
     v_max = abs(rate_rad_s)
-    travel = abs(angle_rad)
+    travel = abs(planned)
 
     desires = {s: ActuatorDesire() for s in range(ACTUATOR_COUNT)}
 
@@ -228,7 +295,7 @@ def tiny_teleop(
                 act = parse_actuator_feedback(raw, slot)
                 if act is not None:
                     fb = float(act["position"])
-                    if abs(fb - pos_cmd) <= 0.40:
+                    if rs02_near(fb, pos_cmd, 0.40):
                         pos_cmd = fb
                         desires[slot] = ActuatorDesire(
                             position=pos_cmd, velocity=0.0, kp=kp, kd=kd

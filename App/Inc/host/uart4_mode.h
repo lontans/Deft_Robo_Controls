@@ -11,8 +11,18 @@
  *                           channel of the primary USB host_exchange link so
  *                           a host-side script can bridge them to a real
  *                           serial terminal / vendor tool.
+ * UART4_MODE_PDB:           PC10/PC11 are wired to the Power Distribution
+ *                           Board (see docs/pdb-uart-v1.md, ADR-001 in
+ *                           docs/decisions.md). This is what this hardware
+ *                           actually ships with — TELEM/DAMIAO_BRIDGE are
+ *                           retained only for a board revision that doesn't
+ *                           populate the PDB connector; on any board that
+ *                           does, those two modes drive the wrong protocol
+ *                           onto wires that go to the power board, not just
+ *                           "PDB telemetry unavailable while selected."
  */
 #define UART4_MODE_TELEM         0
 #define UART4_MODE_DAMIAO_BRIDGE 1
+#define UART4_MODE_PDB           2
 
-#define UART4_MODE  UART4_MODE_TELEM
+#define UART4_MODE  UART4_MODE_PDB

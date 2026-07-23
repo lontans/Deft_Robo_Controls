@@ -6,6 +6,7 @@
 #include "plant/plant_config_nvm.h"
 #include "plant/thermo.h"
 #include "host/host_uart_bridge.h"
+#include "host/pdb_link.h"
 #include <string.h>
 
 void plant_feedback_image_fetch_plant(host_feedback_image_t *out)
@@ -17,8 +18,8 @@ void plant_feedback_image_fetch_plant(host_feedback_image_t *out)
 	actuator_feedback_snapshot(out->actuator_feedback, HOST_EXCHANGE_ACTUATOR_SLOTS);
 	servo_feedback_snapshot(out->servos, HOST_EXCHANGE_SERVO_SLOTS);
 	led_feedback_snapshot(&out->leds[0]);
-	/* Plant path: pdb[] reserved for power mirror — no DEBUG tags. */
-	memset(out->pdb, 0, sizeof(out->pdb));
+	/* Plant path: pdb[] is the PDB power-board mirror (ADR-001) — no DEBUG tags. */
+	pdb_link_fill_mirror(out->pdb);
 }
 
 void plant_feedback_image_fetch_debug_mailbox(host_pdu_feedback_t *pdu)

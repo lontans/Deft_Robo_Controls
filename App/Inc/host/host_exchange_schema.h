@@ -55,8 +55,8 @@ typedef struct __attribute__((packed)) {
 	uint32_t last_command_seq    : 8;
 	uint32_t plant_block         : 7;
 	/* Plant timing (was SVD/thermo PDU overlay) */
-	uint16_t lap_ms;
-	uint16_t lap_max_ms;
+	uint16_t act_lap_ms;       /* PlantTask: last apply+FB TX duration */
+	uint16_t act_lap_peak_ms;  /* sticky peak of act_lap_ms (reset via plant_timing_reset_peaks) */
 	uint8_t  ticks_svc;
 	uint8_t  ticks_pending;
 	uint16_t usb_rx_drop;
@@ -65,7 +65,16 @@ typedef struct __attribute__((packed)) {
 	uint8_t  kill_reason;
 	uint8_t  estop_sense;
 	uint8_t  reserved0;
-	uint8_t  reserved[14]; /* pad struct to 32 B */
+	/* Offsets 18..31 — CMD header.seq readbacks + peripheral lap.
+	 * cmd_rx_seq:      header.seq when HostTask USB-RX staged the image.
+	 * cmd_applied_seq: header.seq when PlantTask mounted actuators.
+	 * last_command_seq (word0): low 8 bits of cmd_rx_seq (legacy ack).
+	 * periph_lap_*: PeripheralTask last/peak service (DXL/LED/SPI3). */
+	uint32_t cmd_rx_seq;
+	uint32_t cmd_applied_seq;
+	uint16_t periph_lap_ms;
+	uint16_t periph_lap_peak_ms;
+	uint8_t  reserved[2]; /* pad struct to 32 B */
 } host_system_feedback_t;
 
 typedef struct __attribute__((packed)) {

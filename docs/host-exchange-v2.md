@@ -23,7 +23,7 @@ Hosts that send v1 (562 / version 1) are rejected by `host_command_image_valid()
 | Offset | Size | Field |
 |-------:|-----:|-------|
 | 0 | 12 | `header` — magic, layout_version, byte_size, seq |
-| 12 | 32 | `system` — health + plant timing (not DEBUG) |
+| 12 | 32 | `system` — health + actuator/peripheral timing + seq readbacks |
 | 44 | 550 | `actuator_*[25]` — **22 B** each (20 B MIT + 2 B meta) |
 | 594 | 12 | `servos[2]` — 6 B each |
 | 606 | 2 | `leds[1]` |
@@ -39,17 +39,23 @@ Tagged DEBUG ops use separate **`DBGC` / `DBGF`** frames — see
 | Offset in system | Size | Field |
 |-----------------:|-----:|-------|
 | 0 | 4 | bitfield word0 (same meaning as v1 u32): tick:12, estop:1, mcu:3, hb:1, last_cmd_seq:8, plant_block:7 |
-| 4 | 2 | `lap_ms` |
-| 6 | 2 | `lap_max_ms` |
+| 4 | 2 | `act_lap_ms` — PlantTask last apply+FB TX (ms) |
+| 6 | 2 | `act_lap_peak_ms` — sticky peak of `act_lap_ms` (reset via `plant_timing_reset_peaks`) |
 | 8 | 1 | `ticks_svc` |
 | 9 | 1 | `ticks_pending` |
 | 10 | 2 | `usb_rx_drop` (reserved until filled) |
 | 12 | 2 | `can_rx_drop` (reserved until filled) |
-| 14 | 1 | `kill_state` (PDB soft-kill; 0 until PDB UART) |
+| 14 | 1 | `kill_state` (from `pdb_link`; HARD_ESTOP/COMMS_LOSS when no PDB peer) |
 | 15 | 1 | `kill_reason` |
 | 16 | 1 | `estop_sense` |
 | 17 | 1 | reserved0 |
-| 18 | 14 | reserved |
+| 18 | 4 | `cmd_rx_seq` (u32) — CMD `header.seq` when **HostTask USB-RX staged** it |
+| 22 | 4 | `cmd_applied_seq` (u32) — CMD `header.seq` when **PlantTask mounted** actuators |
+| 26 | 2 | `periph_lap_ms` — PeripheralTask last service (DXL/LED/SPI3) |
+| 28 | 2 | `periph_lap_peak_ms` — sticky peak of `periph_lap_ms` |
+| 30 | 2 | reserved |
+
+`last_command_seq` (word0 bits) is the low 8 bits of `cmd_rx_seq` — use for coarse stream lag; prefer u32 seq deltas for mount lag.
 
 Command `system` is 32 B; first 4 B keep v1 e_stop / mcu_state / heartbeat bitfields; remainder reserved.
 

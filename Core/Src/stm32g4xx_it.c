@@ -57,6 +57,7 @@
 
 /* External variables --------------------------------------------------------*/
 extern PCD_HandleTypeDef hpcd_USB_FS;
+extern SPI_HandleTypeDef hspi3;
 extern TIM_HandleTypeDef htim6;
 extern UART_HandleTypeDef huart4;
 extern TIM_HandleTypeDef htim7;
@@ -226,6 +227,14 @@ void TIM7_DAC_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief SPI3 global interrupt — SK9822 TX-IT completion (not in Cube NVIC list).
+  */
+void SPI3_IRQHandler(void)
+{
+	HAL_SPI_IRQHandler(&hspi3);
+}
 
 void EXTI0_IRQHandler(void)
 {

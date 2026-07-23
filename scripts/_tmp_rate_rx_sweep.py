@@ -100,9 +100,9 @@ def main() -> int:
     for label in FOCUS:
         print(f"\n--- {label} ---")
         print(
-            f"{'hz':>5}  {'rx':>3}  {'fb_hz':>6}  {'lag_mn':>6}  {'lag_p95':>7}  "
-            f"{'lag_mx':>6}  {'lap_mn':>6}  {'lap_mx':>6}  {'pend_mx':>7}  "
-            f"{'svc_mn':>6}  {'rx_fr':>5}  ok"
+            f"{'hz':>5}  {'rx':>3}  {'fb_hz':>6}  {'ack_mx':>6}  {'img_mx':>6}  "
+            f"{'app_mx':>6}  {'app_hz':>6}  {'act_mn':>6}  {'act_mx':>6}  "
+            f"{'per_mn':>6}  {'per_mx':>6}  {'pend_mx':>7}  {'rx_fr':>5}  ok"
         )
         for hz in RATES:
             for rx_sim in (False, True):
@@ -118,13 +118,15 @@ def main() -> int:
                 print(
                     f"{hz:5.0f}  {'on' if rx_sim else 'off':>3}  "
                     f"{_fmt(r['raw_fb_hz'], 0):>6}  "
-                    f"{_fmt(r.get('ack_lag_mean'), 1):>6}  "
-                    f"{_fmt(r.get('ack_lag_p95')):>7}  "
                     f"{_fmt(r.get('ack_lag_max')):>6}  "
+                    f"{_fmt(r.get('img_lag_max')):>6}  "
+                    f"{_fmt(r.get('app_lag_max')):>6}  "
+                    f"{_fmt(r.get('applied_hz'), 0):>6}  "
                     f"{_fmt(r.get('lap_mean'), 1):>6}  "
                     f"{_fmt(r.get('lap_max_max')):>6}  "
+                    f"{_fmt(r.get('periph_lap_mean'), 1):>6}  "
+                    f"{_fmt(r.get('periph_lap_max_max')):>6}  "
                     f"{_fmt(r.get('pend_max')):>7}  "
-                    f"{_fmt(r.get('svc_mean'), 1):>6}  "
                     f"{_fmt(r.get('rx_fresh_max')):>5}  {ok}"
                 )
 
@@ -133,8 +135,8 @@ def main() -> int:
     print("all×25 delta: RX-sim ON minus TX-only (same hz)")
     print("=" * 88)
     print(
-        f"{'hz':>5}  {'dfb':>6}  {'dlag_mx':>7}  {'dlap_mn':>7}  {'dpend_mx':>8}  "
-        f"{'tx_ok':>5}  {'rx_ok':>5}"
+        f"{'hz':>5}  {'dfb':>6}  {'dlag_mx':>7}  {'dact_mn':>7}  {'dper_mn':>7}  "
+        f"{'dpend_mx':>8}  {'tx_ok':>5}  {'rx_ok':>5}"
     )
     for hz in RATES:
         off = next(
@@ -147,10 +149,12 @@ def main() -> int:
         )
         dfb = (on["raw_fb_hz"] or 0) - (off["raw_fb_hz"] or 0)
         dlag = (on.get("ack_lag_max") or 0) - (off.get("ack_lag_max") or 0)
-        dlap = (on.get("lap_mean") or 0) - (off.get("lap_mean") or 0)
+        dact = (on.get("lap_mean") or 0) - (off.get("lap_mean") or 0)
+        dper = (on.get("periph_lap_mean") or 0) - (off.get("periph_lap_mean") or 0)
         dpend = (on.get("pend_max") or 0) - (off.get("pend_max") or 0)
         print(
-            f"{hz:5.0f}  {dfb:+6.0f}  {dlag:+7d}  {dlap:+7.1f}  {dpend:+8d}  "
+            f"{hz:5.0f}  {dfb:+6.0f}  {dlag:+7d}  {dact:+7.1f}  {dper:+7.1f}  "
+            f"{dpend:+8d}  "
             f"{'Y' if off['ok_lag'] and off['ok_fb'] else 'N':>5}  "
             f"{'Y' if on['ok_lag'] and on['ok_fb'] and on.get('ok_rx') else 'N':>5}"
         )

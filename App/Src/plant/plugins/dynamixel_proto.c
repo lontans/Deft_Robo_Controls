@@ -116,16 +116,26 @@ static bool dxl_recv_status_packet(uint8_t *buf, uint16_t *out_total,
 	return false;
 }
 
-static bool dxl_ping_ex(uint8_t id, uint16_t *model_out)
+/* TX + status RX under scheduler suspend (RTOS-safe polled UART). */
+static bool dxl_transact(uint8_t *pkt, uint16_t body_len, uint32_t timeout_ms)
 {
+	bool ok;
 	uint16_t rx_len = 0;
 
+	dxl_port_bus_lock();
+	ok = dxl_send_packet(pkt, body_len);
+	if (ok)
+		ok = dxl_recv_status_packet(g_dxl_rx, &rx_len, timeout_ms);
+	dxl_port_bus_unlock();
+	return ok;
+}
+
+static bool dxl_ping_ex(uint8_t id, uint16_t *model_out)
+{
 	g_dxl_tx[DXL_ID]   = id;
 	g_dxl_tx[DXL_INST] = DXL_INST_PING;
 
-	if (!dxl_send_packet(g_dxl_tx, 3u))
-		return false;
-	if (!dxl_recv_status_packet(g_dxl_rx, &rx_len, DXL_RX_TIMEOUT_MS))
+	if (!dxl_transact(g_dxl_tx, 3u, DXL_RX_TIMEOUT_MS))
 		return false;
 	if (g_dxl_rx[DXL_ID] != id)
 		return false;
@@ -156,17 +166,13 @@ uint16_t dxl_ping_model_number(uint8_t id)
 
 bool dxl_write_u8(uint8_t id, uint16_t addr, uint8_t value)  // Helper function for ID migration, writes to EEPROM addr 8
 {
-	uint16_t rx_len = 0;
-
 	g_dxl_tx[DXL_ID]		  = id;
 	g_dxl_tx[DXL_INST]	      = DXL_INST_WRITE;
 	g_dxl_tx[DXL_PARAM0]	  = DXL_LOBYTE(addr);
 	g_dxl_tx[DXL_PARAM0 + 1u] = DXL_HIBYTE(addr);
 	g_dxl_tx[DXL_PARAM0 + 2u] = value;
 
-	if (!dxl_send_packet(g_dxl_tx, 6u))
-		return false;
-	if (!dxl_recv_status_packet(g_dxl_rx, &rx_len, DXL_RX_TIMEOUT_MS))
+	if (!dxl_transact(g_dxl_tx, 6u, DXL_PLANT_RX_TIMEOUT_MS))
 		return false;
 	if (g_dxl_rx[DXL_ID] != id)
 		return false;
@@ -176,10 +182,33 @@ bool dxl_write_u8(uint8_t id, uint16_t addr, uint8_t value)  // Helper function 
 	return true;
 }
 
+bool dxl_write_u8_noreply(uint8_t id, uint16_t addr, uint8_t value)
+{
+	uint8_t dump;
+	uint8_t n;
+	bool ok;
+
+	g_dxl_tx[DXL_ID]		  = id;
+	g_dxl_tx[DXL_INST]	      = DXL_INST_WRITE;
+	g_dxl_tx[DXL_PARAM0]	  = DXL_LOBYTE(addr);
+	g_dxl_tx[DXL_PARAM0 + 1u] = DXL_HIBYTE(addr);
+	g_dxl_tx[DXL_PARAM0 + 2u] = value;
+
+	dxl_port_bus_lock();
+	ok = dxl_send_packet(g_dxl_tx, 6u);
+	if (ok) {
+		/* Drop any unexpected status so the next ACK txn is clean. */
+		for (n = 0u; n < 32u; n++) {
+			if (dxl_port_read_byte(&dump, 0u) != 1)
+				break;
+		}
+	}
+	dxl_port_bus_unlock();
+	return ok;
+}
+
 bool dxl_write_u16(uint8_t id, uint16_t addr, uint16_t value)
 {
-	uint16_t rx_len = 0;
-
 	g_dxl_tx[DXL_ID]            = id;
 	g_dxl_tx[DXL_INST]          = DXL_INST_WRITE;
 	g_dxl_tx[DXL_PARAM0]        = DXL_LOBYTE(addr);
@@ -187,9 +216,7 @@ bool dxl_write_u16(uint8_t id, uint16_t addr, uint16_t value)
 	g_dxl_tx[DXL_PARAM0 + 2u]   = DXL_LOBYTE(value);
 	g_dxl_tx[DXL_PARAM0 + 3u]   = DXL_HIBYTE(value);
 
-	if (!dxl_send_packet(g_dxl_tx, 7u))
-		return false;
-	if (!dxl_recv_status_packet(g_dxl_rx, &rx_len, DXL_RX_TIMEOUT_MS))
+	if (!dxl_transact(g_dxl_tx, 7u, DXL_PLANT_RX_TIMEOUT_MS))
 		return false;
 	if (g_dxl_rx[DXL_ID] != id)
 		return false;
@@ -201,8 +228,6 @@ bool dxl_write_u16(uint8_t id, uint16_t addr, uint16_t value)
 
 bool dxl_write_u32(uint8_t id, uint16_t addr, uint32_t value)
 {
-	uint16_t rx_len = 0;
-
 	g_dxl_tx[DXL_ID]            = id;
 	g_dxl_tx[DXL_INST]          = DXL_INST_WRITE;
 	g_dxl_tx[DXL_PARAM0]        = DXL_LOBYTE(addr);
@@ -212,9 +237,7 @@ bool dxl_write_u32(uint8_t id, uint16_t addr, uint32_t value)
 	g_dxl_tx[DXL_PARAM0 + 4u]   = (uint8_t)((value >> 16) & 0xFFu);
 	g_dxl_tx[DXL_PARAM0 + 5u]   = (uint8_t)((value >> 24) & 0xFFu);
 
-	if (!dxl_send_packet(g_dxl_tx, 9u))
-		return false;
-	if (!dxl_recv_status_packet(g_dxl_rx, &rx_len, DXL_RX_TIMEOUT_MS))
+	if (!dxl_transact(g_dxl_tx, 9u, DXL_PLANT_RX_TIMEOUT_MS))
 		return false;
 	if (g_dxl_rx[DXL_ID] != id)
 		return false;
@@ -226,8 +249,6 @@ bool dxl_write_u32(uint8_t id, uint16_t addr, uint32_t value)
 
 bool dxl_read_u8(uint8_t id, uint16_t addr, uint8_t *value_out)
 {
-	uint16_t rx_len = 0;
-
 	if (value_out == NULL)
 		return false;
 
@@ -238,9 +259,7 @@ bool dxl_read_u8(uint8_t id, uint16_t addr, uint8_t *value_out)
 	g_dxl_tx[DXL_PARAM0 + 2u]   = 1u;
 	g_dxl_tx[DXL_PARAM0 + 3u]   = 0u;
 
-	if (!dxl_send_packet(g_dxl_tx, 7u))
-		return false;
-	if (!dxl_recv_status_packet(g_dxl_rx, &rx_len, DXL_RX_TIMEOUT_MS))
+	if (!dxl_transact(g_dxl_tx, 7u, DXL_PLANT_RX_TIMEOUT_MS))
 		return false;
 	if (g_dxl_rx[DXL_ID] != id)
 		return false;
@@ -253,10 +272,15 @@ bool dxl_read_u8(uint8_t id, uint16_t addr, uint8_t *value_out)
 
 bool dxl_reboot(uint8_t id)
 {
+	bool ok;
+
 	g_dxl_tx[DXL_ID]   = id;
 	g_dxl_tx[DXL_INST] = DXL_INST_REBOOT;
 
-	if (!dxl_send_packet(g_dxl_tx, 3u))
+	dxl_port_bus_lock();
+	ok = dxl_send_packet(g_dxl_tx, 3u);
+	dxl_port_bus_unlock();
+	if (!ok)
 		return false;
 
 	/* Status may not return; servo resets and re-enumerates on the bus. */
@@ -266,8 +290,6 @@ bool dxl_reboot(uint8_t id)
 
 bool dxl_read_u32(uint8_t id, uint16_t addr, uint32_t *value_out)
 {
-	uint16_t rx_len = 0;
-
 	if (value_out == NULL)
 		return false;
 
@@ -278,9 +300,7 @@ bool dxl_read_u32(uint8_t id, uint16_t addr, uint32_t *value_out)
 	g_dxl_tx[DXL_PARAM0 + 2u]   = 4u;
 	g_dxl_tx[DXL_PARAM0 + 3u]   = 0u;
 
-	if (!dxl_send_packet(g_dxl_tx, 7u))
-		return false;
-	if (!dxl_recv_status_packet(g_dxl_rx, &rx_len, DXL_RX_TIMEOUT_MS))
+	if (!dxl_transact(g_dxl_tx, 7u, DXL_PLANT_RX_TIMEOUT_MS))
 		return false;
 	if (g_dxl_rx[DXL_ID] != id)
 		return false;
@@ -399,14 +419,10 @@ bool dxl_toggle_ids_baud(uint8_t id_start, uint8_t id_end, uint32_t *new_baud_ou
 
 static bool dxl_broadcast_ping_any(void)
 {
-	uint16_t rx_len = 0;
-
 	g_dxl_tx[DXL_ID]   = DXL_ID_BROADCAST;
 	g_dxl_tx[DXL_INST] = DXL_INST_PING;
 
-	if (!dxl_send_packet(g_dxl_tx, 3u))
-		return false;
-	if (!dxl_recv_status_packet(g_dxl_rx, &rx_len, DXL_RX_TIMEOUT_MS))
+	if (!dxl_transact(g_dxl_tx, 3u, DXL_RX_TIMEOUT_MS))
 		return false;
 	if (g_dxl_rx[DXL_ERR] != 0u)
 		return false;
@@ -528,7 +544,13 @@ bool dxl_sync_write_tx(uint16_t start_addr, uint16_t data_len,
 	g_dxl_tx[DXL_PARAM0 + 3u]     = DXL_HIBYTE(data_len);
 	memcpy(&g_dxl_tx[DXL_PARAM0 + 4u], param, param_len);
 
-	return dxl_send_packet(g_dxl_tx, body_len);
+	dxl_port_bus_lock();
+	{
+		bool ok = dxl_send_packet(g_dxl_tx, body_len);
+
+		dxl_port_bus_unlock();
+		return ok;
+	}
 }
 
 bool dxl_sync_read_tx(uint16_t start_addr, uint16_t data_len,
@@ -536,6 +558,7 @@ bool dxl_sync_read_tx(uint16_t start_addr, uint16_t data_len,
 {
 	uint16_t body_len = (uint16_t)(id_count + 7u);
 	uint16_t total    = (uint16_t)(7u + body_len);
+	bool ok;
 
 	if (total > DXL_TX_BUF_SIZE || ids == NULL || id_count == 0u)
 		return false;
@@ -550,7 +573,9 @@ bool dxl_sync_read_tx(uint16_t start_addr, uint16_t data_len,
 
 	memcpy(&g_dxl_tx[DXL_PARAM0 + 4u], ids, id_count);
 
-	return dxl_send_packet(g_dxl_tx, body_len);
+	/* Caller must hold dxl_port_bus_lock across tx + all rx_one. */
+	ok = dxl_send_packet(g_dxl_tx, body_len);
+	return ok;
 }
 
 
@@ -559,11 +584,10 @@ bool dxl_sync_read_rx_one(uint8_t *id_out, uint8_t *data, uint16_t data_len,
 {
 	uint16_t rx_total = 0u;
 
-	// Block until one full valid status frame
+	/* Caller must hold dxl_port_bus_lock (with sync_read_tx). */
 	if (!dxl_recv_status_packet(g_dxl_rx, &rx_total, timeout_ms))
 		return false;
 
-	// Byte 4 info abt servo transmission id, DXL_ID is a macro for byte 4 in the rx frame
 	if (id_out != NULL)
 		*id_out = g_dxl_rx[DXL_ID];
 

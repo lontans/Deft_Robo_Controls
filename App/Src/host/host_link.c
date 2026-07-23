@@ -1,15 +1,18 @@
 #include "host/host_link.h"
 #include "host/host_exchange_schema.h"
 #include "host/host_transport.h"
+#include "host/pdb_link.h"
 #include "plant/plant_command.h"
 #include "plant/plant_feedback.h"
 #include "plant/plant_diag.h"
 #include "plant/plant_timing.h"
+#include "plant/plant_crit.h"
 #include "plant/control_loop.h"
 #include "main.h"
 #include <string.h>
 
 static uint32_t              g_last_command_seq;
+static uint32_t              g_last_applied_seq;
 static uint32_t              g_last_command_ms;
 static uint8_t               g_cmd_rx_buf[HOST_COMMAND_IMAGE_BYTES];
 static size_t                g_cmd_rx_fill;
@@ -18,9 +21,12 @@ static bool                  g_debug_reply_pending;
 
 /* Plant command mount deferred to control_loop_service (TIM6-tick gated) —
  * see host_link_apply_pending_plant(). host_link_poll_rx() only stages the
- * latest coalesced image here; it does not mount. */
+ * latest coalesced image here; it does not mount. Peripheral (servo/LED)
+ * mount is staged separately for host_link_apply_pending_peripheral(). */
 static host_command_image_t  g_plant_pending_image;
 static volatile bool         g_plant_pending;
+static host_command_image_t  g_periph_pending_image;
+static volatile bool         g_periph_pending;
 
 static void host_link_rx_resync(void);
 static void host_link_rx_consume_ready(bool *have_plant, host_command_image_t *plant_hold);
@@ -30,6 +36,11 @@ static void host_feedback_image_fetch_debug(host_feedback_image_t *out);
 uint32_t host_link_last_command_seq(void)
 {
 	return g_last_command_seq;
+}
+
+uint32_t host_link_last_applied_seq(void)
+{
+	return g_last_applied_seq;
 }
 
 bool host_command_image_valid(const host_command_image_t *cmd)
@@ -56,6 +67,11 @@ void host_command_image_dispatch(const host_command_image_t *cmd)
 		g_debug_reply_pending = true;
 	} else {
 		plant_command_image_dispatch_plant(cmd);
+		plant_crit_enter();
+		g_last_applied_seq = cmd->header.seq;
+		g_periph_pending_image = *cmd;
+		g_periph_pending = true;
+		plant_crit_exit();
 	}
 	g_last_command_seq = cmd->header.seq;
 	g_last_command_ms  = HAL_GetTick();
@@ -72,9 +88,12 @@ bool host_link_command_is_fresh(uint32_t max_age_ms)
 void host_link_init(void)
 {
 	g_last_command_seq = 0;
+	g_last_applied_seq = 0;
 	g_last_command_ms  = 0;
 	g_cmd_rx_fill      = 0;
 	g_debug_reply_pending = false;
+	g_plant_pending = false;
+	g_periph_pending = false;
 
 	host_transport_get()->init();
 }
@@ -112,25 +131,61 @@ void host_link_poll_rx(void)
 	}
 
 	if (have_plant) {
-		/* Stage only -- mount happens in host_link_apply_pending_plant(),
-		 * called from control_loop_service() on an actual TIM6 tick. A fast
-		 * host (200-500 Hz) can otherwise trigger a full 25-slot mount on
-		 * every superloop spin once SPI/USB got cheap enough to spin faster
-		 * than 500 Hz between ticks. */
+		/* Stage mount for TIM6 (control_loop_service) — do not remount 25
+		 * slots on every HostTask spin. Advance last_command_seq here so FB
+		 * last_command_seq / cmd_rx_seq = command received (USB RX);
+		 * cmd_applied_seq advances later in host_link_apply_pending_plant. */
+		plant_crit_enter();
 		g_plant_pending_image = plant_hold;
 		g_plant_pending = true;
+		plant_crit_exit();
+		g_last_command_seq = plant_hold.header.seq;
+		g_last_command_ms = HAL_GetTick();
 	}
 }
 
 void host_link_apply_pending_plant(void)
 {
-	if (!g_plant_pending)
+	host_command_image_t local;
+	bool have = false;
+
+	plant_crit_enter();
+	if (g_plant_pending) {
+		g_plant_pending = false;
+		local = g_plant_pending_image;
+		g_last_applied_seq = local.header.seq;
+		have = true;
+	}
+	plant_crit_exit();
+
+	if (!have)
 		return;
 
-	g_plant_pending = false;
-	plant_command_image_dispatch_plant(&g_plant_pending_image);
-	g_last_command_seq = g_plant_pending_image.header.seq;
-	g_last_command_ms = HAL_GetTick();
+	plant_command_image_dispatch_plant(&local);
+
+	plant_crit_enter();
+	g_periph_pending_image = local;
+	g_periph_pending = true;
+	plant_crit_exit();
+}
+
+void host_link_apply_pending_peripheral(void)
+{
+	host_command_image_t local;
+	bool have = false;
+
+	plant_crit_enter();
+	if (g_periph_pending) {
+		g_periph_pending = false;
+		local = g_periph_pending_image;
+		have = true;
+	}
+	plant_crit_exit();
+
+	if (!have)
+		return;
+
+	peripheral_command_mount(&local);
 }
 
 static bool host_link_magic_at(const uint8_t *buf, uint32_t magic)
@@ -190,12 +245,21 @@ static void host_link_rx_consume_ready(bool *have_plant, host_command_image_t *p
 
 static void host_feedback_fill_system(host_feedback_image_t *out)
 {
+	uint32_t rx_seq = host_link_last_command_seq();
+	uint32_t applied_seq = host_link_last_applied_seq();
+
 	out->system.control_tick_count = (uint32_t)(g_control_tick_count & 0xFFFu);
-	out->system.last_command_seq   = (uint32_t)(host_link_last_command_seq() & 0xFFu);
+	/* 8-bit + u32 readbacks of the same USB-RX-staged command seq. */
+	out->system.last_command_seq = (uint32_t)(rx_seq & 0xFFu);
+	out->system.cmd_rx_seq = rx_seq;
+	out->system.cmd_applied_seq = applied_seq;
 	out->system.mcu_state_readback = (uint32_t)plant_command_mcu_state_readback();
 	(void)plant_runtime_actuator_can_apply();
 	out->system.plant_block =
 		(uint32_t)plant_runtime_actuator_block_reason() & 0x7Fu;
+	out->system.kill_state = pdb_link_kill_state();
+	out->system.kill_reason = pdb_link_kill_reason();
+	out->system.estop_sense = pdb_link_estop_sense();
 	plant_timing_system_fill(&out->system);
 }
 

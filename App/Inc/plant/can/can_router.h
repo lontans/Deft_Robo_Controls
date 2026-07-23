@@ -37,3 +37,6 @@ can_status_t can_tx_flush(can_bus_id_t bus);
 can_status_t can_rx_pop(can_bus_id_t bus, can_frame_t *frame);
 void can_rx_drain(can_bus_id_t bus);
 bool can_rx_available(can_bus_id_t bus);
+
+/* Plant RX-sim / bench: push a frame as if it arrived on the bus (marks ACT LED). */
+can_status_t can_rx_push(can_bus_id_t bus, const can_frame_t *frame);

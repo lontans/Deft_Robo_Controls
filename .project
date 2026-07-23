@@ -146,9 +146,9 @@
 			<locationURI>PARENT-2-PROJECT_LOC/STM32Cube/Repository/STM32Cube_FW_G4_V1.6.3/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_ll_usb.c</locationURI>
 		</link>
 		<link>
-			<name>Middlewares/FreeRTOS/cmsis_os.c</name>
+			<name>Middlewares/FreeRTOS/cmsis_os2.c</name>
 			<type>1</type>
-			<locationURI>PARENT-2-PROJECT_LOC/STM32Cube/Repository/STM32Cube_FW_G4_V1.6.3/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS/cmsis_os.c</locationURI>
+			<locationURI>PARENT-2-PROJECT_LOC/STM32Cube/Repository/STM32Cube_FW_G4_V1.6.3/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c</locationURI>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/croutine.c</name>

@@ -17,7 +17,7 @@ typedef enum {
 } spi3_role_t;
 
 #ifndef SPI3_ROLE_DEFAULT
-#define SPI3_ROLE_DEFAULT SPI3_ROLE_THERMO
+#define SPI3_ROLE_DEFAULT SPI3_ROLE_LED
 #endif
 
 spi3_role_t spi3_role_get(void);

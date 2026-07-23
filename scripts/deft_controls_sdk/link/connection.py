@@ -502,8 +502,12 @@ class Connection:
             plant_block=plant_block,
             plant_block_name=hdr.get("plant_block_name") or PLANT_BLOCK_NAMES.get(plant_block, str(plant_block)),
             pdu_tag=hdr.get("pdu_tag"),
-            lap_ms=hdr.get("lap_ms"),
-            lap_max_ms=hdr.get("lap_max_ms"),
+            lap_ms=hdr.get("act_lap_ms", hdr.get("lap_ms")),
+            lap_max_ms=hdr.get("act_lap_peak_ms", hdr.get("lap_max_ms")),
+            periph_lap_ms=hdr.get("periph_lap_ms"),
+            periph_lap_max_ms=hdr.get(
+                "periph_lap_peak_ms", hdr.get("periph_lap_max_ms")
+            ),
             ticks_pending=hdr.get("ticks_pending"),
             svd_present=svd_present,
             actuators=actuators,

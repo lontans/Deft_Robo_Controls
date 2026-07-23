@@ -67,6 +67,8 @@ def measure_hold(
     ack_lags: List[int] = []
     lap_ms: List[int] = []
     lap_max_sticky: List[int] = []
+    periph_lap_ms: List[int] = []
+    periph_lap_max_sticky: List[int] = []
     ticks_pend: List[int] = []
     ticks_svc: List[int] = []
     last_sent: Optional[int] = None
@@ -88,6 +90,10 @@ def measure_hold(
                     lap_ms.append(int(hdr["lap_ms"]))
                 if hdr.get("lap_max_ms") is not None:
                     lap_max_sticky.append(int(hdr["lap_max_ms"]))
+                if hdr.get("periph_lap_ms") is not None:
+                    periph_lap_ms.append(int(hdr["periph_lap_ms"]))
+                if hdr.get("periph_lap_max_ms") is not None:
+                    periph_lap_max_sticky.append(int(hdr["periph_lap_max_ms"]))
                 if hdr.get("ticks_pending") is not None:
                     ticks_pend.append(int(hdr["ticks_pending"]))
                 if hdr.get("ticks_svc") is not None:
@@ -123,10 +129,10 @@ def measure_hold(
     ok_fb = raw_fb_hz is not None and raw_fb_hz >= 20.0
     non_zero_tags = {k: v for k, v in pdu_tags.items() if k not in ("0x00", "0", "?")}
     ok_plant_tag = len(non_zero_tags) == 0
-    # Window max is what matters for plant stream; sticky FW max can still
-    # reflect an earlier bench spike until session-end reset.
     lap_window_max = max(lap_ms) if lap_ms else None
     lap_sticky_max = max(lap_max_sticky) if lap_max_sticky else None
+    periph_window_max = max(periph_lap_ms) if periph_lap_ms else None
+    periph_sticky_max = max(periph_lap_max_sticky) if periph_lap_max_sticky else None
 
     if print_report:
         print(f"\n=== {label} ===")
@@ -135,10 +141,14 @@ def measure_hold(
             f"  raw_fb_hz~{raw_fb_hz:.1f}" if raw_fb_hz is not None else "  raw_fb_hz=n/a",
             f"  frames={raw_fb}",
         )
-        print(f"  ack_lag: {istat(ack_lags)}")
-        print(f"  lap_ms:  {istat(lap_ms)}")
+        print(f"  ack_lag:       {istat(ack_lags)}")
+        print(f"  act_lap_ms:    {istat(lap_ms)}")
         print(
-            f"  lap_max: window={lap_window_max}  sticky_fw={lap_sticky_max}"
+            f"  act_lap_max:   window={lap_window_max}  sticky_fw={lap_sticky_max}"
+        )
+        print(f"  periph_lap_ms: {istat(periph_lap_ms)}")
+        print(
+            f"  periph_lap_max: window={periph_window_max}  sticky_fw={periph_sticky_max}"
         )
         print(f"  ticks_pending: {istat(ticks_pend)}")
         print(f"  ticks_svc:     {istat(ticks_svc)}")
@@ -157,6 +167,9 @@ def measure_hold(
         "lap_ms_mean": statistics.mean(lap_ms) if lap_ms else None,
         "lap_max_ms": lap_window_max,
         "lap_max_sticky_ms": lap_sticky_max,
+        "periph_lap_ms_mean": statistics.mean(periph_lap_ms) if periph_lap_ms else None,
+        "periph_lap_max_ms": periph_window_max,
+        "periph_lap_max_sticky_ms": periph_sticky_max,
         "pdu_tags": pdu_tags,
         "ok_lag": ok_lag,
         "ok_fb": ok_fb,

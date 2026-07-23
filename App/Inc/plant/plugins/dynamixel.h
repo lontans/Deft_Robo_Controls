@@ -9,6 +9,7 @@
 #define DXL_ADDR_OPERATING_MODE    11u
 #define DXL_ADDR_TORQUE_ENABLE     64u
 #define DXL_ADDR_LED               65u
+#define DXL_ADDR_STATUS_RETURN_LEVEL 68u
 #define DXL_ADDR_PROFILE_ACCEL     108u
 #define DXL_ADDR_PROFILE_VELOCITY  112u
 #define DXL_ADDR_POSITION_D_GAIN   80u
@@ -33,13 +34,17 @@
 #define DXL_MODE_POSITION          3u
 #define DXL_TORQUE_ON              1u
 #define DXL_TORQUE_OFF             0u
+#define DXL_STATUS_RETURN_ALL      2u
 
 #define DXL_POS_TICKS_PER_REV      4096
 #define DXL_POS_MAX_TICK           4095
 
 #define DXL_BAUD_RATE              2000000u
 #define DXL_TX_TIMEOUT_MS          10u
-#define DXL_RX_TIMEOUT_MS          50u
+#define DXL_RX_TIMEOUT_MS          50u  /* probe / baud migration */
+/* Plant peripheral path (post-FB): bound miss cost so a dead ACK cannot
+ * stretch app_run toward 50 ms. Healthy XL330 RTT is ≪ this. */
+#define DXL_PLANT_RX_TIMEOUT_MS    3u
 #define DXL_BAUD_SETTLE_MS         2u
 
 #define DXL_MODEL_XL330_M077       1190u
@@ -170,6 +175,9 @@ bool     dxl_port_set_baud(uint32_t baud);
 int      dxl_port_write(const uint8_t *buf, int len);
 int      dxl_port_read_byte(uint8_t *byte, uint32_t timeout_ms);
 uint32_t dxl_port_millis(void);
+/* Suspend scheduler around polled TX+RX so Plant/Host cannot preempt mid-packet. */
+void     dxl_port_bus_lock(void);
+void     dxl_port_bus_unlock(void);
 
 /* Debug: last raw HAL status values captured during probe. */
 uint8_t  dxl_port_debug_init_hal_st(void);
@@ -183,6 +191,8 @@ bool     dxl_find_baud(uint32_t *baud_out, uint8_t id_start, uint8_t id_end);
 uint8_t  dxl_scan_ids(uint8_t id_start, uint8_t id_end,
                       dxl_scan_hit_t *hits, uint8_t max_hits);
 bool     dxl_write_u8(uint8_t id, uint16_t addr, uint8_t value);
+/* TX only + short FIFO drain; use when Status Return Level may be READ-only. */
+bool     dxl_write_u8_noreply(uint8_t id, uint16_t addr, uint8_t value);
 bool     dxl_write_u16(uint8_t id, uint16_t addr, uint16_t value);
 bool     dxl_write_u32(uint8_t id, uint16_t addr, uint32_t value);
 bool     dxl_read_u8(uint8_t id, uint16_t addr, uint8_t *value_out);

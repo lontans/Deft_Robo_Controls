@@ -108,6 +108,13 @@ void robstride_mcp_flush_pending(void);
 void robstride_on_rx_frame(const actuator_config_t *cfg, uint8_t slot,
                            const can_frame_t *frame, actuator_state_t *state_out);
 void robstride_host_desire_updated(uint8_t slot, const actuator_desire_t *desire);
+/* Bench/matrix: pack a synthetic RS02 feedback frame (no bus TX). */
+bool robstride_pack_feedback(const actuator_config_t *cfg,
+                             float position,
+                             float velocity,
+                             float torque,
+                             float temp_c,
+                             can_frame_t *frame_out);
 void robstride_bench_note_rx(const can_frame_t *frame,
                              uint8_t motor_id,
                              robstride_probe_result_t *out);

@@ -23,6 +23,7 @@
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
+#include "usb_device.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -88,14 +89,6 @@ static void cpu_activity_boot_pulses(void)
 	}
 }
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-	if (htim->Instance == TIM6)
-		control_loop_tick();
-	else if (htim->Instance == TIM7)
-		HAL_IncTick();
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -145,8 +138,6 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  cpu_activity_boot_pulses();
-
   MX_FDCAN1_Init();
   MX_FDCAN2_Init();
   MX_FDCAN3_Init();
@@ -155,24 +146,22 @@ int main(void)
   MX_UART5_Init();
   MX_SPI3_Init();
   MX_TIM6_Init();
-  control_loop_start();
-
-  /* Match pre-RTOS baseline (14eb426): enumerate USB before blocking app_init(). */
-  MX_USB_Device_Init();
-  HAL_GPIO_WritePin(BRINGUP_DIAG_PORT, BRINGUP_DIAG_PIN, GPIO_PIN_SET);
-
   /* USER CODE BEGIN 2 */
+  /* USB before scheduler — Cube puts MX_USB in defaultTask; that raced
+   * Host vs Plant at the same priority and left CDC up but diag dead. */
+  MX_USB_Device_Init();
   app_init();
+  control_loop_start();
   /* USER CODE END 2 */
 
-  HAL_GPIO_WritePin(BRINGUP_DIAG_PORT, BRINGUP_DIAG_PIN, GPIO_PIN_RESET);
-
-#if USE_FREERTOS_SCHEDULER
+  /* Init scheduler */
+  osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
-  HAL_SuspendTick();
+
+  /* Start scheduler */
   osKernelStart();
-  /* not reached */
-#endif
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -182,8 +171,8 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     app_run();
-    /* USER CODE END 3 */
   }
+  /* USER CODE END 3 */
 }
 
 /**
@@ -236,11 +225,28 @@ void SystemClock_Config(void)
 
 /* USER CODE END 4 */
 
-/* NOTE: CubeMX's own HAL_TIM_PeriodElapsedCallback (TIM7 -> HAL_IncTick) used
- * to be generated here. Merged into the hand-written TIM6 callback above
- * (USER CODE 0 block) since C doesn't allow two definitions of the same
- * function -- a future full CubeMX regeneration will re-emit this block and
- * cause the same redefinition error again; re-merge it the same way. */
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM7 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+  if (htim->Instance == TIM6)
+    control_loop_tick();
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM7)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.

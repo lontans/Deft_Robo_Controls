@@ -11,12 +11,12 @@
 #include "plant/can/can_router.h"
 #include "host/host_link.h"
 #include "host/host_uart_bridge.h"
-#include "plant/control_loop.h"
+#include "host/pdb_link.h"
 #include "plant/plant_timing.h"
 #include "plant/plugin_schema/plugin_table.h"
 #include "main.h"
 
-/* PC1: slow toggle while superloop runs (after main.c drops it LOW post-app_init). */
+/* PC1: slow toggle while host path runs (after main.c drops it LOW post-app_init). */
 #define APP_RUN_HEARTBEAT_PORT GPIOC
 #define APP_RUN_HEARTBEAT_PIN  GPIO_PIN_1
 #define APP_RUN_HEARTBEAT_MS   500u
@@ -37,43 +37,56 @@ void app_init(void)
 	can_router_init();
 	host_link_init();
 	host_uart_bridge_init();
+	pdb_link_init();
 
 	control_loop_init();
 }
 
-void app_run(void)
+void app_host_service(void)
 {
 	uint32_t now = HAL_GetTick();
-
-	plant_timing_lap_begin();
-	plant_timing_note_pending_at_lap(control_loop_pending_get());
 
 	host_link_begin_loop();
 	host_link_poll_rx();
 	plant_diag_service();
-
-#if !USE_FREERTOS_SCHEDULER
-	/* One service call drains up to CONTROL_TICK_BURST_MAX ticks (see 5df1f04).
-	 * Plant + end-of-lap poll all commanded/backends; idle MCP is INT-gated. */
-	control_loop_service();
-#endif
-
-	/* Exclusive SPI3: only the active role touches hspi3. */
-	if (spi3_role_get() == SPI3_ROLE_LED)
-		led_service();
-	else if (spi3_role_get() == SPI3_ROLE_THERMO)
-		thermo_service();
-
-#if !USE_FREERTOS_SCHEDULER
-	host_link_poll_tx();
-#endif
-
-	plant_diag_can_router_poll();
-
-	plant_timing_lap_end();
+	pdb_link_service();
 
 	if (now - s_app_run_heartbeat_ms >= APP_RUN_HEARTBEAT_MS) {
 		s_app_run_heartbeat_ms = now;
 		HAL_GPIO_TogglePin(APP_RUN_HEARTBEAT_PORT, APP_RUN_HEARTBEAT_PIN);
 	}
+}
+
+void app_plant_service(void)
+{
+	/* Actuator autonomy lap — PlantTask only (apply + FB TX). */
+	plant_timing_lap_begin();
+	plant_timing_note_pending_at_lap(control_loop_pending_get());
+	control_loop_service();
+	host_link_poll_tx();
+	plant_timing_lap_end();
+}
+
+void app_peripheral_service(void)
+{
+	/* Peripheral lap — may block on DXL; does not inflate actuator lap_ms. */
+	plant_timing_periph_lap_begin();
+	host_link_apply_pending_peripheral();
+	servo_apply_desire();
+	servo_bus_poll();
+	if (spi3_role_get() == SPI3_ROLE_LED)
+		led_service();
+	else if (spi3_role_get() == SPI3_ROLE_THERMO)
+		thermo_service();
+	plant_diag_can_router_poll();
+	plant_timing_periph_lap_end();
+}
+
+void app_run(void)
+{
+	app_host_service();
+#if !USE_FREERTOS_SCHEDULER
+	app_plant_service();
+	app_peripheral_service();
+#endif
 }

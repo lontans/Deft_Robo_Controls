@@ -1,6 +1,12 @@
 #include "plant/plugins/dynamixel.h"
+#include "app.h"
 #include "usart.h"
 #include "main.h"
+
+#if USE_FREERTOS_SCHEDULER
+#include "FreeRTOS.h"
+#include "task.h"
+#endif
 
 static uint8_t g_dbg_init_hal_st;
 static uint8_t g_dbg_tx_hal_st;
@@ -183,4 +189,20 @@ int dxl_port_read_byte(uint8_t *byte, uint32_t timeout_ms)
 uint32_t dxl_port_millis(void)
 {
 	return HAL_GetTick();
+}
+
+void dxl_port_bus_lock(void)
+{
+#if USE_FREERTOS_SCHEDULER
+	/* Polled UART5 @ 2 Mbaud: any Plant/Host preempt during RX overruns
+	 * the 1-byte FIFO and kills Dynamixel ACKs. */
+	vTaskSuspendAll();
+#endif
+}
+
+void dxl_port_bus_unlock(void)
+{
+#if USE_FREERTOS_SCHEDULER
+	(void)xTaskResumeAll();
+#endif
 }

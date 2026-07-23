@@ -18,7 +18,10 @@ void servo_init(void);
 void servo_command_mount(const host_command_image_t *cmd);
 
 void servo_apply_desire(void);
+/* Snapshot live → stage for host FB. Soft-sim ticks here; real UART is
+ * servo_bus_poll() after peripheral_command_mount / host FB TX. */
 void servo_capture_state(void);
+void servo_bus_poll(void);
 
 void servo_feedback_snapshot(host_servo_feedback_t *dst, uint8_t count);
 

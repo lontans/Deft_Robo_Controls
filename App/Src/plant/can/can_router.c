@@ -28,7 +28,13 @@ static SemaphoreHandle_t bus_mutex[CAN_FDCAN_COUNT];
 static bool can_bus_lock(can_bus_id_t bus)
 {
 #if USE_FREERTOS_SCHEDULER
-	if (bus >= CAN_FDCAN_COUNT || bus_mutex[bus] == NULL)
+	if (bus >= CAN_FDCAN_COUNT)
+		return true;
+	if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED)
+		return true;
+	if (bus_mutex[bus] == NULL)
+		bus_mutex[bus] = xSemaphoreCreateMutex();
+	if (bus_mutex[bus] == NULL)
 		return true;
 	return xSemaphoreTake(bus_mutex[bus], CAN_MUTEX_WAIT_TICKS) == pdTRUE;
 #else
@@ -40,7 +46,8 @@ static bool can_bus_lock(can_bus_id_t bus)
 static void can_bus_unlock(can_bus_id_t bus)
 {
 #if USE_FREERTOS_SCHEDULER
-	if (bus < CAN_FDCAN_COUNT && bus_mutex[bus] != NULL)
+	if (bus < CAN_FDCAN_COUNT && bus_mutex[bus] != NULL &&
+	    xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)
 		xSemaphoreGive(bus_mutex[bus]);
 #else
 	(void)bus;
@@ -291,10 +298,8 @@ void can_router_init(void)
 		rx_rings[i].tail = 0;
 		tx_queues[i].head = 0;
 		tx_queues[i].tail = 0;
-#if USE_FREERTOS_SCHEDULER
-		if (bus_mutex[i] == NULL)
-			bus_mutex[i] = xSemaphoreCreateMutex();
-#endif
+		/* Mutex created lazily on first lock after osKernelStart — see
+		 * spi_can_port_init() comment (pre-scheduler CREATE deadlocks TIM7). */
 	}
 
 	for (uint8_t i = 0; i < CAN_BACKEND_COUNT; i++) {
@@ -476,6 +481,34 @@ bool can_rx_available(can_bus_id_t bus)
 	if (bus >= CAN_FDCAN_COUNT)
 		return false;
 	return rx_rings[bus].head != rx_rings[bus].tail;
+}
+
+can_status_t can_rx_push(can_bus_id_t bus, const can_frame_t *frame)
+{
+	if (frame == NULL)
+		return CAN_ERR_PARAM;
+
+	if (spi_can_bus_valid(bus)) {
+		can_status_t st = spi_can_router_rx_push(bus, frame);
+		if (st == CAN_OK)
+			can_led_mark_traffic(bus);
+		return st;
+	}
+
+	if (bus >= CAN_FDCAN_COUNT)
+		return CAN_ERR_PARAM;
+
+	if (!can_bus_lock(bus))
+		return CAN_ERR_BUSY;
+
+	if ((rx_rings[bus].head + 1) % CAN_QUEUE_DEPTH == rx_rings[bus].tail)
+		rx_rings[bus].tail = (rx_rings[bus].tail + 1) % CAN_QUEUE_DEPTH;
+
+	rx_rings[bus].buf[rx_rings[bus].head] = *frame;
+	rx_rings[bus].head = (rx_rings[bus].head + 1) % CAN_QUEUE_DEPTH;
+	can_bus_unlock(bus);
+	can_led_mark_traffic(bus);
+	return CAN_OK;
 }
 
 void can_router_discard_pending_tx(void)

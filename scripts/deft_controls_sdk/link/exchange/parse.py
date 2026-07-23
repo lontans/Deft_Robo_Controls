@@ -37,22 +37,43 @@ PLANT_BLOCK_NAMES = {
 
 
 def parse_system_timing(frame: bytes) -> Optional[dict]:
-    """Plant timing + image-id readbacks from system[32] (layout v2)."""
-    if len(frame) < SYSTEM_FB_OFF + 26:
+    """Plant + peripheral timing and command-seq readbacks from system[32] (v2).
+
+    Canonical keys (preferred):
+      act_lap_ms / act_lap_peak_ms — PlantTask last/peak apply+TX
+      periph_lap_ms / periph_lap_peak_ms — PeripheralTask last/peak
+      cmd_rx_seq — header.seq when USB RX staged the command
+      cmd_applied_seq — header.seq when PlantTask mounted it
+
+    Legacy aliases kept for older scripts: lap_ms, lap_max_ms,
+    periph_lap_max_ms, last_image_id, last_applied_image_id.
+    """
+    if len(frame) < SYSTEM_FB_OFF + 30:
         return None
-    lap_ms, lap_max_ms, ticks_svc, ticks_pending = struct.unpack_from(
+    act_lap_ms, act_lap_peak_ms, ticks_svc, ticks_pending = struct.unpack_from(
         "<HHBB", frame, SYSTEM_FB_OFF + 4
     )
-    last_image_id, last_applied_image_id = struct.unpack_from(
+    cmd_rx_seq, cmd_applied_seq = struct.unpack_from(
         "<II", frame, SYSTEM_FB_OFF + 18
     )
+    periph_lap_ms, periph_lap_peak_ms = struct.unpack_from(
+        "<HH", frame, SYSTEM_FB_OFF + 26
+    )
     return {
-        "lap_ms": lap_ms,
-        "lap_max_ms": lap_max_ms,
+        "act_lap_ms": act_lap_ms,
+        "act_lap_peak_ms": act_lap_peak_ms,
         "ticks_svc": ticks_svc,
         "ticks_pending": ticks_pending,
-        "last_image_id": last_image_id,
-        "last_applied_image_id": last_applied_image_id,
+        "cmd_rx_seq": cmd_rx_seq,
+        "cmd_applied_seq": cmd_applied_seq,
+        "periph_lap_ms": periph_lap_ms,
+        "periph_lap_peak_ms": periph_lap_peak_ms,
+        # legacy aliases
+        "lap_ms": act_lap_ms,
+        "lap_max_ms": act_lap_peak_ms,
+        "periph_lap_max_ms": periph_lap_peak_ms,
+        "last_image_id": cmd_rx_seq,
+        "last_applied_image_id": cmd_applied_seq,
     }
 
 
@@ -66,11 +87,13 @@ def parse_svd_plant_timing(pdu: bytes) -> Optional[dict]:
         off = 16
     else:
         return None
-    lap_ms = pdu[off] | (pdu[off + 1] << 8)
-    lap_max_ms = pdu[off + 4] | (pdu[off + 5] << 8)
+    act_lap_ms = pdu[off] | (pdu[off + 1] << 8)
+    act_lap_peak_ms = pdu[off + 4] | (pdu[off + 5] << 8)
     return {
-        "lap_ms": lap_ms,
-        "lap_max_ms": lap_max_ms,
+        "act_lap_ms": act_lap_ms,
+        "act_lap_peak_ms": act_lap_peak_ms,
+        "lap_ms": act_lap_ms,
+        "lap_max_ms": act_lap_peak_ms,
         "ticks_svc": pdu[off + 2],
         "ticks_pending": pdu[off + 3],
     }
