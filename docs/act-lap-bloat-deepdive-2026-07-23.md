@@ -103,17 +103,17 @@ touch:
 
 | Path | Size | Tracked? | Issue |
 |---|---:|---|---|
-| `External_Documentation/` | **171 MB** | Yes, all of it | Vendor PDFs (STM32/FreeRTOS/RobStride/Damiao/Dynamixel datasheets, ~100 MB alone) **plus a full third-party GUI app** (`RobStride/motor_toolV14L/`: Qt5Core/Gui/Widgets DLLs, `motor_tool.exe`, platform/imageformat plugins — ~35 MB of binaries that aren't even documentation) |
-| `docs/deft_vbeta_ref/deft_vbeta/` | **36 MB** | No (untracked, new this session) | Full mirror of the `deft_vbeta` monorepo (`src/`, `notebooks/`, etc.) pulled in purely so Cursor could cite two files (`i2rt_driver.py`, `feather_platform_client.py`) as the API contract to mirror |
+| `External_Documentation/` | **~120 MB** after GUI removal (was 171 MB) | Yes (PDFs/samples) | Vendor PDFs still dominate clone size. **`RobStride/motor_toolV14L/` Qt GUI untracked + gitignored** (2026-07-23) — see [`External_Documentation/RobStride/README.md`](../External_Documentation/RobStride/README.md). History rewrite still needed if packed `.git` must shrink. |
+| `docs/deft_vbeta_ref/deft_vbeta/` | **36 MB** | No (untracked) | Left alone for now (user call 2026-07-23). Still do not commit the full mirror; trim to cited files before any add. |
 | `Debug/DeftRoboticsControlsPCB.elf` | 2.3 MB | Yes, deliberately (`.gitignore` un-ignores it) | Intentional — soft-DFU flashes from this path. Fine to keep, but every firmware commit now carries a full 2.3 MB binary diff in history. Not "bloat" so much as a known, accepted cost — flagging only because Cursor's draft `.gitignore` snippet in scripts-hygiene.md (`*.elf`) would silently conflict with the existing `!Debug/DeftRoboticsControlsPCB.elf` un-ignore rule if applied as-is. Worth a one-line note back to them, not a fix I should make in their file.
 
 `.git` itself is currently 101 MB packed — the 171 MB `External_Documentation` and PDFs compress reasonably, but it's still the dominant cost of every clone.
 
 **Recommendations, ranked:**
 
-1. **`External_Documentation/motor_toolV14L/`** (the Qt binary app, ~35 MB) — near-zero reason to live in a firmware source repo at all. Not documentation, it's a vendor tool with its own installer. Move out (link to vendor download in a README, or a separate non-cloned-by-default location) rather than tracked in git.
-2. **`External_Documentation/*.pdf`** (~130 MB of datasheets) — same call to make: keep a short README with vendor links, or move to a wiki/drive, vs. carrying every datasheet in every clone forever. Lower urgency than #1 since PDFs are at least genuinely reference material for this project.
-3. **`docs/deft_vbeta_ref/`** — don't commit the whole 36 MB mirror. If the contract doc needs to cite `i2rt_driver.py`/`feather_platform_client.py`, copy just those two files (or link the upstream repo/commit) instead of the full tree. This one's cheap to fix now since it isn't committed yet.
+1. **`External_Documentation/RobStride/motor_toolV14L/`** — **done** (untracked + `.gitignore`; pointer README under `RobStride/`). Does not rewrite history.
+2. **`External_Documentation/*.pdf`** (~120 MB of datasheets) — same call to make: keep a short README with vendor links, or move to a wiki/drive, vs. carrying every datasheet in every clone forever. Lower urgency than #1 since PDFs are at least genuinely reference material for this project.
+3. **`docs/deft_vbeta_ref/`** — deferred (leave tree for now). Still: don't commit the whole 36 MB mirror; trim to cited files before any add.
 
 Items 1–2 are already-tracked history — removing them from the working tree stops future growth but doesn't shrink existing `.git` without a history rewrite (`git filter-repo`/BFG), which is a separate, disruptive decision (rewrites SHAs, needs force-push, coordinates with anyone else with a clone). Flagging as a call for you, not something to do unprompted.
 
@@ -125,6 +125,6 @@ Items 1–2 are already-tracked history — removing them from the working tree 
 |---|---|---|---|---|
 | 1 | Build `Release` config, compare act_lap/fb_hz against the 2026-07-22 matrix numbers | Low (build-only) | None — same code | Offline, no board |
 | 2 | Index Damiao/actuator RX dispatch by bus instead of scanning all 25 slots | Low | Low — pure restructure, same semantics | Offline, no board (App/ edit + build) |
-| 3 | Untrack `External_Documentation/motor_toolV14L/` (binaries) going forward | Low | Low (doesn't touch history) | Anytime |
-| 4 | Trim `docs/deft_vbeta_ref/` to the ~2 files actually cited before it's ever committed | Low | None (uncommitted) | Anytime — worth flagging to Cursor since it's their new file |
+| 3 | Untrack `External_Documentation/motor_toolV14L/` (binaries) going forward | ~~Low~~ | **Done** 2026-07-23 | — |
+| 4 | Trim `docs/deft_vbeta_ref/` to the ~2 files actually cited before it's ever committed | Low | None (uncommitted) | Deferred — leave mirror for now; do not `git add` |
 | 5 | Decide on `External_Documentation/*.pdf` retention policy | Low decision, larger if history rewrite wanted | Medium if rewriting history | User call |

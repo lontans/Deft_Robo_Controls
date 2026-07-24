@@ -153,7 +153,17 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     HAL_NVIC_SetPriority(UART4_IRQn, 6, 0);
     HAL_NVIC_EnableIRQ(UART4_IRQn);
   /* USER CODE BEGIN UART4_MspInit 1 */
-
+    /* Absolute baud for Jetson: derive UART4 from HSI16, not PCLK1/HSE.
+     * MCU TX↔RX loopback still passes on a wrong PCLK (same clock both ways);
+     * Jetson @ true 115200 does not. Set HSI before HAL_UART_Init's SetConfig. */
+    __HAL_RCC_HSI_ENABLE();
+    while (__HAL_RCC_GET_FLAG(RCC_FLAG_HSIRDY) == 0u) {
+    }
+    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_UART4;
+    PeriphClkInit.Uart4ClockSelection = RCC_UART4CLKSOURCE_HSI;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) {
+      Error_Handler();
+    }
   /* USER CODE END UART4_MspInit 1 */
   }
   else if(uartHandle->Instance==UART5)

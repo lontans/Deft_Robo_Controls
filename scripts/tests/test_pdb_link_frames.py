@@ -46,10 +46,17 @@ def test_command_frame_size_and_magic():
 
 
 def test_command_round_trip():
-    buf = pack_command(seq=200, rail_enable_cmd=0b1010, kill_request=KILL_SOFT_READY, heartbeat=17)
+    buf = pack_command(
+        seq=200,
+        rail_enable_cmd=0b1010,
+        kill_request=KILL_SOFT_READY,
+        heartbeat=17,
+        flags=0x01,
+    )
     parsed = parse_command(buf)
     assert parsed == {
         "seq": 200,
+        "flags": 0x01,
         "rail_enable_cmd": 0b1010,
         "kill_request": KILL_SOFT_READY,
         "heartbeat": 17,

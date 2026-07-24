@@ -2,6 +2,7 @@
 #include "host/host_exchange_schema.h"
 #include "host/host_transport.h"
 #include "host/pdb_link.h"
+#include "host/uart4_mode.h"
 #include "plant/plant_command.h"
 #include "plant/plant_feedback.h"
 #include "plant/plant_diag.h"
@@ -260,6 +261,41 @@ static void host_feedback_fill_system(host_feedback_image_t *out)
 	out->system.kill_state = pdb_link_kill_state();
 	out->system.kill_reason = pdb_link_kill_reason();
 	out->system.estop_sense = pdb_link_estop_sense();
+#if UART4_BRINGUP_DIAG
+	/* Temporary CDC overlay — remove once UART4 link is proven.
+	 * reserved0        = clk_src (1=HSI,2=PCLK) | (err_sticky<<4)
+	 * reserved[0..1]   = BRR LE
+	 * usb_rx_drop      = RX bytes stored
+	 * can_rx_drop      = RX events | (valid<<8)
+	 * cmd_rx_seq       = last RX word (first 4 B of last 64 B attempt)
+	 * cmd_applied_seq  = crc_fail | (tx_complete<<16) */
+	{
+		uint16_t brr = pdb_link_uart_brr();
+		uint32_t err = pdb_link_uart_err_sticky();
+		uint32_t rxb = pdb_link_rx_byte_count();
+		uint32_t rxe = pdb_link_rx_event_count();
+		uint32_t rxv = pdb_link_rx_valid_count();
+		uint32_t fail = pdb_link_rx_crc_fail_count();
+		uint32_t txc = pdb_link_tx_complete_count();
+		out->system.reserved0 =
+			(uint8_t)((pdb_link_uart_clk_src() & 0x0Fu) |
+			          ((err & 0x0Fu) << 4));
+		out->system.reserved[0] = (uint8_t)(brr & 0xFFu);
+		out->system.reserved[1] = (uint8_t)((brr >> 8) & 0xFFu);
+		out->system.usb_rx_drop = (uint16_t)(rxb & 0xFFFFu);
+		out->system.can_rx_drop =
+			(uint16_t)((rxe & 0xFFu) | ((rxv & 0xFFu) << 8));
+		out->system.cmd_rx_seq = pdb_link_rx_last_word();
+		out->system.cmd_applied_seq =
+			(fail & 0xFFFFu) | ((txc & 0xFFFFu) << 16);
+		/* Steal periph lap fields for USART CR2/CR3 low16 (bring-up). */
+		out->system.periph_lap_ms =
+			(uint16_t)(pdb_link_uart_cr2() & 0xFFFFu);
+		out->system.periph_lap_peak_ms =
+			(uint16_t)(pdb_link_uart_cr3() & 0xFFFFu);
+		(void)pdb_link_uart_cr1();
+	}
+#endif
 	plant_timing_system_fill(&out->system);
 }
 

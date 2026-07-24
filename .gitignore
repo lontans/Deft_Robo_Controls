@@ -35,3 +35,6 @@ scripts/_tmp_*.log
 
 # Dated agent handoffs (durable notes live in bringup/lessons/bench docs)
 docs/handoff-*.md
+
+# Vendor GUI apps (not documentation) — keep PDFs/source samples only
+External_Documentation/RobStride/motor_toolV14L/
