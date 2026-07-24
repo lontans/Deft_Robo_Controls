@@ -130,35 +130,26 @@ def test_find_cdc_port_linux_style(monkeypatch: pytest.MonkeyPatch) -> None:
     assert find_cdc_port() == "/dev/ttyACM0"
 
 
-def test_default_firmware_elf_prefers_release_then_debug() -> None:
-    """Release ELF wins when present; otherwise Debug (explicit fallback)."""
+def test_default_firmware_elf_picks_release_or_debug() -> None:
     elf = default_firmware_elf()
     assert elf.name == "DeftRoboticsControlsPCB.elf"
     assert elf.parent.name in ("Release", "Debug")
-    root = elf.parents[1]
-    release = root / "Release" / "DeftRoboticsControlsPCB.elf"
-    if release.is_file():
-        assert elf == release
-    else:
-        assert elf.parent.name == "Debug"
 
 
-def test_default_firmware_elf_checks_release_first(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import deft_controls_sdk.bench.soft_dfu as mod
+def test_pick_firmware_elf_prefers_newer(tmp_path) -> None:
+    from deft_controls_sdk.bench.soft_dfu import _pick_firmware_elf
 
-    real_is_file = Path.is_file
-
-    def spy_is_file(self: Path) -> bool:
-        if self.name == "DeftRoboticsControlsPCB.elf" and self.parent.name == "Release":
-            return True
-        return real_is_file(self)
-
-    monkeypatch.setattr(mod.Path, "is_file", spy_is_file)
-    elf = default_firmware_elf()
-    assert elf.parent.name == "Release"
-    assert elf.name == "DeftRoboticsControlsPCB.elf"
+    release = tmp_path / "Release" / "DeftRoboticsControlsPCB.elf"
+    debug = tmp_path / "Debug" / "DeftRoboticsControlsPCB.elf"
+    release.parent.mkdir()
+    debug.parent.mkdir()
+    release.write_bytes(b"old")
+    debug.write_bytes(b"new")
+    os.utime(release, (1, 1))
+    os.utime(debug, (2, 2))
+    assert _pick_firmware_elf(tmp_path) == debug
+    os.utime(release, (3, 3))
+    assert _pick_firmware_elf(tmp_path) == release
 
 
 def test_main_flash_wires_to_flash_firmware(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,7 +220,8 @@ def test_flash_firmware_prefers_cubeprog_over_dfu_util(
     def _cube(image, *, serial=None):
         seen["image"] = Path(image)
 
-    monkeypatch.setattr(mod, "_cubeprog_flash", _cube)
+    monkeypatch.setattr(mod, "_cubeprog_flash_usb", _cube)
+    monkeypatch.setattr(mod, "_cubeprog_swd_probe", lambda *_a, **_k: False)
     assert mod.flash_firmware(elf, confirm=True) == "COM5"
     assert seen["image"] == elf
 
@@ -264,3 +256,42 @@ def test_flash_firmware_dfu_util_splits_elf(
     assert mod.flash_firmware(elf, confirm=True) == "/dev/ttyACM0"
     assert flashes[0][0] == 0x08000000
     assert flashes[1][0] == 0x0803F800
+
+
+def test_flash_firmware_falls_back_to_swd_when_df11_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import deft_controls_sdk.bench.soft_dfu as mod
+
+    elf = tmp_path / "fw.elf"
+    elf.write_bytes(b"\x7fELF")
+    calls = {"swd": 0, "usb": 0}
+
+    monkeypatch.setattr(mod, "_which_cubeprog", lambda: "STM32_Programmer_CLI")
+    monkeypatch.setattr(mod, "_which_dfu_util", lambda: None)
+    monkeypatch.setattr(mod, "wait_for_dfu", lambda **kw: False)
+    monkeypatch.setattr(mod, "enter_bootloader", lambda **kw: "COM5")
+    monkeypatch.setattr(mod, "_cubeprog_swd_probe", lambda *_a, **_k: True)
+    monkeypatch.setattr(mod, "wait_for_cdc", lambda **kw: "COM5")
+
+    def _usb(*_a, **_k):
+        calls["usb"] += 1
+        raise AssertionError("USB path should not run when DF11 missing")
+
+    def _swd(image):
+        calls["swd"] += 1
+        assert Path(image) == elf
+
+    monkeypatch.setattr(mod, "_cubeprog_flash_usb", _usb)
+    monkeypatch.setattr(mod, "_cubeprog_flash_swd", _swd)
+    assert mod.flash_firmware(elf, confirm=True) == "COM5"
+    assert calls == {"swd": 1, "usb": 0}
+
+
+def test_soft_dfu_flash_entrypoint_defaults_to_flash() -> None:
+    from soft_dfu_flash import _dispatch_argv
+
+    assert _dispatch_argv([]) == ["flash"]
+    assert _dispatch_argv(["--serial", "ABC"]) == ["flash", "--serial", "ABC"]
+    assert _dispatch_argv(["scan"]) == ["scan"]
+    assert _dispatch_argv(["enter", "--port", "COM5"]) == ["enter", "--port", "COM5"]

@@ -20,10 +20,11 @@
  *      Reset_Handler zeroes, so it survives the reset untouched.
  *   3. On the next boot, soft_dfu_check_and_jump() (called from main(),
  *      before HAL_Init()/SystemClock_Config()) sees the signature, CONSUMES
- *      it immediately, remaps system memory, re-enables IRQs, then jumps
- *      into the ROM bootloader instead of continuing normal boot.
- *   4. At that point, reflash over USB via STM32CubeProgrammer / dfu-util
- *      -- no ST-Link needed.
+ *      it immediately, resets USB FS, remaps system memory, re-enables
+ *      IRQs, then jumps into the ROM bootloader instead of continuing
+ *      normal boot.
+ *   4. At that point, reflash over USB via STM32CubeProgrammer / dfu-util.
+ *      Host tool falls back to ST-Link SWD if DF11 never enumerates.
  *
  * System memory base 0x1FFF0000 and USB DFU (PA11/PA12) are from AN2606
  * for STM32G47xxx (bootloader ID 0xD5). Jump must not call HAL_RCC_DeInit()

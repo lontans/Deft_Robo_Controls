@@ -110,6 +110,20 @@ NORMAL → SOFT_KILL_REQ → (controls safe pose) → SOFT_KILL_READY → HARD_E
 - [ ] Dashboard / health strip: soft-kill visible before hard ESTOP
 - [x] Layout version bump — mismatched v1 hosts rejected
 - [x] Move DEBUG tags off plant `pdb[]` to dedicated `DBGC`/`DBGF` frames ([host-debug-v1.md](host-debug-v1.md))
+- [x] Dashboard / health strip: soft-kill visible before hard ESTOP — PDU telemetry
+      card (`kill_state`/`kill_reason`/`estop_sense`, both MCU-view and raw peer
+      PDBF mirror, pack/rail V·I) + `soft_kill_park` button in
+      `deft_controls_sdk/debug_dashboard/app.py`, offline-tested via
+      `TelemetryCache.update_from_feedback(pdb_status=...)` and a fake hub
+      (`test_deft_controls_sdk_dashboard.py`, `test_deft_controls_sdk_telemetry.py`).
+      Live prove (dashboard + Jetson `pdb_uart_sim`) still pending COM5.
+
+**Note (2026-07-24):** layout has since moved past v2/672 B — plant is now on
+**v3, 694 B, 26 actuator slots** ([host-exchange-v3.md](host-exchange-v3.md)),
+landed as part of the PDU–Controls SDK contract work
+([bench-pdb-sdk-contract-2026-07-24.md](bench-pdb-sdk-contract-2026-07-24.md)).
+This ADR's byte counts above describe the v2 decision as made; not rewritten
+here to preserve the historical record.
 
 ---
 

@@ -172,12 +172,20 @@ def unpack_mit_rx(
     payload: bytes,
     *,
     model: CubemarsAkModel = DEFAULT_MODEL,
+    expected_motor_id: Optional[int] = None,
 ) -> Optional[Dict[str, float]]:
-    """Unpack MIT feedback. Accepts dlc>=6; temp/err need 8 bytes."""
+    """Unpack MIT feedback. Accepts dlc>=6; temp/err need 8 bytes.
+
+    PDF table: D[0]=Drive ID, D[1..2]=p, D[3..5]=v|t, D[6]=temp, D[7]=err.
+    When ``expected_motor_id`` is set, reject D[0] mismatches (shared-bus
+    garbage) — mirrors App cubemars_parse_mit.
+    """
     if len(payload) < 6:
         return None
-    lim = limits_for_model(model)
     motor_id = payload[0] & 0xFF
+    if expected_motor_id is not None and motor_id != (expected_motor_id & 0xFF):
+        return None
+    lim = limits_for_model(model)
     p_u = (payload[1] << 8) | payload[2]
     v_u = (payload[3] << 4) | (payload[4] >> 4)
     t_u = ((payload[4] & 0x0F) << 8) | payload[5]

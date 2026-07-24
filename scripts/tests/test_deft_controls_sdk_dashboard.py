@@ -119,6 +119,67 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
     assert data["held"][1] is None  # never commanded, distinct from idle-hold
 
 
+def test_state_exposes_pdb_status_from_telemetry(server) -> None:
+    """/api/state must surface TelemetryCache's pdb_status verbatim — this is
+    the PDU telemetry strip's only data source (see debug_dashboard/app.py
+    tick() -> s.pdb_status)."""
+    state, base = server
+    state.telemetry.set_connected(True, port="COM5")
+    state.telemetry.update_from_feedback(
+        tick=1, ack_seq=0, mcu_state=3, plant_block=0, plant_block_name="none",
+        pdu_tag="S", lap_ms=1, lap_max_ms=1, ticks_pending=0, svd_present=True,
+        actuators=[],
+        pdb_status={
+            "kill_state": 1,
+            "kill_state_name": "soft_kill_req",
+            "estop_sense": 1,
+            "pdb": {"kill_state": 1, "estop_sense": 1, "contactor_state": 3},
+        },
+    )
+    status, data = _get(base, "/api/state")
+    assert status == 200
+    assert data["pdb_status"]["kill_state_name"] == "soft_kill_req"
+    assert data["pdb_status"]["pdb"]["contactor_state"] == 3
+    assert data["mcu_state"] == 3  # dashboard derives "host requested ESTOP" from this
+
+
+def test_soft_kill_park_without_connection_fails_cleanly(server) -> None:
+    _state, base = server
+    status, data = _post(base, "/api/pdb/soft_kill_park")
+    assert status == 400
+    assert "not connected" in data["error"]
+
+
+def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
+    import deft_controls_sdk.debug_dashboard.app as app_module
+
+    class _FakeHub:
+        port = "COM5"
+        is_streaming = True
+        parked = False
+
+        def held_desires(self):
+            return {}
+
+        def start_streaming(self, hz: float = 50.0, *, telemetry_hz: float = 10.0) -> None:
+            pass
+
+        def soft_kill_park(self) -> None:
+            self.parked = True
+
+        def close(self) -> None:
+            pass
+
+    fake = _FakeHub()
+    monkeypatch.setattr(app_module.ControlsPcbHub, "connect", staticmethod(lambda port, **kw: fake))
+
+    state, base = server
+    state.connect("COM5")
+    status, data = _post(base, "/api/pdb/soft_kill_park")
+    assert status == 200 and data == {"ok": True}
+    assert fake.parked is True
+
+
 def test_ports_endpoint_returns_a_list(server) -> None:
     _state, base = server
     status, data = _get(base, "/api/ports")

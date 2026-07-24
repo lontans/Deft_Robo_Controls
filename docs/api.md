@@ -190,19 +190,25 @@ with PcbRobotSession.connect(apply_yam_cfg=False) as session:
 
 ---
 
-## Soft-DFU — USB flash (no ST-Link)
+## Soft-DFU — one-shot flash
 
 **Preferred (one-liner):**
 
 ```powershell
 python scripts/soft_dfu_flash.py
 # optional: --image Debug/DeftRoboticsControlsPCB.elf
+# optional: --serial 3167376F3435   # only if multiple boards
 ```
 
-Auto-finds STM32 CDC, enters ROM DFU, programs, leaves via reset trampoline.
-You do **not** need to know PDU tags or enter/leave APIs for routine flash.
+Auto-finds STM32 CDC → soft-enters ROM DFU → programs → leaves via reset trampoline.
+If `0483:DF11` never appears (common on some Windows USB stacks), the same script
+falls back to ST-Link SWD via CubeProg when an ST-Link is connected.
 
-Linux / Jetson: same Python entry, or `./scripts/soft_dfu_flash.sh` (dfu-util).
+Linux / Jetson: same Python entry, or `./scripts/soft_dfu_flash.sh` (sudo + dfu-util).
+
+```powershell
+python scripts/soft_dfu_flash.py scan   # CDC / DFU / SWD presence
+```
 
 Advanced module API (also on `hub.debug`) — enter/leave only for custom flows:
 
@@ -215,7 +221,7 @@ from deft_controls_sdk.bench import (
 )
 
 print(find_cdc_port())
-flash_firmware(confirm=True)  # default: repo Debug/*.elf
+flash_firmware(confirm=True)  # default: Release/*.elf if present, else Debug
 ```
 
 Leave targets the app reset trampoline (`0x0803F800`), not a bare jump to `0x08000000` (that can leave USB CDC dead). Details: `bench/soft_dfu.py`.

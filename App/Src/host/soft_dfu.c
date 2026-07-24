@@ -54,6 +54,32 @@ bool soft_dfu_is_command(const host_command_image_t *cmd)
 	       cmd->pdu.data[3] == (uint8_t)SOFT_DFU_TAG3;
 }
 
+static void soft_dfu_usb_force_disconnect(void)
+{
+	uint32_t i;
+
+	/* Drop D+ pull-up so the host sees a clean CDC detach before reset /
+	 * ROM DFU re-enum. Register-level only — this runs with or without HAL. */
+	SET_BIT(RCC->APB1ENR1, RCC_APB1ENR1_USBEN);
+	(void)RCC->APB1ENR1;
+	CLEAR_BIT(USB->BCDR, USB_BCDR_DPPU);
+	USB->CNTR = (uint16_t)(USB_CNTR_FRES | USB_CNTR_PDWN);
+	for (i = 0u; i < 200000u; i++) {
+		__NOP();
+	}
+}
+
+static void soft_dfu_usb_hw_reset(void)
+{
+	SET_BIT(RCC->APB1ENR1, RCC_APB1ENR1_USBEN);
+	(void)RCC->APB1ENR1;
+	SET_BIT(RCC->APB1RSTR1, RCC_APB1RSTR1_USBRST);
+	CLEAR_BIT(RCC->APB1RSTR1, RCC_APB1RSTR1_USBRST);
+	CLEAR_BIT(USB->BCDR, USB_BCDR_DPPU);
+	USB->CNTR = (uint16_t)(USB_CNTR_FRES | USB_CNTR_PDWN);
+	CLEAR_BIT(RCC->APB1ENR1, RCC_APB1ENR1_USBEN);
+}
+
 void soft_dfu_on_command(const host_command_image_t *cmd)
 {
 	(void)cmd;
@@ -64,6 +90,8 @@ void soft_dfu_on_command(const host_command_image_t *cmd)
 	/* Ensure signature is visible before the reset clears pipelines. */
 	__DSB();
 	__ISB();
+
+	soft_dfu_usb_force_disconnect();
 
 	NVIC_SystemReset(); /* never returns */
 
@@ -109,6 +137,7 @@ void soft_dfu_check_and_jump(void)
 	SysTick->VAL  = 0u;
 
 	soft_dfu_nvic_reset();
+	soft_dfu_usb_hw_reset();
 
 	/* Remap system memory to 0x00000000 (SYSCFG MEM_MODE = 001b). */
 	SET_BIT(RCC->APB2ENR, RCC_APB2ENR_SYSCFGEN);

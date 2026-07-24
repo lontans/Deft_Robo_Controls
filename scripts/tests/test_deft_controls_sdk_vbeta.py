@@ -20,16 +20,21 @@ from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, IMAGE_BYTES
 from deft_controls_sdk.link.exchange.wire_layout import (
     HOST_FEEDBACK_MAGIC,
     HOST_LAYOUT_VERSION,
+    SERVO0_FB_OFF,
+    SERVO_SLOT_BYTES,
 )
+from deft_controls_sdk.pdb import KILL_NORMAL, PdbStatus
 from deft_controls_sdk.vbeta import (
     BASE_DRIVE_SLOTS,
     BASE_STEER_SLOTS,
     LEFT_ARM_SLOTS,
     LIFT_SLOT,
+    RIG_RS02_BUS6_SLOT,
     PcbArmDriver,
     PcbNeckDriver,
     PcbPlatformClient,
     RIGHT_ARM_SLOTS,
+    RigComponents,
     deg_to_steps,
     led_caution,
     led_fault,
@@ -38,7 +43,11 @@ from deft_controls_sdk.vbeta import (
     led_solid_green,
     led_solid_red,
     led_solid_yellow,
+    neck_hold_present,
+    pdb_poll,
+    robstride_soft_hold,
     set_led,
+    steps_to_deg,
     yam_product_rows,
 )
 from deft_controls_sdk.vbeta.session import PcbRobotSession
@@ -133,7 +142,9 @@ def test_yam_product_rows_shape() -> None:
 
 def test_arm_goal_position_packing() -> None:
     session, store = _session()
-    arm = PcbArmDriver(session, side="left", skip_home_on_connect=True)
+    arm = PcbArmDriver(
+        session, side="left", skip_home_on_connect=True, clamp_goals=False
+    )
     arm.is_connected = True
     q = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7], dtype=np.float32)
     arm.write("Goal_Position", q)
@@ -143,9 +154,22 @@ def test_arm_goal_position_packing() -> None:
         assert d.kp > 0
 
 
+def test_arm_goal_position_clamped_by_default() -> None:
+    session, store = _session()
+    arm = PcbArmDriver(session, side="left", skip_home_on_connect=True)
+    arm.is_connected = True
+    # J2 soft lo ≈ 0.05; command below published floor.
+    q = np.array([0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 1.5], dtype=np.float32)
+    arm.write("Goal_Position", q)
+    assert store.actuators[LEFT_ARM_SLOTS[1]].position > -0.5
+    assert store.actuators[LEFT_ARM_SLOTS[1]].position >= 0.0
+
+
 def test_arm_zero_torque() -> None:
     session, store = _session()
-    arm = PcbArmDriver(session, side="right", skip_home_on_connect=True)
+    arm = PcbArmDriver(
+        session, side="right", skip_home_on_connect=True, clamp_goals=False
+    )
     arm.is_connected = True
     arm.write("Goal_Position", np.ones(7, dtype=np.float32))
     arm.write("Zero_Torque", True)
@@ -272,3 +296,122 @@ def test_led_factory_pattern_helpers() -> None:
 
     led_idle(session, brightness=12)
     assert store.led.mode == 8 and store.led.master_brightness == 12
+
+
+# -- Rig components (single Damiao arm + optional RS/neck/LED/PDU) -----------------
+
+
+def _session_with_servo_positions(pitch_steps: int, yaw_steps: int) -> tuple[PcbRobotSession, FakeStore]:
+    """Same fake session/store as `_session()`, but `make_fb()` also fills the
+    servo feedback block so `neck_hold_present()` has something to read."""
+    session, store = _session()
+    base_make_fb = store.make_fb
+
+    def make_fb_with_servos() -> bytes:
+        buf = bytearray(base_make_fb())
+        struct.pack_into("<hhH", buf, SERVO0_FB_OFF + 0 * SERVO_SLOT_BYTES, pitch_steps, 0, 0)
+        struct.pack_into("<hhH", buf, SERVO0_FB_OFF + 1 * SERVO_SLOT_BYTES, yaw_steps, 0, 0)
+        return bytes(buf)
+
+    store.make_fb = make_fb_with_servos  # type: ignore[method-assign]
+    return session, store
+
+
+def test_robstride_soft_hold_uses_present_fb_position() -> None:
+    session, store = _session()
+    store.fb_pos[RIG_RS02_BUS6_SLOT] = 0.75
+    desire = robstride_soft_hold(session)
+    assert desire.position == pytest.approx(0.75)
+    assert desire.kp > 0 and desire.kd > 0
+    assert store.actuators[RIG_RS02_BUS6_SLOT].position == pytest.approx(0.75)
+
+
+def test_robstride_soft_hold_defaults_to_zero_without_prior_fb() -> None:
+    session, store = _session()
+    desire = robstride_soft_hold(session)
+    assert desire.position == pytest.approx(0.0)
+
+
+def test_robstride_soft_hold_explicit_position_overrides_fb() -> None:
+    session, store = _session()
+    store.fb_pos[RIG_RS02_BUS6_SLOT] = 0.75
+    desire = robstride_soft_hold(session, position=1.5)
+    assert desire.position == pytest.approx(1.5)
+    assert store.actuators[RIG_RS02_BUS6_SLOT].position == pytest.approx(1.5)
+
+
+def test_neck_hold_present_reads_servo_fb_and_reissues_same_pose() -> None:
+    pitch_steps = deg_to_steps(-10.0)
+    yaw_steps = deg_to_steps(5.0)
+    session, store = _session_with_servo_positions(pitch_steps, yaw_steps)
+    neck = PcbNeckDriver(session)
+    held = neck_hold_present(session, neck)
+    assert held is not None
+    pitch_deg, yaw_deg = held
+    assert pitch_deg == pytest.approx(steps_to_deg(pitch_steps))
+    assert yaw_deg == pytest.approx(steps_to_deg(yaw_steps))
+    assert store.servos[0].native_step_position == pitch_steps
+    assert store.servos[1].native_step_position == yaw_steps
+
+
+def test_pdb_poll_delegates_to_hub_pdb_status() -> None:
+    session, store = _session()
+    canned = PdbStatus(
+        kill_state=KILL_NORMAL,
+        kill_reason=0,
+        estop_sense=1,
+        kill_state_name="normal",
+        kill_reason_name="none",
+        stale_failsafe=False,
+    )
+    store.pdb_status = lambda raw=None: canned  # type: ignore[method-assign]
+    assert pdb_poll(session) is canned
+
+
+def test_rig_components_tick_composes_attached_pieces() -> None:
+    session, store = _session()
+    store.fb_pos[RIG_RS02_BUS6_SLOT] = 0.3
+    canned = PdbStatus(
+        kill_state=KILL_NORMAL, kill_reason=0, estop_sense=1,
+        kill_state_name="normal", kill_reason_name="none", stale_failsafe=False,
+    )
+    store.pdb_status = lambda raw=None: canned  # type: ignore[method-assign]
+
+    rig = RigComponents(
+        session=session,
+        use_robstride=True,
+        neck=PcbNeckDriver(session),
+        use_led_idle=True,
+        poll_pdb=True,
+    )
+    result = rig.tick()
+
+    assert result.soft_kill_parked is False
+    assert result.robstride_position == pytest.approx(0.3)
+    assert result.neck_pose_deg is not None  # zero-steps default FB, still a valid hold
+    assert result.pdb_status is canned
+    assert store.led is not None and store.led.mode == 8
+
+
+def test_rig_components_tick_skips_everything_when_soft_kill_parked() -> None:
+    class _ParkedStore(FakeStore):
+        def soft_kill_park_if_requested(self, *, send: bool = True) -> bool:
+            return True
+
+    store = _ParkedStore()
+    session = PcbRobotSession.__new__(PcbRobotSession)
+    session._hub = store  # type: ignore[assignment]
+    session._owns_hub = False
+    session._stream_hz = 40.0
+    session._closed = False
+
+    rig = RigComponents(
+        session=session, use_robstride=True, neck=PcbNeckDriver(session), use_led_idle=True,
+    )
+    result = rig.tick()
+
+    assert result.soft_kill_parked is True
+    assert result.robstride_position is None
+    assert result.neck_pose_deg is None
+    assert RIG_RS02_BUS6_SLOT not in store.actuators
+    assert store.led is None

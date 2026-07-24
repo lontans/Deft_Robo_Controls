@@ -1,56 +1,100 @@
 # PDU × plant integrated test
 
-Date: 2026-07-23 18:39  
-Port: COM5 @ 40 Hz stream · RS02 CH6 / slot 23 / id `0x70` · Jetson `/dev/ttyTHS1` paced PDB sim  
-Script: `scripts/_tmp_pdb_plant_integ_test.py`  
-Result: **failed=0/5**
+Date: 2026-07-24 11:55
+Port: COM5  hz=40.0  RS slot=24 id=0x70
 
-## What ran
+Host reacts to PDU kill: NORMAL → stream motion; kill≠0 → `McuState.ESTOP` (servos cleared / RS desires cleared). LEDs follow PDU via firmware override.
 
-Jetson PDU peer cycled `NORMAL → SOFT_KILL_REQ → SOFT_KILL_READY → HARD_ESTOP → NORMAL` (`pdb_uart_sim --force-kill-state`).
+Motion: slot0 full-range bounce @ π/4; slot1 ±80 ticks around initial present @ π/16; RS02 soft-hold.
 
-| Actor | Behavior |
-|-------|----------|
-| Firmware LEDs | Follow PDU kill (green / yellow blink / solid red / red blink) |
-| Host (test) | On kill≠0 → `McuState.ESTOP` (clears DXL session + RS desires → freeze). On NORMAL → stream motion |
-| Slot 0 | Full-range bounce @ π/4 rad/s |
-| Slot 1 | Init to present, then ±80 ticks (~7°) @ π/16 |
-| RS02 | Soft-hold at present (kp=2); expect Δ≈0 |
+| Phase | kill | led | host | fb_hz | lag_mean | act_lap | s0 | s1 | rsΔ | pack_v | result |
+|-------|-----:|----:|------|------:|---------:|--------:|---:|---:|----:|--------|--------|
+| NORMAL | 0 | 8 | NORMAL | 430.5 | 0.11425917324663261 | 0.20901068276823037 | 1730 | 41 | 0.000 | [48.00, 48.00, 0.00, 0.00] | PASS |
+| SOFT_KILL_REQ | 1 | 6 | ESTOP | 446.7 | 0.10380034032898469 | 0.0 | 0 | 0 | 0.000 | [48.00, 48.00, 0.00, 0.00] | PASS |
+| SOFT_KILL_READY | 2 | 5 | ESTOP | 449.7 | 0.10321489001692047 | 0.0 | 0 | 0 | 0.000 | [48.00, 48.00, 0.00, 0.00] | PASS |
+| HARD_ESTOP | 3 | 7 | ESTOP | 449.5 | 0.11349520045172219 | 0.0011123470522803114 | 0 | 0 | 0.000 | [48.00, 48.00, 0.00, 0.00] | PASS |
+| NORMAL_RESTORE | 0 | 8 | NORMAL | 412.5 | 0.07894736842105263 | 0.1662627241880756 | 1229 | 24 | 0.001 | [48.00, 48.00, 0.00, 0.00] | PASS |
 
-> Firmware does **not** auto-freeze actuators from `kill_state` alone (LEDs only). This test implements the product host park path: fault kill → ESTOP.
+## Per-phase detail
 
-## Results
+### NORMAL (`normal`)
 
-| Phase | kill | led | host | plant_fb Hz | lag mean/p95/max | act_lap mean | periph_lap | s0 span | s1 span | rs Δ rad | pack_v | result |
-|-------|-----:|----:|------|------------:|-----------------:|-------------:|-----------:|--------:|--------:|---------:|--------|--------|
-| NORMAL | 0 | 3 | NORMAL | 410 | 0.10 / 1 / 1 | 0.19 ms | 0.18 ms | 1773 | 21 | 0.001 | 48/48/0/0 V | PASS |
-| SOFT_KILL_REQ | 1 | 6 | ESTOP | 435 | 0.11 / 1 / 1 | ~0 ms | 0.07 ms | 0 | 0 | 0.000 | 48/48/0/0 V | PASS |
-| SOFT_KILL_READY | 2 | 5 | ESTOP | 440 | 0.11 / 1 / 1 | 0 ms | 0.08 ms | 0 | 0 | 0.000 | 48/48/0/0 V | PASS |
-| HARD_ESTOP | 3 | 7 | ESTOP | 428 | 0.14 / 1 / 1 | 0 ms | 0.08 ms | 0 | 0 | 0.000 | 48/48/0/0 V | PASS |
-| NORMAL_RESTORE | 0 | 3 | NORMAL | 410 | 0.12 / 1 / 2 | 0.07 ms | 0.11 ms | 1208 | 42 | 0.000 | 48/48/0/0 V | PASS |
+- `ok_kill`: True
+- `ok_led`: True
+- `ok_motion`: True
+- `ok_host`: True
+- `lag_p95`: 1.0
+- `lag_max`: 2
+- `act_lap_peak_max`: 1.0
+- `periph_lap_mean`: 0.18485833720390155
+- `raw_fb_hz`: 484.29390089616163
+- `rail_v_V`: [48.0, 19.0, 12.0, 5.0]
+- `pack_i_A`: [1.2, 0.8, 0.0, 0.0]
+- `rail_i_A`: [0.5, 0.3, 0.2, 0.1]
+- `local_estop_mode`: 0
 
-### PDU rails (sim, all phases)
+### SOFT_KILL_REQ (`soft_kill_req`)
 
-| | values |
-|--|--------|
-| pack_v | 48.0, 48.0, 0, 0 V |
-| rail_v | 48.0, 19.0, 12.0, 5.0 V |
-| pack_i | 1.2, 0.8, 0, 0 A |
-| rail_i | 0.5, 0.3, 0.2, 0.1 A |
+- `ok_kill`: True
+- `ok_led`: True
+- `ok_motion`: True
+- `ok_host`: True
+- `lag_p95`: 1.0
+- `lag_max`: 1
+- `act_lap_peak_max`: 2.0
+- `periph_lap_mean`: 0.14269725797425853
+- `raw_fb_hz`: 495.66659170390415
+- `rail_v_V`: [48.0, 19.0, 12.0, 5.0]
+- `pack_i_A`: [1.2, 0.8, 0.0, 0.0]
+- `rail_i_A`: [0.5, 0.3, 0.2, 0.1]
+- `local_estop_mode`: 0
 
-(`pdb_uart_sim` fixed telemetry; 10 mV / 10 mA counts.)
+### SOFT_KILL_READY (`soft_kill_ready`)
 
-## Observations
+- `ok_kill`: True
+- `ok_led`: True
+- `ok_motion`: True
+- `ok_host`: True
+- `lag_p95`: 1.0
+- `lag_max`: 2
+- `act_lap_peak_max`: 2.0
+- `periph_lap_mean`: 0.10450250138966093
+- `raw_fb_hz`: 499.9522420621876
+- `rail_v_V`: [48.0, 19.0, 12.0, 5.0]
+- `pack_i_A`: [1.2, 0.8, 0.0, 0.0]
+- `rail_i_A`: [0.5, 0.3, 0.2, 0.1]
+- `local_estop_mode`: 0
 
-1. **Motion vs freeze:** NORMAL phases show large slot0 travel (1200–1800 ticks) and small slot1 wiggle (21–42 ticks). Fault phases show span 0 on both DXL and RS02.
-2. **LEDs track PDU:** 3→6→5→7→3 as kill cycles; host LedDesire left OFF.
-3. **Bandwidth:** Stream ~40 Hz cmd; MCU plant FB ~410–440 Hz counted; raw CDC ~480–500 Hz. Cmd lag mean ~0.1 frame, p95=1. `act_lap` ~0.2 ms under motion, ~0 under ESTOP.
-4. **RS02:** Held within 0.001 rad across all phases (no travel under fault).
-5. **Neck starts:** First run present near table ends (3072 / 2500); restore re-armed at 1513 / 2480 after ESTOP.
+### HARD_ESTOP (`hard_estop`)
 
-## Re-run
+- `ok_kill`: True
+- `ok_led`: True
+- `ok_motion`: True
+- `ok_host`: True
+- `lag_p95`: 1.0
+- `lag_max`: 1
+- `act_lap_peak_max`: 2.0
+- `periph_lap_mean`: 0.11457174638487208
+- `raw_fb_hz`: 489.96562891322105
+- `rail_v_V`: [48.0, 19.0, 12.0, 5.0]
+- `pack_i_A`: [1.2, 0.8, 0.0, 0.0]
+- `rail_i_A`: [0.5, 0.3, 0.2, 0.1]
+- `local_estop_mode`: 0
 
-```powershell
-$env:JETSON_PASS='4565'
-python scripts/_tmp_pdb_plant_integ_test.py --port COM5 --hz 40
-```
+### NORMAL_RESTORE (`normal`)
+
+- `ok_kill`: True
+- `ok_led`: True
+- `ok_motion`: True
+- `ok_host`: True
+- `lag_p95`: 1.0
+- `lag_max`: 1
+- `act_lap_peak_max`: 2.0
+- `periph_lap_mean`: 0.20067862336403297
+- `raw_fb_hz`: 472.5334200457371
+- `rail_v_V`: [48.0, 19.0, 12.0, 5.0]
+- `pack_i_A`: [1.2, 0.8, 0.0, 0.0]
+- `rail_i_A`: [0.5, 0.3, 0.2, 0.1]
+- `local_estop_mode`: 0
+
+## Summary: failed=0/5

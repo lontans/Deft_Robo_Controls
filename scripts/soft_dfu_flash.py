@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""One-shot USB soft-DFU flash entrypoint (Windows / Linux / Jetson).
+"""One-shot firmware flash (Windows / Linux / Jetson).
 
     python scripts/soft_dfu_flash.py
     python scripts/soft_dfu_flash.py --serial 3167376F3435
     python scripts/soft_dfu_flash.py --image Debug/foo.elf
+
+Optional subcommands (advanced): scan | enter | leave | flash
 """
 from __future__ import annotations
 
@@ -16,6 +18,19 @@ if str(_SCRIPTS) not in sys.path:
 
 from deft_controls_sdk.bench.soft_dfu import main  # noqa: E402
 
+_SUBCOMMANDS = frozenset({"flash", "enter", "leave", "scan"})
+
+
+def _dispatch_argv(argv: list[str]) -> list[str]:
+    """Default to ``flash`` so users run one script with optional flags only."""
+    if not argv:
+        return ["flash"]
+    if argv[0] in _SUBCOMMANDS:
+        return argv
+    if argv[0] in ("-h", "--help"):
+        return ["flash", "--help"]
+    return ["flash", *argv]
+
 
 if __name__ == "__main__":
-    raise SystemExit(main(["flash", *sys.argv[1:]]))
+    raise SystemExit(main(_dispatch_argv(sys.argv[1:])))

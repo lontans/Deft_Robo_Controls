@@ -13,6 +13,7 @@ from deft_controls_sdk.vbeta.slots import (
     DEFAULT_ARM_KP,
     arm_slots,
 )
+from deft_controls_sdk.vbeta.yam_limits import SOFT_MARGIN, clamp_q7
 
 
 class RobotDeviceAlreadyConnectedError(RuntimeError):
@@ -38,6 +39,8 @@ class PcbArmDriver:
         home_pose: Optional[np.ndarray] = None,
         sleep_pose: Optional[np.ndarray] = None,
         skip_home_on_connect: bool = True,
+        clamp_goals: bool = True,
+        soft_margin: float = SOFT_MARGIN,
     ) -> None:
         self._session = session
         self.side = side
@@ -47,6 +50,8 @@ class PcbArmDriver:
             raise ValueError("kp must have length 7")
         self.kd = float(kd)
         self.is_connected = False
+        self.clamp_goals = bool(clamp_goals)
+        self.soft_margin = float(soft_margin)
         self.home_pose = (
             np.asarray(home_pose, dtype=np.float32)
             if home_pose is not None
@@ -176,6 +181,8 @@ class PcbArmDriver:
 
     def _command_joint_pos(self, values: np.ndarray, *, send: bool) -> None:
         q = np.asarray(values, dtype=np.float32).reshape(7)
+        if self.clamp_goals:
+            q = clamp_q7(q, self.side, margin=self.soft_margin)
         self._setpoint = q.copy()
         self._session.set_actuators(self._desires_for(q), send=send)
 

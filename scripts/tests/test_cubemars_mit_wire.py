@@ -240,3 +240,80 @@ def test_layout_matches_damiao_byte_shape():
     _, got = pack_mit(1, 1.0, 2.0, 40.0, 1.0, 3.0, model=CubemarsAkModel.AK80_9)
     expect = reference_damiao_style_pack(p_u, v_u, kp_u, kd_u, t_u)
     assert got == expect
+
+
+def test_no_invented_clear_fault_opcode():
+    """Damiao has 0xFB clear-fault; CubeMars PDF does not — do not invent it."""
+    assert CMD_ENABLE == 0xFC
+    assert CMD_DISABLE == 0xFD
+    assert CMD_SET_ZERO == 0xFE
+    assert 0xFB not in (CMD_ENABLE, CMD_DISABLE, CMD_SET_ZERO)
+
+
+def test_lifecycle_enable_then_idle_mit_golden():
+    """Formal TX sequence: ENTER (0xFC) then STREAM MIT including idle kp=kd=0."""
+    mid = 0x03
+    lim = limits_for_model(CubemarsAkModel.AK80_9)
+    can_en, en = pack_enable(mid)
+    can_mit, mit = pack_mit(mid, 0.0, 0.0, 0.0, 0.0, 0.0, model=CubemarsAkModel.AK80_9)
+    assert can_en == mid and can_mit == mid
+    assert en == bytes([0xFF] * 7 + [0xFC])
+    # Idle MIT is a real packed frame (not disable). Quantization may sit on
+    # mid-code for bipolar spans — allow one LSB of V/T.
+    out = unpack_mit_tx(mit, model=CubemarsAkModel.AK80_9)
+    assert out["position"] == pytest.approx(0.0, abs=lim.p_max / 32000.0)
+    assert out["velocity"] == pytest.approx(0.0, abs=lim.v_max / 2000.0)
+    assert out["kp"] == pytest.approx(0.0, abs=KP_MAX / 2000.0)
+    assert out["kd"] == pytest.approx(0.0, abs=KD_MAX / 2000.0)
+    assert out["torque"] == pytest.approx(0.0, abs=abs(lim.t_max) / 2000.0)
+    can_dis, dis = pack_disable(mid)
+    assert can_dis == mid and dis == bytes([0xFF] * 7 + [0xFD])
+
+
+def test_mit_feedback_maps_err_byte_to_fault():
+    lim = limits_for_model()
+    p_u = float_to_uint(0.0, lim.p_min, lim.p_max, 16)
+    payload = bytes(
+        [
+            7,
+            (p_u >> 8) & 0xFF,
+            p_u & 0xFF,
+            0,
+            0,
+            0,
+            40,
+            0xA5,  # err → fault
+        ]
+    )
+    out = unpack_mit_rx(payload, expected_motor_id=7)
+    assert out is not None
+    assert out["fault"] == 0xA5
+    assert out["temperature"] == 40.0
+
+
+def test_mit_feedback_rejects_wrong_drive_id_in_d0():
+    lim = limits_for_model()
+    p_u = float_to_uint(0.0, lim.p_min, lim.p_max, 16)
+    payload = bytes([9, (p_u >> 8) & 0xFF, p_u & 0xFF, 0, 0, 0, 0, 0])
+    assert unpack_mit_rx(payload, expected_motor_id=7) is None
+    assert unpack_mit_rx(payload, expected_motor_id=9) is not None
+
+
+def test_pdf_sample_torque_nibble_bug_not_present():
+    """If data[6] reused kp>>8 (PDF sample bug), high torque would corrupt.
+    Pack nonzero torque with kp=0 and ensure high nibble of data[6] is t>>8."""
+    _, data = pack_mit(
+        1,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        9.0,  # within AK80-9 ±18
+        model=CubemarsAkModel.AK80_9,
+    )
+    lim = limits_for_model(CubemarsAkModel.AK80_9)
+    t_u = float_to_uint(9.0, lim.t_min, lim.t_max, 12)
+    kp_u = float_to_uint(0.0, lim.kp_min, lim.kp_max, 12)
+    # Correct layout: data[6] high nibble from kd (0), low from t>>8
+    assert (data[6] & 0x0F) == ((t_u >> 8) & 0x0F)
+    assert (data[6] & 0x0F) != ((kp_u >> 8) & 0x0F) or (t_u >> 8) == (kp_u >> 8)

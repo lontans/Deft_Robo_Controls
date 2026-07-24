@@ -1,10 +1,18 @@
 # RFC: CubeMars plant plugin → MIT Power Mode (std-ID)
 
-Status: proposal drafted — SDK wire + tests landed; App patch is proposal-only
-(`git apply --check` verified). Offline Agent1 — no build/flash/COM5.
-Executor: Cursor (owns `App/`/`Core/`, COM5, soft-DFU).
-Patch: [`docs/patches/cubemars-mit-plant.patch`](patches/cubemars-mit-plant.patch).
-Proposed full sources: [`docs/patches/cubemars_mit_proposed/`](patches/cubemars_mit_proposed/).
+Status: **landed on `main`** (layout v3 / 694 B). MIT hot path in
+`App/Src/plant/plugins/cubemars.c` + SDK `cubemars_mit.py`. Servo Mode remains
+`CUBEMARS_ENABLE_SERVO_MODE=0` (reference only). YAM product CFG stays Damiao.
+
+Hardening (2026-07-24): formalized RESET→ENTER→STREAM→EXIT lifecycle comments;
+TX-driven latch (no RX gate); RX validates std-ID via `cubemars_resolve_rx_can_id`
++ D[0] Drive ID; reject garbage without writing state; no slot-0 latch fallback;
+err byte → `fault`; pack/parse golden tests extended. Per-slot AK model still
+defaults to AK80-9 — `TODO(cfg-model)` parked (no CFG schema bump).
+
+Historical proposal artifacts (superseded by tree): 
+[`docs/patches/cubemars-mit-plant.patch`](patches/cubemars-mit-plant.patch),
+[`docs/patches/cubemars_mit_proposed/`](patches/cubemars_mit_proposed/).
 
 ## Problem
 
@@ -186,10 +194,11 @@ Then rebuild / soft-DFU as usual. Bench: assign one CH with
 `protocol=PROTO_CUBEMARS`, AK model matching the motor, enable, stream
 `ActuatorDesire` MIT — same host path as Damiao arms.
 
-## Matrix / bring-up checklist (executor)
+## Matrix / bring-up checklist
 
-- [ ] `git apply --check` clean on tree that already has RX-index + RobStride stagger
-- [ ] Unit: `pytest scripts/tests/test_cubemars_mit_wire.py`
+- [x] MIT path in App tree (not proposal-only apply)
+- [x] Unit: `pytest scripts/tests/test_cubemars_mit_wire.py`
 - [ ] Single CubeMars on spare bus: enable latch → MIT hold → disable on recovery
-- [ ] Confirm YAM product CFG still Damiao after any host script changes
+- [x] YAM product CFG still Damiao (`yam_product_rows` / smoke defaults)
 - [ ] Sniff: TX std-ID = motor_id; RX std-ID = motor_id (`0x00+Drive`); no ext-ID Servo frames on the hot path
+- [ ] Optional: wire `cubemars_set_model` from CFG/diag (`TODO(cfg-model)`)

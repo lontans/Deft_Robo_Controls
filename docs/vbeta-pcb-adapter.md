@@ -101,6 +101,21 @@ de-stub plan (bench discovery is the blocking first step, not more code).
 
 Default MIT gains (bringup): kp ≈ `(40,60,90,60,25,25,20)`, kd ≈ `1.0`.
 
+### Soft limits (`yam_limits`)
+
+Host soft stops live in [`scripts/deft_controls_sdk/vbeta/yam_limits.py`](../scripts/deft_controls_sdk/vbeta/yam_limits.py)
+(port of legacy `yam_limits.py`): J1–J6 from `yam.xml`, J7 provisional motor-frame,
+left/right mirrored. API: `load_yam_limits`, `soft_limits_q7`, `clamp_q7`,
+`plan_hold_q7` / `plan_jog_q7`.
+
+`PcbArmDriver` clamps `Goal_Position` / `go_to` by default (`clamp_goals=True`).
+**Caveat:** XML = model frame; Damiao FB = motor encoder until zeros — clamps are
+host soft stops for relative hold/jog, not a substitute for calibration. Absolute
+teleop still needs zeros (see [bringup.md](bringup.md)).
+
+One-arm smoke (clamped): `vbeta_arm_smoke.py --hold` / `--jog` — Jetson CLI
+documented in `vbeta_smoke_lib.py` docstring; HW prove deferred until rig ready.
+
 ### Platform — `PcbPlatformClient` ↔ `FeatherPlatformClient`
 
 |Cmd|PCB|
@@ -188,6 +203,43 @@ Keep `send_command` / `get_state` / `send_target_state` / `heartbeat` names so
 |--------|-------------|-------------|
 |`teleop_base_lift` → `base_cmd`|nav_planner go_to / rotate|stop or steer-hold only — **prefer converting teleop to `send_target_state`**|
 |`send_action` → `send_target_state`|manual targets|full support|
+
+## Rig integration (single Damiao arm + optional pieces)
+
+Offline scaffold for composing the bench rig on **one** `PcbRobotSession` as
+pieces come online — see
+[`scripts/deft_controls_sdk/vbeta/rig.py`](../scripts/deft_controls_sdk/vbeta/rig.py).
+Nothing here has been proven on hardware; it's additive to the standalone
+`PcbArmDriver` path already smoke-tested (see
+[`bench-vbeta-arm-2026-07-24.md`](bench-vbeta-arm-2026-07-24.md)).
+
+**Bring-up order** (each step keeps everything before it working):
+
+1. Hold baseline — one `PcbArmDriver` alone (already smoke-tested)
+2. Add RobStride soft-hold — `robstride_soft_hold()` on the rig's canonical
+   RS02 bus-6 slot (`RIG_RS02_BUS6_SLOT = 24`, `id=0x70`, per
+   [`bench-pdb-plant-integ-2026-07-23.md`](bench-pdb-plant-integ-2026-07-23.md)).
+   This slot is CFG-disabled/spare in `yam_product_rows()` — needs a bench CFG
+   override to actually drive it, not the YAM product CFG.
+3. Neck DXL hold — `neck_hold_present()` re-issues the present pitch/yaw so
+   the neck doesn't relax rather than actively moving it
+4. LED idle — `led_idle()` (mode 8, already the PDB-`NORMAL` default)
+5. PDU strip — `pdb_poll()` (`hub.pdb_status()`, Track B API)
+
+`RigComponents` batches whichever of 2–4 are attached behind one `tick()`
+call per loop iteration — construct with only the pieces the bench actually
+has wired (all default off). It services soft-kill first
+(`PcbRobotSession.service_soft_kill()`) and skips every other component on
+that tick if parked, same park-first order `send_once()` already uses. Every
+write is `send=False` (held-desire update only) — the caller's existing
+`send_once()` / streaming loop does the actual TX, and `PcbRobotSession`
+stays the sole COM owner throughout; `RigComponents` never opens or shares a
+second connection.
+
+Fake-hub tests: `scripts/tests/test_deft_controls_sdk_vbeta.py`
+(`test_robstride_soft_hold_*`, `test_neck_hold_present_*`, `test_pdb_poll_*`,
+`test_rig_components_tick_*`). No COM5 — HW prove is deferred until the rig
+is ready (single-arm only; no dual-arm, no CubeMars CFG flip in this pass).
 
 ## Soft-DFU (user-facing)
 

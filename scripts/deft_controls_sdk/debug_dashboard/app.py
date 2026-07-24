@@ -120,6 +120,13 @@ class AppState:
     def recover(self) -> None:
         self._require_hub().recover()
 
+    def soft_kill_park(self) -> None:
+        """Product soft-kill park (see ControlsPcbHub.soft_kill_park): clear
+        desires/servos and latch McuState.ESTOP so firmware can ack
+        SOFT_KILL_READY on the PDB UART once the peer requests SOFT_KILL_REQ.
+        Reuses the existing MCU ESTOP wire path — not a second protocol."""
+        self._require_hub().soft_kill_park()
+
     def held_snapshot(self) -> dict:
         """Currently-commanded plant control state — distinct from measured
         feedback (SessionState.actuators) and from whatever's sitting in an
@@ -258,6 +265,15 @@ _HTML = """<!DOCTYPE html>
     <span class="meta" id="recordMeta"></span>
   </section>
   <section class="card">
+    <h2>PDU / soft-kill</h2>
+    <div class="grid" id="pdu"></div>
+    <div class="row" style="margin-top:0.5rem">
+      <button class="estop" id="softKillBtn" onclick="softKillPark()">Soft-kill Park</button>
+      <span class="meta" id="pdbMeta"></span>
+    </div>
+    <p class="err" id="pdbError"></p>
+  </section>
+  <section class="card">
     <h2>Plant control</h2>
     <div class="row">
       <button id="mcuNormal" onclick="setMcuState(0)">NORMAL</button>
@@ -300,6 +316,13 @@ function fmt(n, d=2) {
 }
 function setConnError(msg) { document.getElementById("connError").textContent = msg || ""; }
 function setCtrlError(msg) { document.getElementById("ctrlError").textContent = msg || ""; }
+function setPdbError(msg) { document.getElementById("pdbError").textContent = msg || ""; }
+
+const PEER_KILL_STATE_NAMES = {0: "normal", 1: "soft_kill_req", 2: "soft_kill_ready", 3: "hard_estop"};
+function fmtVec(vec, d=2) {
+  if (!vec) return "—";
+  return vec.map(v => fmt(v, d)).join(" / ");
+}
 
 async function postAction(path, body, errSetter) {
   try {
@@ -348,6 +371,7 @@ function disconnect() {
 }
 function setMcuState(n) { postAction("/api/mcu_state", { state: n }, setCtrlError); }
 function recover() { postAction("/api/recover", {}, setCtrlError); }
+function softKillPark() { postAction("/api/pdb/soft_kill_park", {}, setPdbError); }
 function idleAll() { postAction("/api/actuator/idle_all", {}, setCtrlError); }
 function applyActuator(slot) {
   const g = id => parseFloat(document.getElementById(id).value);
@@ -429,6 +453,34 @@ async function tick() {
     recBtn.textContent = s.recording ? "■ Stop recording" : "● Record";
     recMeta.textContent = s.recording
       ? `${(s.recording_bytes/1024).toFixed(1)} KB · ${(s.recording_seconds||0).toFixed(0)}s · ${s.recording_path ? s.recording_path.split(/[\\/]/).pop() : ""}`
+      : "";
+
+    // PDU / soft-kill — pdb_status is null until the first feedback frame
+    // with a parseable system-kill block arrives (or never connected).
+    const pdb = s.pdb_status;
+    const hostRequested = s.mcu_state === 3;  // McuState.ESTOP — same latch plant_command.c drives to pdb_link_request_estop()
+    document.getElementById("pdu").innerHTML = pdb ? [
+      kv("kill_state (MCU view, freshness-gated)", pdb.kill_state_name),
+      kv("kill_reason", pdb.kill_reason_name),
+      kv("stale_failsafe", pdb.stale_failsafe ? "yes (COMMS_LOSS -> HARD)" : "no"),
+      kv("host requested ESTOP", hostRequested ? "yes" : "no"),
+      kv("local estop_sense (Controls PB7)", pdb.estop_sense === 1 ? "1 (allowed)" : "0 (asserted)"),
+      kv("peer kill_state (raw PDBF)", pdb.pdb ? PEER_KILL_STATE_NAMES[pdb.pdb.kill_state] ?? pdb.pdb.kill_state : "—"),
+      kv("peer estop_sense (raw PDBF)", pdb.pdb ? (pdb.pdb.estop_sense === 1 ? "1 (allowed)" : "0 (asserted)") : "—"),
+      kv("contactor_state", pdb.pdb ? pdb.pdb.contactor_state : "—"),
+      kv("pack_v (V) x4", fmtVec(pdb.pack_v_V)),
+      kv("rail_v (V) x4", fmtVec(pdb.rail_v_V)),
+      kv("pack_i (A) x4", fmtVec(pdb.pack_i_A)),
+      kv("rail_i (A) x4", fmtVec(pdb.rail_i_A)),
+    ].join("") : `<div class="kv"><span class="k">status</span><div class="v">no PDB frame yet</div></div>`;
+    document.getElementById("softKillBtn").disabled = !s.connected;
+    const pdbMeta = document.getElementById("pdbMeta");
+    pdbMeta.textContent = pdb
+      ? (pdb.kill_state_name === "soft_kill_req"
+          ? "peer requesting soft-kill — Park to ack SOFT_KILL_READY"
+          : pdb.kill_state_name === "soft_kill_ready"
+            ? "parked — SOFT_KILL_READY acked"
+            : "")
       : "";
 
     // Connection card
@@ -581,6 +633,8 @@ def make_handler(state: AppState):
                     state.telemetry.stop_recording()
                 elif path == "/api/recover":
                     state.recover()
+                elif path == "/api/pdb/soft_kill_park":
+                    state.soft_kill_park()
                 elif path == "/api/mcu_state":
                     state.set_mcu_state(int(body["state"]))
                 elif path == "/api/actuator/idle_all":

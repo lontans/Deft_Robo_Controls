@@ -68,6 +68,10 @@ class SessionState:
     ticks_pending: Optional[int] = None
     svd_present: bool = False
     pdu_tag: Optional[str] = None
+    # PDB (power distribution board) status mirrored from the plant feedback
+    # image — see deft_controls_sdk.pdb.status.PdbStatus.to_dict(). None until
+    # the first feedback frame with a parseable system-kill block arrives.
+    pdb_status: Optional[Dict[str, Any]] = None
     grade: str = "red"  # green | yellow | red
     summary: str = "no data yet"
     context: List[str] = field(default_factory=list)
@@ -388,6 +392,7 @@ class TelemetryCache:
         actuators: List[Optional[Dict[str, Any]]],
         mode: str = "plant_stream",
         raw: Optional[bytes] = None,
+        pdb_status: Optional[Dict[str, Any]] = None,
     ) -> None:
         now = time.time()
         with self._lock:
@@ -407,6 +412,7 @@ class TelemetryCache:
             self._state.ticks_pending = ticks_pending
             self._state.svd_present = svd_present
             self._state.pdu_tag = pdu_tag
+            self._state.pdb_status = pdb_status
             self._state.actuators = actuators
             _grade_and_context(self._state)
             snap = self._state.to_dict()

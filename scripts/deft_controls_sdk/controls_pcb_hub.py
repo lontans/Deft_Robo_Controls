@@ -92,7 +92,13 @@ class ControlsPcbHub:
         Plant TX runs at ``hz`` on its own thread (send→sleep, legacy-shaped).
         TelemetryCache / UI publish runs on a *side* thread at ``telemetry_hz``
         so dashboard disk/json cannot stretch plant TX gaps.
+
+        Auto-parks via :meth:`soft_kill_park_if_requested` when USB kill is
+        ``SOFT_KILL_REQ`` (staged; next plant TX carries ESTOP).
         """
+        self._connection.set_pre_plant_send(
+            lambda: self.soft_kill_park_if_requested(send=False)
+        )
         self._connection.start_streaming(hz=hz, telemetry_hz=telemetry_hz)
 
     def log_feedback(self, raw: Optional[bytes] = None, *, include_raw: bool = True) -> None:

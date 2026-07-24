@@ -79,6 +79,30 @@ def yam_product_rows() -> List[Tuple[int, bool, int, int, int]]:
     return rows
 
 
+def yam_left_arm_rows() -> List[Tuple[int, bool, int, int, int]]:
+    """Bench characterize: left arm CH1 only — slots 0–6 on, everything else off.
+
+    Disables right arm / base so a single-arm bus-1 bench cannot command CH2+.
+    """
+    rows: List[Tuple[int, bool, int, int, int]] = []
+    for i in range(7):
+        rows.append((1, True, PROTO_DAMIAO, 0x01 + i, _DAMIAO_MASTER[i]))
+    for i in range(7):
+        rows.append((2, False, PROTO_DAMIAO, 0x01 + i, _DAMIAO_MASTER[i]))
+    for bus in (4, 5, 6):
+        rows.append((bus, False, PROTO_ROBSTRIDE, 0x01, 0))
+    for bus in (4, 5, 6):
+        rows.append((bus, False, PROTO_ROBSTRIDE, 0x02, 0))
+    rows.append((3, False, PROTO_NONE, 0, 0))
+    for _ in range(5):
+        rows.append((3, False, PROTO_NONE, 0, 0))
+    if len(rows) != ACTUATOR_COUNT:
+        raise RuntimeError(
+            f"YAM left-arm CFG rows={len(rows)} != ACTUATOR_COUNT={ACTUATOR_COUNT}"
+        )
+    return rows
+
+
 def cubemars_yam_rows() -> List[Tuple[int, bool, int, int, int]]:
     """Bench-only scaffold: same slot map as `yam_product_rows()` with the
     arm rows swapped from Damiao MIT to CubeMars MIT (PROTO_CUBEMARS) —

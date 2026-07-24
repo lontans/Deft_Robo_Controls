@@ -86,7 +86,15 @@ class PcbRobotSession:
     def set_led(self, desire: LedDesire, *, send: bool = False) -> None:
         self._hub.set_led(desire, send=send)
 
+    def service_soft_kill(self) -> bool:
+        """If peer requested soft-kill, park via hub (Track B API)."""
+        fn = getattr(self._hub, "soft_kill_park_if_requested", None)
+        if fn is None:
+            return False
+        return bool(fn(send=False))
+
     def send_once(self) -> None:
+        self.service_soft_kill()
         self._hub.send_once()
 
     def poll_feedback(self) -> Optional[FeedbackImage]:

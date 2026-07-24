@@ -1,10 +1,14 @@
-"""Soft-DFU — enter ROM bootloader over CDC, leave DFU over USB (no ST-Link).
+"""Soft-DFU flash helpers — USB ROM DFU with ST-Link SWD fallback.
 
 Firmware: App/Src/host/soft_dfu.c / App/Inc/host/soft_dfu.h.
 
 Enter: plant CMD with PDU tag DFU! → MCU resets into system memory BL.
 Leave: AN3156 Leave DFU — Set Address Pointer then zero-length DFU_DNLOAD
 (requires GETSTATUS after SET_ADDRESS so the command actually executes).
+
+One-shot: ``python scripts/soft_dfu_flash.py``. If soft-enter drops CDC but
+``0483:DF11`` never appears, CubeProg ST-Link SWD is used automatically when
+present so the board is not left bricked mid-flash.
 
 Port discovery is OS-aware (Windows COMx / Linux /dev/ttyACM*) and prefers
 STM32 USB CDC 0483:5740 — never hard-code COM5.
@@ -500,19 +504,26 @@ def _dfu_leave(handle, *, address: int) -> None:
         return
 
 
-def default_firmware_elf() -> Path:
-    """Prefer ``Release/DeftRoboticsControlsPCB.elf``; fall back to ``Debug/``.
-
-    See docs/rfc-release-build.md — load-matrix / production flashes should use
-    Release when built; Debug remains the explicit fallback when Release is
-    missing.
-    """
-    # scripts/deft_controls_sdk/bench/soft_dfu.py → repo root
-    root = Path(__file__).resolve().parents[3]
+def _pick_firmware_elf(root: Path) -> Path:
+    """Newest of ``Release/`` / ``Debug/`` ``DeftRoboticsControlsPCB.elf`` under root."""
     release = root / "Release" / "DeftRoboticsControlsPCB.elf"
+    debug = root / "Debug" / "DeftRoboticsControlsPCB.elf"
+    if release.is_file() and debug.is_file():
+        return release if release.stat().st_mtime >= debug.stat().st_mtime else debug
     if release.is_file():
         return release
-    return root / "Debug" / "DeftRoboticsControlsPCB.elf"
+    return debug
+
+
+def default_firmware_elf() -> Path:
+    """Pick the newest of ``Release/`` / ``Debug/`` ``DeftRoboticsControlsPCB.elf``.
+
+    See docs/rfc-release-build.md — production flashes should use Release when
+    that build is current; if Debug was rebuilt more recently, use that so
+    ``python scripts/soft_dfu_flash.py`` (no flags) flashes what you just built.
+    """
+    # scripts/deft_controls_sdk/bench/soft_dfu.py → repo root
+    return _pick_firmware_elf(Path(__file__).resolve().parents[3])
 
 
 def _which_objcopy() -> str:
@@ -585,29 +596,57 @@ def _which_cubeprog() -> Optional[str]:
         path = shutil.which(name)
         if path:
             return path
-    candidates = [
+
+    exe = (
+        "STM32_Programmer_CLI.exe"
+        if host_os() == "windows"
+        else "STM32_Programmer_CLI"
+    )
+    fixed = [
         Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
         / "STMicroelectronics"
         / "STM32Cube"
         / "STM32CubeProgrammer"
         / "bin"
-        / "STM32_Programmer_CLI.exe",
+        / exe,
         Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
         / "STMicroelectronics"
         / "STM32Cube"
         / "STM32CubeProgrammer"
         / "bin"
-        / "STM32_Programmer_CLI.exe",
+        / exe,
         Path(os.environ.get("LOCALAPPDATA", ""))
         / "Programs"
         / "STM32Cube"
         / "STM32CubeProgrammer"
         / "bin"
-        / "STM32_Programmer_CLI.exe",
+        / exe,
+        Path("/usr/local/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin")
+        / exe,
+        Path("/opt/st/stm32cubeprogrammer/bin") / exe,
     ]
-    for c in candidates:
+    for c in fixed:
         if c.is_file():
             return str(c)
+
+    # CubeIDE bundles CubeProg under plugins/…cubeprogrammer…/tools/bin/
+    ide_roots = [
+        Path(r"C:\ST"),
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "STMicroelectronics",
+        Path("/opt/st"),
+        Path.home() / "stm32cubeide",
+    ]
+    for root in ide_roots:
+        if not root.is_dir():
+            continue
+        try:
+            for plug in root.glob("**/plugins/com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.*/tools/bin"):
+                candidate = plug / exe
+                if candidate.is_file():
+                    return str(candidate)
+        except OSError:
+            continue
     return None
 
 
@@ -692,7 +731,7 @@ def _dfu_util_flash(bin_path: Path, *, serial: Optional[str], address: int) -> N
     raise subprocess.CalledProcessError(rc, cmd)
 
 
-def _cubeprog_flash(image: Path, *, serial: Optional[str]) -> None:
+def _cubeprog_flash_usb(image: Path, *, serial: Optional[str]) -> None:
     cli = _which_cubeprog()
     if not cli:
         raise RuntimeError(
@@ -705,55 +744,81 @@ def _cubeprog_flash(image: Path, *, serial: Optional[str]) -> None:
     subprocess.run(cmd, check=True)
 
 
-def flash_firmware(
-    image: Optional[os.PathLike[str] | str] = None,
-    *,
-    serial: Optional[str] = None,
-    flash_address: int = _APP_FLASH_BASE,
-    confirm: bool = True,
-) -> str:
-    """One-shot USB soft-DFU: enter (if needed) → program → Leave trampoline.
+# Back-compat alias for tests / callers.
+_cubeprog_flash = _cubeprog_flash_usb
 
-    ``image`` may be an ``.elf`` or ``.bin``. Default: repo Release ELF if
-    present, else Debug ELF (see ``default_firmware_elf``).
-    Returns the CDC device path after the app re-enumerates.
 
-    Backend: dfu-util when present (Linux/Jetson; needs .bin via objcopy for
-    ELF). Otherwise STM32_Programmer_CLI (Windows typical) flashes ELF
-    directly — no objcopy required.
-    """
-    if not confirm:
-        raise ValueError("flash_firmware() requires confirm=True")
-
-    img = Path(image) if image is not None else default_firmware_elf()
-    if not img.is_file():
-        raise FileNotFoundError(
-            f"firmware not found: {img} — build in CubeIDE or pass --image"
+def _cubeprog_swd_probe(cli: Optional[str] = None) -> bool:
+    """True if CubeProg can open an ST-Link SWD target (mode=UR)."""
+    prog = cli or _which_cubeprog()
+    if not prog:
+        return False
+    cmd = [prog, "-c", "port=SWD", "mode=UR", "-q"]
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=12,
         )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    text = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        return False
+    # CubeProg prints "Error" on connect failure even with rc quirks.
+    low = text.lower()
+    if "error:" in low and "no stm32" in low:
+        return False
+    if "unable to get core id" in low or "no st-link" in low:
+        return False
+    return True
 
-    # Prefer CubeProg when present (ELF, no gap pad). Else dfu-util.
-    use_cube = _which_cubeprog() is not None
-    use_dfu_util = (not use_cube) and (_which_dfu_util() is not None)
-    if not use_dfu_util and not use_cube:
+
+def _cubeprog_flash_swd(image: Path) -> None:
+    cli = _which_cubeprog()
+    if not cli:
         raise RuntimeError(
-            "no flasher found — install dfu-util (Linux) or STM32CubeProgrammer"
+            "STM32_Programmer_CLI not found — install STM32CubeProgrammer"
         )
+    cmd = [
+        cli,
+        "-c",
+        "port=SWD",
+        "mode=UR",
+        "-w",
+        str(image),
+        "-v",
+        "-rst",
+    ]
+    print("+", " ".join(cmd), flush=True)
+    subprocess.run(cmd, check=True)
 
+
+def _flash_via_swd(image: Path, *, serial: Optional[str]) -> str:
+    """Program over ST-Link SWD and wait for app CDC."""
+    print(f"flashing via ST-Link SWD: {image}", flush=True)
+    _cubeprog_flash_swd(image)
+    cdc = wait_for_cdc(serial=serial, timeout_s=15.0)
+    if not cdc:
+        raise RuntimeError(
+            "SWD flash finished but app CDC did not reappear — "
+            "check USB device cable / power"
+        )
+    print(f"flash ok (SWD) — CDC at {cdc}", flush=True)
+    return cdc
+
+
+def _program_usb_dfu(
+    img: Path,
+    *,
+    serial: Optional[str],
+    flash_address: int,
+    use_cube: bool,
+    use_dfu_util: bool,
+) -> None:
     already_root = hasattr(os, "geteuid") and os.geteuid() == 0
-
-    # Prefer DFU if already there (re-flash without re-enter).
-    in_dfu = wait_for_dfu(serial=serial, timeout_s=0.5)
-    if not in_dfu:
-        port = enter_bootloader(confirm=True, serial=serial)
-        print(f"entered DFU from {port}", flush=True)
-        if not wait_for_dfu(serial=serial, timeout_s=10.0):
-            raise RuntimeError(
-                "DFU device 0483:DF11 did not appear — check USB / udev rules"
-            )
-    else:
-        print("already in DFU (0483:DF11)", flush=True)
-
-    # Skip access poll when soft_dfu_flash.sh already ran under sudo.
     if use_dfu_util and host_os() == "linux" and not already_root:
         if not wait_for_dfu_access(serial=serial, timeout_s=2.0):
             print(
@@ -765,8 +830,8 @@ def flash_firmware(
     tmp_paths: List[Path] = []
     try:
         if use_cube:
-            print(f"flashing with STM32_Programmer_CLI: {img}", flush=True)
-            _cubeprog_flash(img, serial=serial)
+            print(f"flashing with STM32_Programmer_CLI USB DFU: {img}", flush=True)
+            _cubeprog_flash_usb(img, serial=serial)
         elif img.suffix.lower() == ".bin":
             _dfu_util_flash(img, serial=serial, address=flash_address)
         else:
@@ -792,12 +857,108 @@ def flash_firmware(
             except OSError:
                 pass
 
+
+def flash_firmware(
+    image: Optional[os.PathLike[str] | str] = None,
+    *,
+    serial: Optional[str] = None,
+    flash_address: int = _APP_FLASH_BASE,
+    confirm: bool = True,
+) -> str:
+    """One-shot flash: soft-DFU USB when possible, else ST-Link SWD fallback.
+
+    ``image`` may be an ``.elf`` or ``.bin``. Default: repo Release ELF if
+    present, else Debug ELF (see ``default_firmware_elf``).
+    Returns the CDC device path after the app re-enumerates.
+
+    Order:
+      1. If ``0483:DF11`` already present → USB program + Leave
+      2. Else soft-enter from CDC → wait for DF11 → USB program + Leave
+      3. If DF11 never appears (common Windows WinUSB gap) and CubeProg can
+         open ST-Link SWD → SWD program + reset (recovers a stuck board)
+    """
+    if not confirm:
+        raise ValueError("flash_firmware() requires confirm=True")
+
+    img = Path(image) if image is not None else default_firmware_elf()
+    if not img.is_file():
+        raise FileNotFoundError(
+            f"firmware not found: {img} — build in CubeIDE or pass --image"
+        )
+
+    cube = _which_cubeprog()
+    use_cube = cube is not None
+    use_dfu_util = (not use_cube) and (_which_dfu_util() is not None)
+    if not use_dfu_util and not use_cube:
+        raise RuntimeError(
+            "no flasher found — install dfu-util (Linux) or STM32CubeProgrammer"
+        )
+
+    swd_ok = bool(use_cube and _cubeprog_swd_probe(cube))
+    # When ST-Link can recover us, don't burn 12s waiting for a DF11 that
+    # often never enumerates on Windows; USB-only hosts still get a long wait.
+    dfu_wait_s = 3.0 if swd_ok else 12.0
+
+    in_dfu = wait_for_dfu(serial=serial, timeout_s=0.5)
+    if not in_dfu:
+        try:
+            port = enter_bootloader(confirm=True, serial=serial)
+            print(f"soft-entered DFU from {port}", flush=True)
+        except RuntimeError as exc:
+            # No CDC (board stuck after a prior soft enter?) — try SWD.
+            if swd_ok:
+                print(
+                    f"no app CDC ({exc}); recovering via ST-Link SWD…",
+                    flush=True,
+                )
+                return _flash_via_swd(img, serial=serial)
+            raise
+
+        if not wait_for_dfu(serial=serial, timeout_s=dfu_wait_s):
+            print(
+                "0483:DF11 did not appear after soft enter "
+                "(CDC dropped; ROM DFU not visible to host)",
+                flush=True,
+            )
+            if swd_ok:
+                print("falling back to ST-Link SWD…", flush=True)
+                return _flash_via_swd(img, serial=serial)
+            raise RuntimeError(
+                "DFU device 0483:DF11 did not appear and no ST-Link SWD "
+                "fallback is available. Windows: install WinUSB for 0483:DF11 "
+                "(Zadig) or keep ST-Link connected. Linux: check lsusb / udev "
+                "(scripts/udev/99-stm32-dfu.rules) or re-run with "
+                "scripts/soft_dfu_flash.sh"
+            )
+    else:
+        print("already in DFU (0483:DF11)", flush=True)
+
+    try:
+        _program_usb_dfu(
+            img,
+            serial=serial,
+            flash_address=flash_address,
+            use_cube=use_cube,
+            use_dfu_util=use_dfu_util,
+        )
+    except Exception as exc:
+        if swd_ok:
+            print(f"USB DFU program failed ({exc}); falling back to SWD…", flush=True)
+            return _flash_via_swd(img, serial=serial)
+        raise
+
     print("leaving DFU via reset trampoline…", flush=True)
     if not leave_bootloader(serial=serial):
+        if swd_ok:
+            print("Leave DFU timed out — recovering via ST-Link SWD…", flush=True)
+            return _flash_via_swd(img, serial=serial)
         raise RuntimeError("Leave DFU timed out — DF11 still present")
 
     cdc = wait_for_cdc(serial=serial, timeout_s=12.0)
     if not cdc:
+        if swd_ok:
+            print("CDC missing after Leave — recovering via ST-Link SWD…", flush=True)
+            return _flash_via_swd(img, serial=serial)
         raise RuntimeError(
             "app CDC did not reappear after Leave — power-cycle or ST-Link reset"
         )
@@ -806,24 +967,34 @@ def flash_firmware(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI: ``python -m deft_controls_sdk.bench.soft_dfu flash``."""
+    """CLI: ``python scripts/soft_dfu_flash.py`` (defaults to flash)."""
     p = argparse.ArgumentParser(
-        prog="soft_dfu",
-        description="USB soft-DFU helpers (no ST-Link)",
+        prog="soft_dfu_flash",
+        description=(
+            "Flash Controls PCB firmware. Default path: soft-DFU over USB, "
+            "with automatic ST-Link SWD fallback when DF11 is not visible."
+        ),
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    f = sub.add_parser("flash", help="enter DFU, program image, leave trampoline")
+    f = sub.add_parser(
+        "flash",
+        help="program firmware (soft-DFU, SWD fallback) — default for soft_dfu_flash.py",
+    )
     f.add_argument(
         "--image",
         default=None,
         help="path to .elf or .bin (default: Release/*.elf if present, else Debug)",
     )
-    f.add_argument("--serial", default=None, help="USB serial to select board")
+    f.add_argument(
+        "--serial",
+        default=None,
+        help="USB serial of the target board (only needed with multiple boards)",
+    )
     f.add_argument(
         "--address",
         default=f"0x{_APP_FLASH_BASE:08X}",
-        help="flash base for dfu-util (default 0x08000000)",
+        help=argparse.SUPPRESS,  # advanced dfu-util base; keep hidden
     )
 
     e = sub.add_parser("enter", help="reset board into ROM DFU")
@@ -839,6 +1010,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = p.parse_args(list(argv) if argv is not None else None)
 
     if args.cmd == "scan":
+        print(f"host: {host_os()}  cubeprog: {_which_cubeprog() or '(none)'}  "
+              f"dfu-util: {_which_dfu_util() or '(none)'}")
         for row in list_cdc_ports(serial=args.serial):
             mark = "CDC" if row.is_stm32_cdc else "   "
             print(f"  [{mark}] {row.device}  sn={row.serial}  "
@@ -849,6 +1022,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"  DFU: ({exc})")
         else:
             print(f"  DFU 0483:DF11: {'yes' if present else 'no'}")
+        if _which_cubeprog():
+            print(
+                f"  ST-Link SWD: {'yes' if _cubeprog_swd_probe() else 'no'}"
+            )
         return 0
 
     if args.cmd == "enter":

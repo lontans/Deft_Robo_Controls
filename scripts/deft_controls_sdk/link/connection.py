@@ -124,6 +124,8 @@ class Connection:
         # Hot-path stats for the telemetry thread (replaced as a whole dict).
         self._hot_stats: Dict[str, object] = {}
         self._hot_fb_gen: int = 0  # bumps when _latest_fb_raw is replaced
+        # Optional hub hook (e.g. soft_kill_park_if_requested) before each plant TX.
+        self._pre_plant_send = None
 
     @classmethod
     def connect(cls, port: str, *, baud: int = DEFAULT_BAUD) -> "Connection":
@@ -495,6 +497,15 @@ class Connection:
 
         pdu = raw[PDU_OFF : PDU_OFF + 32] if len(raw) >= PDU_OFF + 32 else b""
         svd_present = len(pdu) >= 3 and pdu[:3] == b"SVD"
+
+        # Local import: deft_controls_sdk.pdb sits below deft_controls_sdk.link
+        # in the dependency graph but connection.py is imported very early
+        # (deft_controls_sdk/__init__.py -> controls_pcb_hub -> link), so keep
+        # this off the module-level import list to dodge any import-order
+        # fragility rather than proving there isn't one.
+        from deft_controls_sdk.pdb.status import pdb_status_from_frame
+
+        pdb_status = pdb_status_from_frame(raw)
         self._telemetry.update_from_feedback(
             tick=fb.tick,
             ack_seq=fb.ack_seq,
@@ -513,7 +524,12 @@ class Connection:
             actuators=actuators,
             mode=mode,
             raw=raw,
+            pdb_status=pdb_status.to_dict() if pdb_status is not None else None,
         )
+
+    def set_pre_plant_send(self, fn) -> None:
+        """Register a no-arg callback invoked on the plant stream before each TX."""
+        self._pre_plant_send = fn
 
     def start_streaming(self, hz: float = 40.0, *, telemetry_hz: float = 10.0) -> None:
         """Background plant stream — resends held desires, polls feedback.
@@ -596,6 +612,13 @@ class Connection:
                     self._latest_fb_raw = latest
                     self._hot_fb_gen += 1
                 poll_ms = (time.perf_counter() - t0) * 1000.0
+
+                hook = self._pre_plant_send
+                if hook is not None:
+                    try:
+                        hook()
+                    except Exception:
+                        pass
 
                 t0 = time.perf_counter()
                 self.send_once(drain=True)
