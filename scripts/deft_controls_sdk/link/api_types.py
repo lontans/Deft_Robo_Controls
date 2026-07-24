@@ -70,12 +70,15 @@ LED_MODE_SOLID_YELLOW = 4
 LED_MODE_SOLID_RED = 5
 LED_MODE_BLINK_YELLOW_SLOW = 6  # caution, 1 Hz 50%
 LED_MODE_BLINK_RED_FAST = 7  # estop/fault, 5 Hz 50%
+# Idle: cornflower #6495ED (100,149,237); 500 on / 500 off (1 Hz 50%).
+LED_MODE_IDLE_CORNFLOWER = 8
 
 
 @dataclass(frozen=True)
 class LedDesire:
     """SK9822 host command (2 B). mode 0=OFF, 1=TEST, 2=FLASH, 3..7 factory
-    traffic-light (see LED_MODE_*). led_count 0 ⇒ max (300)."""
+    traffic-light, 8=idle cornflower 500/500 blink (see LED_MODE_*).
+    led_count 0 ⇒ max (300)."""
 
     mode: int = 0
     master_brightness: int = 8
@@ -92,7 +95,7 @@ def validate_slot(slot: int) -> None:
 
 
 class CommandImage:
-    """Mutable builder for one 672 B command frame."""
+    """Mutable builder for one 694 B command frame."""
 
     def __init__(self, seq: int = 0, mcu_state: McuState = McuState.NORMAL) -> None:
         self._buf = bytearray(IMAGE_BYTES)
@@ -210,7 +213,7 @@ class FeedbackState:
 
 
 class FeedbackImage:
-    """Parsed 672 B feedback frame — raises InvalidFrameError on bad magic/size."""
+    """Parsed 694 B feedback frame — raises InvalidFrameError on bad magic/size."""
 
     __slots__ = ("_raw", "_header", "_slots")
 

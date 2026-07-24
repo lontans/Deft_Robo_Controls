@@ -2,13 +2,28 @@
 #include "plant/plugins/sk9822.h"
 #include "plant/plant_config.h"
 #include "plant/spi3_role.h"
+#include "host/pdb_link.h"
+#include "host/uart4_mode.h"
 #include "main.h"
 #include <string.h>
 
-/* mode 0 must mean OFF — host images zero-fill leds[], so TEST cannot be 0. */
-#define LED_MODE_OFF   0u
-#define LED_MODE_TEST  1u  /* single-pixel chase (snake) */
-#define LED_MODE_FLASH 2u  /* full-strip blink */
+/* mode 0 must mean OFF — host images zero-fill leds[], so TEST cannot be 0.
+ * 5-bit enum only (host_led_command_t); see docs/rfc-led-factory-patterns.md. */
+#define LED_MODE_OFF                 0u
+#define LED_MODE_TEST                1u  /* single-pixel chase (snake) */
+#define LED_MODE_FLASH               2u  /* full-strip ~2 Hz red blink */
+#define LED_MODE_SOLID_GREEN         3u
+#define LED_MODE_SOLID_YELLOW        4u
+#define LED_MODE_SOLID_RED           5u
+#define LED_MODE_BLINK_YELLOW_SLOW   6u  /* caution: 1 Hz 50% */
+#define LED_MODE_BLINK_RED_FAST      7u  /* estop/fault: 5 Hz 50% */
+/* Idle: cornflower blue #6495ED, 1 Hz 50% (500 on / 500 off). */
+#define LED_MODE_IDLE_CORNFLOWER     8u
+
+#define LED_IDLE_RGB_R               100u
+#define LED_IDLE_RGB_G               149u
+#define LED_IDLE_RGB_B               237u
+#define LED_IDLE_HALF_MS             500u
 
 static host_led_command_t g_cmd_live;
 static host_led_command_t g_cmd_stage;
@@ -18,10 +33,72 @@ static sk9822_pixel_t g_pixels[LED_STRIP_MAX];
 
 static uint16_t g_active_count;
 static uint32_t g_last_ms;
-static uint8_t  g_last_flash_phase = 0xFFu; /* force first FLASH TX */
+static uint8_t  g_last_flash_phase = 0xFFu; /* force first phase-edge TX */
+static uint8_t  g_last_solid_key = 0xFFu;   /* mode|bri key for solid edge TX */
 static bool     g_strip_known_off;
+static uint8_t  g_mode_effective; /* last mode actually animated (PDB override aware) */
 
-#define LED_PERIOD_MS 50u /* TEST chase refresh; FLASH only TX on edge */
+/* PDB / PDU traffic-light → LED (supplant USB LedDesire lap test when UART4=PDB).
+ * Host desire stays staged; override is local to led_service.
+ *   NORMAL + fresh     → IDLE_CORNFLOWER (500/500 blink)
+ *   SOFT_KILL_REQ      → BLINK_YELLOW_SLOW (parking / caution)
+ *   SOFT_KILL_READY    → SOLID_RED (contactors open)
+ *   HARD_ESTOP / stale → BLINK_RED_FAST
+ *   PDBF estop_sense=0 → BLINK_RED_FAST (PDU-reported wire; not local PB7 —
+ *   this bench's PB7 net reads stuck-low so GPIO would mask all colors) */
+#if UART4_MODE == UART4_MODE_PDB
+static uint8_t led_mode_from_pdb(void)
+{
+	uint8_t kill = pdb_link_kill_state();
+	uint8_t peer_estop = pdb_link_peer_estop_sense();
+
+	if (kill == (uint8_t)PDB_KILL_HARD_ESTOP || peer_estop == 0u)
+		return LED_MODE_BLINK_RED_FAST;
+	if (kill == (uint8_t)PDB_KILL_SOFT_READY)
+		return LED_MODE_SOLID_RED;
+	if (kill == (uint8_t)PDB_KILL_SOFT_REQ)
+		return LED_MODE_BLINK_YELLOW_SLOW;
+	if (kill == (uint8_t)PDB_KILL_NORMAL && pdb_link_is_fresh())
+		return LED_MODE_IDLE_CORNFLOWER;
+	return LED_MODE_BLINK_RED_FAST;
+}
+#endif
+
+/* 1 Hz 50%: phase 0 = on [0,500), phase 1 = off [500,1000). */
+static uint8_t led_idle_phase(uint32_t now_ms)
+{
+	return (uint8_t)((now_ms / LED_IDLE_HALF_MS) & 1u);
+}
+
+static bool led_idle_on(uint8_t phase)
+{
+	return phase == 0u;
+}
+
+#define LED_PERIOD_MS 50u /* TEST chase refresh */
+
+/* Factory / traffic-light animator table (RGB + blink half-period). */
+typedef struct {
+	uint8_t  r;
+	uint8_t  g;
+	uint8_t  b;
+	uint16_t half_period_ms; /* 0 ⇒ solid (100% duty) */
+} led_pattern_t;
+
+static const led_pattern_t g_factory_patterns[] = {
+	/* [3] SOLID_GREEN */       { 0,   255, 0,   0u },
+	/* [4] SOLID_YELLOW */      { 255, 180, 0,   0u },
+	/* [5] SOLID_RED */         { 255, 0,   0,   0u },
+	/* [6] BLINK_YELLOW_SLOW */ { 255, 180, 0, 500u },
+	/* [7] BLINK_RED_FAST */    { 255, 0,   0, 100u },
+};
+
+static const led_pattern_t *led_factory_pattern(uint8_t mode)
+{
+	if (mode < LED_MODE_SOLID_GREEN || mode > LED_MODE_BLINK_RED_FAST)
+		return NULL;
+	return &g_factory_patterns[mode - LED_MODE_SOLID_GREEN];
+}
 
 
 void led_init(void)
@@ -32,7 +109,9 @@ void led_init(void)
 	g_active_count = LED_STRIP_MAX;
 	g_last_ms = 0;
 	g_last_flash_phase = 0xFFu;
+	g_last_solid_key = 0xFFu;
 	g_strip_known_off = false;
+	g_mode_effective = LED_MODE_OFF;
 	memset(g_pixels, 0, sizeof(g_pixels));
 }
 
@@ -75,7 +154,9 @@ void led_force_all_off(void)
 	g_cmd_pending = false;
 	g_active_count = LED_STRIP_MAX;
 	g_last_flash_phase = 0xFFu;
+	g_last_solid_key = 0xFFu;
 	g_strip_known_off = true;
+	g_mode_effective = LED_MODE_OFF;
 	__enable_irq();
 
 	for (i = 0; i < LED_STRIP_MAX; i++) {
@@ -110,18 +191,26 @@ static uint16_t led_resolve_count(const host_led_command_t *c)
 	return n;
 }
 
+static void led_fill_rgb(uint16_t n, uint8_t r, uint8_t g, uint8_t b)
+{
+	uint16_t i;
+
+	for (i = 0; i < n; i++) {
+		g_pixels[i].r = r;
+		g_pixels[i].g = g;
+		g_pixels[i].b = b;
+	}
+}
+
 static void led_apply_mode(uint8_t mode, uint8_t brightness, uint16_t n)
 {
 	uint16_t i;
+	const led_pattern_t *pat;
 
 	(void)brightness;
 
 	if (mode == LED_MODE_OFF) {
-		for (i = 0; i < n; i++) {
-			g_pixels[i].r = 0;
-			g_pixels[i].g = 0;
-			g_pixels[i].b = 0;
-		}
+		led_fill_rgb(n, 0, 0, 0);
 		return;
 	}
 
@@ -147,19 +236,32 @@ static void led_apply_mode(uint8_t mode, uint8_t brightness, uint16_t n)
 		uint8_t on = ((HAL_GetTick() / 250u) & 1u) != 0u;
 		uint8_t v = on ? 255u : 0u;
 
-		for (i = 0; i < n; i++) {
-			g_pixels[i].r = v;
-			g_pixels[i].g = 0;
-			g_pixels[i].b = 0;
-		}
+		led_fill_rgb(n, v, 0, 0);
 		return;
 	}
 
-	for (i = 0; i < n; i++) {
-		g_pixels[i].r = 0;
-		g_pixels[i].g = 0;
-		g_pixels[i].b = 0;
+	if (mode == LED_MODE_IDLE_CORNFLOWER) {
+		if (led_idle_on(led_idle_phase(HAL_GetTick())))
+			led_fill_rgb(n, LED_IDLE_RGB_R, LED_IDLE_RGB_G, LED_IDLE_RGB_B);
+		else
+			led_fill_rgb(n, 0, 0, 0);
+		return;
 	}
+
+	pat = led_factory_pattern(mode);
+	if (pat != NULL) {
+		uint8_t on = 1u;
+
+		if (pat->half_period_ms != 0u)
+			on = ((HAL_GetTick() / (uint32_t)pat->half_period_ms) & 1u) != 0u;
+		if (on)
+			led_fill_rgb(n, pat->r, pat->g, pat->b);
+		else
+			led_fill_rgb(n, 0, 0, 0);
+		return;
+	}
+
+	led_fill_rgb(n, 0, 0, 0);
 }
 
 void led_service(void)
@@ -169,6 +271,8 @@ void led_service(void)
 	uint8_t brightness;
 	uint16_t n;
 	uint8_t flash_phase;
+	uint8_t solid_key;
+	const led_pattern_t *pat;
 
 	if (spi3_role_get() != SPI3_ROLE_LED)
 		return;
@@ -186,6 +290,14 @@ void led_service(void)
 	brightness = (uint8_t)(g_cmd_live.master_brightness & 0x1Fu);
 	__enable_irq();
 
+#if UART4_MODE == UART4_MODE_PDB
+	/* PDU kill/estop owns the strip; host LedDesire stays staged for recovery. */
+	mode = led_mode_from_pdb();
+	if (brightness == 0u)
+		brightness = 12u;
+#endif
+	g_mode_effective = mode;
+
 	n = led_resolve_count(&g_cmd_live);
 	g_active_count = n;
 
@@ -198,12 +310,18 @@ void led_service(void)
 			return;
 		g_strip_known_off = true;
 		g_last_flash_phase = 0xFFu;
+		g_last_solid_key = 0xFFu;
 		g_last_ms = now;
 		return;
 	}
 
 	g_strip_known_off = false;
 
+	/* FLASH + factory blinks + idle 500/500: TX only on phase edge.
+	 * Leaving this family invalidates the solid-family cache below --
+	 * otherwise returning to a previously-shown solid color after a blink
+	 * excursion would wrongly "skip transmit" and leave stale blink pixel
+	 * data latched on the strip. */
 	if (mode == LED_MODE_FLASH) {
 		flash_phase = (uint8_t)((now / 250u) & 1u);
 		if (flash_phase == g_last_flash_phase)
@@ -212,17 +330,70 @@ void led_service(void)
 		if (!sk9822_transmit(g_pixels, n, brightness))
 			return;
 		g_last_flash_phase = flash_phase;
+		g_last_solid_key = 0xFFu;
 		g_last_ms = now;
 		return;
 	}
 
-	/* TEST chase (and other modes): periodic refresh. */
+	if (mode == LED_MODE_IDLE_CORNFLOWER) {
+		flash_phase = led_idle_phase(now);
+		if (flash_phase == g_last_flash_phase)
+			return;
+		led_apply_mode(mode, brightness, n);
+		if (!sk9822_transmit(g_pixels, n, brightness))
+			return;
+		g_last_flash_phase = flash_phase;
+		g_last_solid_key = 0xFFu;
+		g_last_ms = now;
+		return;
+	}
+
+	pat = led_factory_pattern(mode);
+	if (pat != NULL && pat->half_period_ms != 0u) {
+		flash_phase = (uint8_t)((now / (uint32_t)pat->half_period_ms) & 1u);
+		if (flash_phase == g_last_flash_phase)
+			return;
+		led_apply_mode(mode, brightness, n);
+		if (!sk9822_transmit(g_pixels, n, brightness))
+			return;
+		g_last_flash_phase = flash_phase;
+		g_last_solid_key = 0xFFu;
+		g_last_ms = now;
+		return;
+	}
+
+	/* Solids: TX once per (mode, brightness) edge — no periodic SPI. Full
+	 * 5-bit brightness packed into the key (not truncated to 3 bits) so e.g.
+	 * brightness 8 -> 24 (same low 3 bits) still retransmits; independent of
+	 * g_last_flash_phase (was previously dual-purposed as a "solids latched"
+	 * sentinel, which corrupted the blink-family's own edge detection and
+	 * vice versa across a mode-family switch -- see FLASH/blink comment
+	 * above for the failure this caused in the other direction). */
+	if (pat != NULL && pat->half_period_ms == 0u) {
+		solid_key = (uint8_t)((mode & 0x07u) | ((brightness & 0x1Fu) << 3));
+		if (solid_key == g_last_solid_key)
+			return;
+		led_apply_mode(mode, brightness, n);
+		if (!sk9822_transmit(g_pixels, n, brightness))
+			return;
+		g_last_solid_key = solid_key;
+		g_last_flash_phase = 0xFFu;
+		g_last_ms = now;
+		return;
+	}
+
+	/* TEST chase (and unknown modes blanked inside apply): periodic refresh.
+	 * Also invalidates both cached-edge families above, so switching back to
+	 * a blink or solid mode after TEST always retransmits at least once
+	 * instead of trusting stale pre-TEST state. */
 	if ((now - g_last_ms) < LED_PERIOD_MS)
 		return;
 	led_apply_mode(mode, brightness, n);
 	if (!sk9822_transmit(g_pixels, n, brightness))
 		return;
 	g_last_ms = now;
+	g_last_flash_phase = 0xFFu;
+	g_last_solid_key = 0xFFu;
 }
 
 void led_feedback_snapshot(host_led_feedback_t *dst)
@@ -230,7 +401,8 @@ void led_feedback_snapshot(host_led_feedback_t *dst)
 	if (dst == NULL)
 		return;
 	__disable_irq();
-	dst->mode_readback = g_cmd_live.mode;
+	/* Effective/animated mode (PDB override when UART4=PDB), not staged desire. */
+	dst->mode_readback = g_mode_effective;
 	dst->brightness_readback = g_cmd_live.master_brightness;
 	dst->driver_status = 0u;
 	__enable_irq();

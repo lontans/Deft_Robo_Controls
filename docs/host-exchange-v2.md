@@ -1,4 +1,7 @@
-# Host exchange — layout v2
+# Host exchange — layout v2 (historical)
+
+> **Superseded by [host-exchange-v3.md](host-exchange-v3.md)** (694 B / 26 actuators).
+> Kept for older bench notes that cite 672 B offsets.
 
 Fixed **672-byte** binary images in both directions. Same layout on USB CDC and UART.
 

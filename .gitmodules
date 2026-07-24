@@ -1,0 +1,3 @@
+[submodule "docs/deft_vbeta_ref/deft_vbeta"]
+	path = docs/deft_vbeta_ref/deft_vbeta
+	url = https://gitlab.com/deftrobotics/deft_vbeta

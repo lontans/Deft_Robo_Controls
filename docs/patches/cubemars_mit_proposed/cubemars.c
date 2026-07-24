@@ -116,7 +116,11 @@ static int cubemars_float_to_uint(float x, float x_min, float x_max, unsigned bi
 
 static float cubemars_uint_to_float(unsigned raw, float x_min, float x_max, unsigned bits)
 {
-	unsigned max_val = (bits >= 16u) ? 65535u : ((1u << bits) - 1u);
+	unsigned max_val;
+
+	if (bits == 0u || bits > 16u)
+		return x_min;
+	max_val = (1u << bits) - 1u;
 	return x_min + ((float)raw * (x_max - x_min) / (float)max_val);
 }
 

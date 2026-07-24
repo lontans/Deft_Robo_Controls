@@ -5,6 +5,7 @@
 #include "plant/can/spi_can_router.h"
 #include "plant/plugins/robstride.h"
 #include "plant/plugins/damiao.h"
+#include "plant/plugins/cubemars.h"
 #include "plant/plugins/zeroerr.h"
 #include "plant/plant_diag.h"
 #include "plant/plant_command.h"
@@ -130,6 +131,13 @@ void plant_recovery_all(void)
 			continue;
 		}
 
+		if (actuator_table[i].protocol == PROTO_CUBEMARS) {
+			cubemars_reset_enable_latch(i);
+			if (cubemars_send_disable(&actuator_table[i], &frame) == PLUGIN_OK)
+				(void)can_tx_enqueue(actuator_table[i].bus, &frame);
+			continue;
+		}
+
 		if (actuator_table[i].protocol == PROTO_ZEROERR) {
 			zeroerr_reset_slot(i);
 			if (zeroerr_send_shutdown(&actuator_table[i], &frame))
@@ -220,6 +228,16 @@ static void actuator_dispatch_bus_rx(can_bus_id_t bus)
 				continue;
 			}
 
+			if (actuator_table[i].protocol == PROTO_CUBEMARS) {
+				/* Direct/immediate, unlike Damiao's deferred had_rx array —
+				 * the CubeMars enable latch is TX-driven only (see
+				 * cubemars.c), so there is no daisy-chain hazard from
+				 * reacting to RX content here. */
+				cubemars_on_rx_frame(&actuator_table[i], i, &frame,
+				                     &actuator_state_live[i]);
+				continue;
+			}
+
 			(void)plugin_parse_rx(&actuator_table[i], &frame,
 			                      &actuator_state_live[i]);
 		}
@@ -283,8 +301,12 @@ void actuator_apply_desire(void)
 
 		/* Blank FDCAN on a bus with no commanded slot — skip unless all-idle sync.
 		 * Damiao (CH3) is exempt: enable-latch clear-fault/enable must run every
-		 * cycle while idle, and RX must drain for feedback before host raises kp. */
+		 * cycle while idle, and RX must drain for feedback before host raises kp.
+		 * CubeMars is exempt for the same reason — cubemars_apply_cycle streams
+		 * a continuous MIT frame + one-time enable latch every tick regardless
+		 * of blank desire (Damiao-shaped, not ZeroErr-shaped; see cubemars.c). */
 		if (bus < CAN_BUS_CH4 && actuator_table[i].protocol != PROTO_DAMIAO &&
+		    actuator_table[i].protocol != PROTO_CUBEMARS &&
 		    actuator_desire_is_blank(desire) &&
 		    commanded_buses != 0u &&
 		    (commanded_buses & (1u << (unsigned)bus)) == 0u)
@@ -302,6 +324,12 @@ void actuator_apply_desire(void)
 		if (actuator_table[i].protocol == PROTO_DAMIAO) {
 			damiao_apply_cycle(&actuator_table[i], desire,
 			                   &actuator_state_live[i]);
+			continue;
+		}
+
+		if (actuator_table[i].protocol == PROTO_CUBEMARS) {
+			cubemars_apply_cycle(&actuator_table[i], desire,
+			                    &actuator_state_live[i]);
 			continue;
 		}
 

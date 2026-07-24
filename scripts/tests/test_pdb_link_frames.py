@@ -13,20 +13,35 @@ _SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
+from deft_controls_sdk.link.exchange import IMAGE_BYTES
+from deft_controls_sdk.link.exchange.wire_layout import (
+    HOST_FEEDBACK_MAGIC,
+    HOST_LAYOUT_VERSION,
+    PDB_OFF,
+    SYSTEM_FB_OFF,
+)
 from deft_controls_sdk.pdb import (
     FRAME_BYTES,
     KILL_HARD_ESTOP,
+    KILL_NORMAL,
+    KILL_REASON_COMMS_LOSS,
     KILL_REASON_OVERCURRENT,
     KILL_SOFT_READY,
+    KILL_SOFT_REQ,
     MAGIC_CMD,
     MAGIC_FB,
     PdbFrameReader,
+    PdbStatus,
+    counts_to_amps,
+    counts_to_volts,
     crc16,
     is_frame_valid,
     pack_command,
     pack_feedback,
     parse_command,
     parse_feedback,
+    parse_system_kill,
+    pdb_status_from_frame,
 )
 
 
@@ -46,10 +61,17 @@ def test_command_frame_size_and_magic():
 
 
 def test_command_round_trip():
-    buf = pack_command(seq=200, rail_enable_cmd=0b1010, kill_request=KILL_SOFT_READY, heartbeat=17)
+    buf = pack_command(
+        seq=200,
+        rail_enable_cmd=0b1010,
+        kill_request=KILL_SOFT_READY,
+        heartbeat=17,
+        flags=0x01,
+    )
     parsed = parse_command(buf)
     assert parsed == {
         "seq": 200,
+        "flags": 0x01,
         "rail_enable_cmd": 0b1010,
         "kill_request": KILL_SOFT_READY,
         "heartbeat": 17,
@@ -179,3 +201,69 @@ def test_frame_reader_drops_corrupt_frame_with_no_embedded_magic():
     corrupt[10] ^= 0xFF  # corrupt payload, no magic bytes introduced
     frames = reader.feed(bytes(corrupt))
     assert frames == []
+
+
+def test_si_placeholder_scales():
+    assert counts_to_volts(4800) == 48.0
+    assert counts_to_amps(150) == 1.5
+
+
+def test_parse_system_kill_and_pdb_status_from_usb_image():
+    buf = bytearray(IMAGE_BYTES)
+    import struct
+
+    struct.pack_into(
+        "<IHHI", buf, 0, HOST_FEEDBACK_MAGIC, HOST_LAYOUT_VERSION, IMAGE_BYTES, 1
+    )
+    buf[SYSTEM_FB_OFF + 14] = KILL_SOFT_REQ
+    buf[SYSTEM_FB_OFF + 15] = KILL_REASON_OVERCURRENT
+    buf[SYSTEM_FB_OFF + 16] = 1
+    pdb = pack_feedback(
+        seq=9,
+        pack_v=(4800, 0, 0, 0),
+        rail_v=(4800, 1900, 1200, 500),
+        pack_i=(100, 0, 0, 0),
+        rail_i=(10, 20, 30, 40),
+        kill_state=KILL_SOFT_REQ,
+        kill_reason=KILL_REASON_OVERCURRENT,
+        estop_sense=1,
+    )
+    buf[PDB_OFF : PDB_OFF + FRAME_BYTES] = pdb
+
+    sys_kill = parse_system_kill(bytes(buf))
+    assert sys_kill is not None
+    assert sys_kill["kill_state"] == KILL_SOFT_REQ
+    assert sys_kill["kill_reason"] == KILL_REASON_OVERCURRENT
+    assert sys_kill["estop_sense"] == 1
+    assert sys_kill["stale_failsafe"] is False
+
+    status = pdb_status_from_frame(bytes(buf))
+    assert isinstance(status, PdbStatus)
+    assert status.soft_kill_req
+    assert status.pack_v_V == (48.0, 0.0, 0.0, 0.0)
+    assert status.rail_v_V == (48.0, 19.0, 12.0, 5.0)
+    assert status.pdb is not None
+    assert status.pdb["kill_state"] == KILL_SOFT_REQ
+
+
+def test_stale_failsafe_flag_on_hard_comms_loss():
+    buf = bytearray(IMAGE_BYTES)
+    import struct
+
+    struct.pack_into(
+        "<IHHI", buf, 0, HOST_FEEDBACK_MAGIC, HOST_LAYOUT_VERSION, IMAGE_BYTES, 0
+    )
+    buf[SYSTEM_FB_OFF + 14] = KILL_HARD_ESTOP
+    buf[SYSTEM_FB_OFF + 15] = KILL_REASON_COMMS_LOSS
+    buf[SYSTEM_FB_OFF + 16] = 1
+    status = pdb_status_from_frame(bytes(buf))
+    assert status is not None
+    assert status.stale_failsafe is True
+    assert status.hard_estop
+    assert status.normal is False
+    assert status.kill_state_name == "hard_estop"
+
+
+def test_soft_kill_ready_constant_exported():
+    assert KILL_SOFT_READY == 2
+    assert KILL_NORMAL == 0

@@ -29,7 +29,6 @@ class PcbPlatformClient:
         session: PcbRobotSession,
         *,
         use_neck: bool = False,
-        neck_pitch_offset_deg: float = 30.0,
         watchdog_s: float = 1.0,
         steer_kp: float = DEFAULT_STEER_KP,
         steer_kd: float = DEFAULT_STEER_KD,
@@ -37,7 +36,6 @@ class PcbPlatformClient:
     ) -> None:
         self._session = session
         self._use_neck = bool(use_neck)
-        self._pitch_offset = float(neck_pitch_offset_deg)
         self._watchdog_s = float(watchdog_s)
         self._steer_kp = float(steer_kp)
         self._steer_kd = float(steer_kd)
@@ -199,12 +197,16 @@ class PcbPlatformClient:
         self._session.set_actuators(desires, send=False)
 
     def _apply_neck(self, pitch_deg: float, yaw_deg: float) -> None:
-        pitch_cmd = pitch_deg + self._pitch_offset
+        # pitch_deg/yaw_deg arrive pre-offset: YAMAIMobile.convert_vr_head_angles
+        # already bakes neck_pitch_offset_deg in before enqueueing "neck_cmd"
+        # (ref: yam_ai_mobile.py teleop_neck/convert_vr_head_angles), and the
+        # reference FeatherPlatformClient control loop forwards them raw
+        # (neck.go_to(pitch, yaw), no second offset). Match that here.
         self._session.set_servo(
             NECK_PITCH_SERVO_SLOT,
             ServoDesire(
                 servo_id=NECK_PITCH_DXL_ID,
-                native_step_position=deg_to_steps(pitch_cmd),
+                native_step_position=deg_to_steps(pitch_deg),
                 torque_enable=True,
                 operating_mode=3,
             ),

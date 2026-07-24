@@ -28,7 +28,7 @@ FOCUS = (
     "4_CH4_x2",
     "7_CH1-3_fdcan",
     "8_CH4-6_mcp",
-    "9_all_CH1-6_x25",
+    "9_all_CH1-6_x26",
 )
 
 
@@ -62,13 +62,13 @@ def main() -> int:
                 ("0_blank", {}),
                 ("1_CH1_x8", desire_map(1)),
                 ("2_CH2_x8", desire_map(2)),
-                ("3_CH3_x3", desire_map(3)),
+                ("3_CH3_x4", desire_map(3)),
                 ("4_CH4_x2", desire_map(4)),
                 ("5_CH5_x2", desire_map(5)),
                 ("6_CH6_x2", desire_map(6)),
                 ("7_CH1-3_fdcan", desire_map(1, 2, 3)),
                 ("8_CH4-6_mcp", desire_map(4, 5, 6)),
-                ("9_all_CH1-6_x25", desire_map(1, 2, 3, 4, 5, 6)),
+                ("9_all_CH1-6_x26", desire_map(1, 2, 3, 4, 5, 6)),
                 ("10_blank_after", {}),
             ]
 
@@ -130,9 +130,9 @@ def main() -> int:
                     f"{_fmt(r.get('rx_fresh_max')):>5}  {ok}"
                 )
 
-    # Compact all×25 delta table
+    # Compact all×26 delta table
     print("\n" + "=" * 88)
-    print("all×25 delta: RX-sim ON minus TX-only (same hz)")
+    print("all×26 delta: RX-sim ON minus TX-only (same hz)")
     print("=" * 88)
     print(
         f"{'hz':>5}  {'dfb':>6}  {'dlag_mx':>7}  {'dact_mn':>7}  {'dper_mn':>7}  "
@@ -142,10 +142,10 @@ def main() -> int:
         off = next(
             r
             for h, s, r in rows
-            if h == hz and not s and r["label"] == "9_all_CH1-6_x25"
+            if h == hz and not s and r["label"] == "9_all_CH1-6_x26"
         )
         on = next(
-            r for h, s, r in rows if h == hz and s and r["label"] == "9_all_CH1-6_x25"
+            r for h, s, r in rows if h == hz and s and r["label"] == "9_all_CH1-6_x26"
         )
         dfb = (on["raw_fb_hz"] or 0) - (off["raw_fb_hz"] or 0)
         dlag = (on.get("ack_lag_max") or 0) - (off.get("ack_lag_max") or 0)

@@ -1,6 +1,6 @@
 """Plant hold matrix: fb_hz, ack_lag, lap_ms across bus groups.
 
-Product CFG (25 slots): CH1x8, CH2x8, CH3x3, CH4-6x2 each.
+Product CFG (26 slots): CH1x8, CH2x8, CH3x4, CH4-6x2 each.
 
 By default enables plant RX-sim children (actuator CAN + soft servo + LED SPI)
 so held phases exercise TX+RX plus concurrent bench load without motors.
@@ -32,7 +32,7 @@ PROTO_ROBSTRIDE = 1
 PRODUCT_LAYOUT: Tuple[Tuple[int, int], ...] = (
     (1, 8),
     (2, 8),
-    (3, 3),
+    (3, 4),
     (4, 2),
     (5, 2),
     (6, 2),
@@ -401,13 +401,13 @@ def main() -> int:
                 ("0_blank", {}),
                 ("1_CH1_x8", desire_map(1)),
                 ("2_CH2_x8", desire_map(2)),
-                ("3_CH3_x3", desire_map(3)),
+                ("3_CH3_x4", desire_map(3)),
                 ("4_CH4_x2", desire_map(4)),
                 ("5_CH5_x2", desire_map(5)),
                 ("6_CH6_x2", desire_map(6)),
                 ("7_CH1-3_fdcan", desire_map(1, 2, 3)),
                 ("8_CH4-6_mcp", desire_map(4, 5, 6)),
-                ("9_all_CH1-6_x25", desire_map(1, 2, 3, 4, 5, 6)),
+                ("9_all_CH1-6_x26", desire_map(1, 2, 3, 4, 5, 6)),
                 ("10_blank_after", {}),
             ]
 

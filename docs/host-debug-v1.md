@@ -4,7 +4,7 @@ Tagged bench ops (CFG, RS2, DM, DFU, thermo, …) use **dedicated USB frames**,
 not the plant cyclic `pdb[]` region. Plant images keep `pdb[64]` clear for
 power-board telemetry ([ADR-001](decisions.md)).
 
-Same **672 B** size as plant frames so CDC framing stays simple.
+Same **694 B** size as plant frames so CDC framing stays simple.
 
 ## Magics
 
@@ -13,7 +13,7 @@ Same **672 B** size as plant frames so CDC framing stays simple.
 | Command | `0x44424743` | `DBGC` |
 | Feedback | `0x46424744` | `DBGF` |
 
-`layout_version` = 2, `byte_size` = 672 (same as [host-exchange-v2.md](host-exchange-v2.md)).
+`layout_version` = 3, `byte_size` = 694 (same as [host-exchange-v3.md](host-exchange-v3.md)).
 
 ## Layout
 
@@ -23,9 +23,9 @@ Identical region map to the plant image. Only these matter for DEBUG:
 |-------:|-----:|-----|
 | 0 | 12 | Header (`DBGC` / `DBGF`) |
 | 12 | 32 | `system` (mcu_state, etc. — same bitfields) |
-| 44 | 550 | Actuators — used when an RS2 ctrl probe mounts desires; else zero |
-| 608 | 32 | **DEBUG mailbox** (former plant `pdu` / `pdb[0..31]`) |
-| 640 | 32 | unused / zero |
+| 44 | 572 | Actuators — used when an RS2 ctrl probe mounts desires; else zero |
+| 630 | 32 | **DEBUG mailbox** (former plant `pdu` / `pdb[0..31]`) |
+| 662 | 32 | unused / zero |
 
 Tag bytes in the mailbox are unchanged from v1/v2 transitional (`CFG`, `RS2`,
 `DM0`, `DFU!`, …).

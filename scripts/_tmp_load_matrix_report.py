@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run load matrices (real CH6 RS02 vs ×25 rx_sim) + bandwidth baseline → markdown.
+"""Run load matrices (real CH6 RS02 vs ×26 rx_sim) + bandwidth baseline → markdown.
 
   cd scripts
   python _tmp_load_matrix_report.py
@@ -53,7 +53,7 @@ BW_FOCUS = (
     "6_CH6_x2",
     "7_CH1-3_fdcan",
     "8_CH4-6_mcp",
-    "9_all_CH1-6_x25",
+    "9_all_CH1-6_x26",
 )
 
 
@@ -394,13 +394,13 @@ def run_bandwidth(
         ("0_blank", {}),
         ("1_CH1_x8", desire_map(1)),
         ("2_CH2_x8", desire_map(2)),
-        ("3_CH3_x3", desire_map(3)),
+        ("3_CH3_x4", desire_map(3)),
         ("4_CH4_x2", desire_map(4)),
         ("5_CH5_x2", desire_map(5)),
         ("6_CH6_x2", desire_map(6)),
         ("7_CH1-3_fdcan", desire_map(1, 2, 3)),
         ("8_CH4-6_mcp", desire_map(4, 5, 6)),
-        ("9_all_CH1-6_x25", desire_map(1, 2, 3, 4, 5, 6)),
+        ("9_all_CH1-6_x26", desire_map(1, 2, 3, 4, 5, 6)),
         ("10_blank_after", {}),
     ]
     for rx_sim in (False, True):
@@ -537,7 +537,7 @@ def _bw_md(bw_rows: List[Tuple[float, bool, dict]]) -> str:
                     f"{_fmt(r.get('rx_fresh_max'), 0)} | {ok} |"
                 )
 
-    chunks.append("\n### all×25 delta (RX-sim ON − TX-only)\n")
+    chunks.append("\n### all×26 delta (RX-sim ON − TX-only)\n")
     chunks.append("| tx Hz | Δfb | Δack_max | Δact_mn | Δper_mn | Δpend_max | tx_ok | rx_ok |")
     chunks.append("|---:|---:|---:|---:|---:|---:|---|---|")
     for hz in RATES:
@@ -545,12 +545,12 @@ def _bw_md(bw_rows: List[Tuple[float, bool, dict]]) -> str:
             off = next(
                 r
                 for h, s, r in bw_rows
-                if h == hz and not s and r["label"] == "9_all_CH1-6_x25"
+                if h == hz and not s and r["label"] == "9_all_CH1-6_x26"
             )
             on = next(
                 r
                 for h, s, r in bw_rows
-                if h == hz and s and r["label"] == "9_all_CH1-6_x25"
+                if h == hz and s and r["label"] == "9_all_CH1-6_x26"
             )
         except StopIteration:
             chunks.append(f"| {hz:.0f} | — | — | — | — | — | — | — |")
@@ -578,7 +578,7 @@ def write_report(
 ) -> None:
     ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
     parts = [
-        f"# Load matrix — bus6 real RS02 vs ×25 rx_sim (+ DXL + LED)\n",
+        f"# Load matrix — bus6 real RS02 vs ×26 rx_sim (+ DXL + LED)\n",
         f"Generated: {ts}\n",
         "## Setup\n",
         f"- Port: `{meta.get('port')}`",
@@ -600,7 +600,7 @@ def write_report(
         "- **periph_lap_ms**: PeripheralTask lap (DXL/LED path)",
         "- **RS Δ/cmd**: measured vs planned MIT travel (real-RS cfg only)",
         "",
-        "## A — Real actuator on bus 6 (no ×25 rx_sim) + DXL + LED\n",
+        "## A — Real actuator on bus 6 (no ×26 rx_sim) + DXL + LED\n",
         "Single CFG slot on CH6; other actuator slots quieted. Soft-engage + "
         "trapezoid teleop, direction planned to stay inside MIT ±12.57.\n",
         "### Aggregate (mean across trials)\n",
@@ -609,13 +609,13 @@ def write_report(
         "### Per-trial\n",
         _per_trial_table(load_rows, "real_ch6"),
         "",
-        "## B — No real actuator on bus 6 (full ×25 ACTUATOR rx_sim) + DXL + LED\n",
-        "Product CFG ×25 with ACTUATOR rx_sim mask; no live RS02 MIT. Same DXL+LED load.\n",
+        "## B — No real actuator on bus 6 (full ×26 ACTUATOR rx_sim) + DXL + LED\n",
+        "Product CFG ×26 with ACTUATOR rx_sim mask; no live RS02 MIT. Same DXL+LED load.\n",
         "### Aggregate (mean across trials)\n",
-        _agg_table(load_rows, "rx_sim_x25"),
+        _agg_table(load_rows, "rx_sim_x26"),
         "",
         "### Per-trial\n",
-        _per_trial_table(load_rows, "rx_sim_x25"),
+        _per_trial_table(load_rows, "rx_sim_x26"),
         "",
         _bw_md(bw_rows),
         "",
@@ -630,7 +630,7 @@ def write_report(
     # Auto takeaways from aggregates
     for cfg, title in (
         ("real_ch6", "Real CH6"),
-        ("rx_sim_x25", "×25 rx_sim"),
+        ("rx_sim_x26", "×26 rx_sim"),
     ):
         parts.append(f"### {title}")
         for hz in RATES:
@@ -728,7 +728,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 load_rows.extend(
                     run_load_cfg(
                         hub,
-                        cfg="rx_sim_x25",
+                        cfg="rx_sim_x26",
                         rates=RATES,
                         trials=int(args.trials),
                         seconds=float(args.seconds),

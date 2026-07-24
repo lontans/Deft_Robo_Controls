@@ -22,6 +22,7 @@ from typing import Optional, Union
 from deft_controls_sdk.bench import DebugAPI, find_cdc_port
 from deft_controls_sdk.link import ActuatorDesire, Connection, FeedbackImage, LedDesire, McuState, ServoDesire
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD
+from deft_controls_sdk.pdb import KILL_SOFT_REQ, PdbStatus, pdb_status_from_frame
 from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
 
 
@@ -157,7 +158,7 @@ class ControlsPcbHub:
         seconds: float = 0.5,
         hz: float = 40.0,
     ) -> Optional[FeedbackImage]:
-        """Pump the 672 B plant stream until actuator FB in HBHF is fresh.
+        """Pump the 694 B plant stream until actuator FB in HBHF is fresh.
 
         After CFG / DEBUG probe, plant ``actuator_state`` in the feedback image
         can still be zeros until the MCU has exchanged CAN with the drive.
@@ -197,3 +198,49 @@ class ControlsPcbHub:
 
     def set_mcu_state(self, state: McuState, *, send: bool = True) -> None:
         self._connection.set_mcu_state(state, send=send)
+
+    def pdb_status(self, raw: Optional[bytes] = None) -> Optional[PdbStatus]:
+        """Typed USB PDB status: system kill bytes + optional ``pdb[64]`` mirror.
+
+        Uses ``raw`` when given; otherwise drains the newest plant FB from the
+        RX reader (falls back to the stream cache). Stale peer ⇒
+        ``kill_state=HARD`` / ``kill_reason=COMMS_LOSS`` (MCU).
+        """
+        if raw is None:
+            latest = self._connection._drain_latest_plant_feedback()  # noqa: SLF001
+            if latest is not None:
+                self._connection._latest_fb_raw = latest  # noqa: SLF001
+                raw = latest
+            else:
+                raw = self._connection._latest_fb_raw  # noqa: SLF001
+        if raw is None:
+            return None
+        return pdb_status_from_frame(raw)
+
+    def soft_kill_park(self, *, send: bool = True) -> PdbStatus | None:
+        """Product soft-kill park: clear desires/servos and latch ``McuState.ESTOP``.
+
+        Firmware ``plant_recovery_all()`` then acks ``SOFT_KILL_READY`` on the
+        PDB UART when the peer is still in ``SOFT_KILL_REQ``. Call when
+        ``pdb_status().soft_kill_req`` (or proactively before kill proves).
+        """
+        blank = {s: ActuatorDesire() for s in range(ACTUATOR_COUNT)}
+        self._connection.set_actuators(blank, send=False)
+        self._connection.clear_servos(send=False)
+        self.set_led(LedDesire(mode=0, master_brightness=0, led_count=0), send=False)
+        self.set_mcu_state(McuState.ESTOP, send=send)
+        if send:
+            # One extra poll so callers can read post-park kill/LED immediately.
+            self.send_once()
+        return self.pdb_status()
+
+    def soft_kill_park_if_requested(self, *, send: bool = True) -> bool:
+        """If USB kill is ``SOFT_KILL_REQ``, run :meth:`soft_kill_park`.
+
+        Returns True when a park was performed.
+        """
+        status = self.pdb_status()
+        if status is None or status.kill_state != KILL_SOFT_REQ:
+            return False
+        self.soft_kill_park(send=send)
+        return True

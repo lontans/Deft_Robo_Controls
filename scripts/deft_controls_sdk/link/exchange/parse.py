@@ -1,4 +1,4 @@
-"""672 B host feedback parsers — parse wire bytes into dicts."""
+"""694 B host feedback parsers — parse wire bytes into dicts (layout v3)."""
 from __future__ import annotations
 
 import struct
@@ -13,6 +13,12 @@ from .wire_layout import (
     SERVO0_FB_OFF,
     SERVO_SLOT_BYTES,
     SYSTEM_FB_OFF,
+)
+
+# Re-export USB PDB kill parsers so call sites can stay on link.exchange.
+from deft_controls_sdk.pdb.status import (  # noqa: E402
+    parse_pdb_mirror,
+    parse_system_kill,
 )
 
 PDU_TAG_NAMES = {
@@ -120,6 +126,7 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     tag = chr(pdu[0]) if 32 <= pdu[0] < 127 else f"0x{pdu[0]:02X}"
     plant_block = (sys_word >> 25) & 0x7F
     timing = parse_system_timing(frame)
+    kill = parse_system_kill(frame)
     out = {
         "magic_ok": True,
         "magic_hex": f"0x{magic:08X}",
@@ -138,6 +145,8 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     }
     if timing is not None:
         out.update(timing)
+    if kill is not None:
+        out.update(kill)
     return out
 
 

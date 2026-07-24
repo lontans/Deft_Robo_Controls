@@ -105,7 +105,7 @@ def _pararead_can_data_zero_echo(value: float) -> bytes:
 
 def test_build_rs2_probe_packs_param_bytes() -> None:
     frame = build_rs2_probe_command(0x70, PROBE_PARAWRITE, 3, 0x702D, 1, bus=4)
-    assert len(frame) == 672
+    assert len(frame) == IMAGE_BYTES
     magic, = struct.unpack_from("<I", frame, 0)
     assert magic == HOST_DEBUG_COMMAND_MAGIC
     assert frame[PDU_OFF : PDU_OFF + 5] == bytes([ord("R"), ord("S"), ord("2"), 0x70, PROBE_PARAWRITE])

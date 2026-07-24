@@ -7,6 +7,7 @@ from deft_controls_sdk.link import (
     LED_MODE_BLINK_RED_FAST,
     LED_MODE_BLINK_YELLOW_SLOW,
     LED_MODE_FLASH,
+    LED_MODE_IDLE_CORNFLOWER,
     LED_MODE_OFF,
     LED_MODE_SOLID_GREEN,
     LED_MODE_SOLID_RED,
@@ -25,6 +26,7 @@ __all__ = [
     "LED_MODE_SOLID_RED",
     "LED_MODE_BLINK_YELLOW_SLOW",
     "LED_MODE_BLINK_RED_FAST",
+    "LED_MODE_IDLE_CORNFLOWER",
     "set_led",
     "led_off",
     "led_flash",
@@ -34,6 +36,7 @@ __all__ = [
     "led_solid_red",
     "led_caution",
     "led_fault",
+    "led_idle",
 ]
 
 
@@ -49,7 +52,7 @@ def set_led(
     *,
     send: bool = False,
 ) -> LedDesire:
-    """mode: LED_MODE_* (0=OFF … 7=BLINK_RED_FAST). count 0 ⇒ firmware max (300)."""
+    """mode: LED_MODE_* (0=OFF … 8=IDLE_CORNFLOWER). count 0 ⇒ firmware max (300)."""
     desire = LedDesire(
         mode=int(mode) & 0x1F,
         master_brightness=max(0, min(31, int(brightness))),
@@ -101,3 +104,10 @@ def led_fault(
 ) -> LedDesire:
     """Fast red blink (estop / fault attention)."""
     return set_led(sink, LED_MODE_BLINK_RED_FAST, brightness=brightness, send=send)
+
+
+def led_idle(
+    sink: _LedSink, brightness: int = 12, *, send: bool = False
+) -> LedDesire:
+    """Cornflower idle blink (#6495ED, 500 on / 500 off)."""
+    return set_led(sink, LED_MODE_IDLE_CORNFLOWER, brightness=brightness, send=send)

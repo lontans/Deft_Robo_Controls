@@ -6,9 +6,9 @@
 #define HOST_FEEDBACK_MAGIC 0x46424848u /* "HBHF" plant */
 #define HOST_DEBUG_COMMAND_MAGIC  0x44424743u /* "DBGC" DEBUG */
 #define HOST_DEBUG_FEEDBACK_MAGIC 0x46424744u /* "DBGF" DEBUG */
-#define HOST_LAYOUT_VERSION 2u /* Schema v2 — 672 B; see docs/host-exchange-v2.md */
+#define HOST_LAYOUT_VERSION 3u /* Schema v3 — 694 B; see docs/host-exchange-v3.md */
 
-#define HOST_EXCHANGE_ACTUATOR_SLOTS 25u
+#define HOST_EXCHANGE_ACTUATOR_SLOTS 26u
 #define HOST_EXCHANGE_SERVO_SLOTS    2u
 #define HOST_EXCHANGE_LED_SLOTS      1u
 #define HOST_PDU_PAYLOAD_BYTES       32u /* DEBUG mailbox = pdb[0..31] */

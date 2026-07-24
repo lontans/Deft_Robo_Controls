@@ -29,7 +29,7 @@ FOCUS = (
     "1_CH1_x8",
     "8_CH4-6_mcp",
     "7_CH1-3_fdcan",
-    "9_all_CH1-6_x25",
+    "9_all_CH1-6_x26",
 )
 
 
@@ -55,7 +55,7 @@ def main() -> int:
                 "1_CH1_x8": desire_map(1),
                 "7_CH1-3_fdcan": desire_map(1, 2, 3),
                 "8_CH4-6_mcp": desire_map(4, 5, 6),
-                "9_all_CH1-6_x25": desire_map(1, 2, 3, 4, 5, 6),
+                "9_all_CH1-6_x26": desire_map(1, 2, 3, 4, 5, 6),
             }
 
             for rx_sim in (False, True):

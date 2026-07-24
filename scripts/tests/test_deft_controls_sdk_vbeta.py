@@ -33,6 +33,7 @@ from deft_controls_sdk.vbeta import (
     deg_to_steps,
     led_caution,
     led_fault,
+    led_idle,
     led_off,
     led_solid_green,
     led_solid_red,
@@ -210,6 +211,20 @@ def test_platform_disable_drive_and_watchdog() -> None:
     assert store.actuators[BASE_STEER_SLOTS["BwC"]].kp > 0
 
 
+def test_platform_neck_cmd_no_double_offset() -> None:
+    """PcbPlatformClient must forward neck pitch/yaw raw (ref: reference
+    FeatherPlatformClient control loop calls neck.go_to(pitch, yaw) with no
+    offset). YAMAIMobile.convert_vr_head_angles already bakes
+    neck_pitch_offset_deg in before enqueueing "neck_cmd" — re-applying it
+    here would double it."""
+    session, store = _session()
+    plat = PcbPlatformClient(session, use_neck=True)
+    plat.connect()
+    plat.send_command(("neck_cmd", 12.5, -7.0))
+    assert store.servos[0].native_step_position == deg_to_steps(12.5)
+    assert store.servos[1].native_step_position == deg_to_steps(-7.0)
+
+
 def test_base_cmd_stop_zeros_drive() -> None:
     session, store = _session()
     plat = PcbPlatformClient(session)
@@ -254,3 +269,6 @@ def test_led_factory_pattern_helpers() -> None:
 
     led_fault(session, brightness=8)
     assert store.led.mode == 7
+
+    led_idle(session, brightness=12)
+    assert store.led.mode == 8 and store.led.master_brightness == 12

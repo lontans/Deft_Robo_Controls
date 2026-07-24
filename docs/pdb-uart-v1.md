@@ -50,7 +50,7 @@ cycle** — never partially trusted, and never counted toward link freshness.
 | 0 | 4 | `magic` |
 | 4 | 1 | `version` (= 1) |
 | 5 | 1 | `seq` — 8-bit wraparound, incremented by the sender each frame |
-| 6 | 1 | reserved (flags; currently unused, send 0) |
+| 6 | 1 | `flags` — bit0 = host/local E-STOP request latch (controls→PDB); other bits 0 |
 | 7 | 1 | reserved/pad |
 
 ## Command frame (Controls→PDB), offset 8 onward
@@ -58,7 +58,7 @@ cycle** — never partially trusted, and never counted toward link freshness.
 | Offset | Size | Field |
 |-------:|-----:|-------|
 | 8 | 1 | `rail_enable_cmd` — bitmask, 1 bit/rail. Controls *requests*; **PDB is the sole authority on actually switching a rail.** |
-| 9 | 1 | `kill_request` — `0` NORMAL, `1` SOFT_KILL_ACK, `2` SOFT_KILL_READY (see state machine below) |
+| 9 | 1 | `kill_request` — `0` NORMAL, `1` reserved (do not use; feedback uses `1` = SOFT_KILL_REQ), `2` SOFT_KILL_READY (see state machine below) |
 | 10 | 1 | `heartbeat` — free-running counter; lets the PDB tell "controls frozen" from "controls silent" |
 | 11–61 | 51 | reserved, sent as 0 |
 | 62–63 | 2 | CRC16 over bytes 0–61 |
@@ -74,7 +74,7 @@ cycle** — never partially trusted, and never counted toward link freshness.
 | 40 | 1 | `contactor_state` — readback bitmask (measured/commanded actual state per rail) |
 | 41 | 1 | `kill_state` — `0` NORMAL, `1` SOFT_KILL_REQ, `2` SOFT_KILL_READY, `3` HARD_ESTOP |
 | 42 | 1 | `kill_reason` — `0` none, `1` host-requested, `2` undervoltage, `3` overcurrent, `4` overtemp, `5` comms-loss, `6` button, `7` other |
-| 43 | 1 | `estop_sense` — PDB's own readback of the hard-ESTOP wire level (cross-check against what controls thinks it's driving) |
+| 43 | 1 | `estop_sense` — PDB's own readback of the hard-ESTOP wire level (PDU drives; Controls PB7 is sense-only input) |
 | 44 | 1 | `fault_flags` — bitmask, PDB-defined |
 | 45 | 1 | `heartbeat_echo` — echo of the last command `heartbeat` byte seen |
 | 46–61 | 16 | reserved, sent as 0 |
@@ -124,32 +124,29 @@ NORMAL -> SOFT_KILL_REQ -> (controls reaches a safe pose) -> SOFT_KILL_READY -> 
 only after controls' `SOFT_KILL_READY` handshake in the command frame, or
 independently via the unconditional hard-ESTOP wire.
 
-1. **NORMAL** — feedback `kill_state == NORMAL`, link fresh. Controls drives
-   the hard-ESTOP GPIO HIGH (power allowed).
+1. **NORMAL** — feedback `kill_state == NORMAL`, link fresh. Hard-ESTOP wire
+   is HIGH (power allowed), driven by the PDU; Controls only senses `PB7`.
 2. **Kill triggered** — either the PDB reports `kill_state == SOFT_KILL_REQ`
    (its own over-current/under-voltage/button event), or controls decides to
    kill locally (host-commanded E-STOP, a local fault). Controls begins
-   parking actuators to a safe pose.
+   parking actuators to a safe pose and may set command `flags` bit0.
 3. Once parked, controls sends `kill_request = SOFT_KILL_READY` in the next
    command frame.
 4. The PDB, seeing that ack, proceeds to actually open contactors.
-5. **HARD_ESTOP** — controls drives the hard-ESTOP GPIO LOW **immediately and
-   unconditionally** on: explicit host E-STOP, an unrecoverable local fault,
-   or the PDB link going stale (no valid frame for the documented timeout).
-   This bypasses the staged negotiation entirely — it is the physical
-   backstop, not a fourth step in the handshake.
+5. **HARD_ESTOP** — fail-safe when the PDB link goes stale (no valid frame
+   for the documented timeout), or the PDU asserts the hard wire. Soft-kill
+   status alone must never cut main power (ADR-001).
 
 ### Hard-ESTOP GPIO
 
-Active-low: **HIGH = power allowed, LOW = asserted/cut**. Driven by the
-Controls PCB, single owner is `pdb_link.c`. Must default to asserted (LOW)
-before firmware has run at all — an external pull-down on this net is
-required so an unprogrammed or crashed MCU fails safe.
+Active-low: **HIGH = power allowed, LOW = asserted/cut**. **Driven by the
+PDU**, not the Controls MCU. Controls **`PB7` is a high-Z input** (sense
+only) — `pdb_link_estop_sense()` reads the wire; firmware must not push/pull
+the net. Fail-safe when the MCU is unprogrammed is the PDU's responsibility
+(external pull / PDU default).
 
-**Pin: placeholder, not yet confirmed against the schematic** — currently
-`PA0` in `pdb_link.c` (chosen only because nothing else in this firmware
-claims it). Update `PDB_ESTOP_GPIO_PORT`/`PDB_ESTOP_GPIO_PIN` in
-`App/Src/host/pdb_link.c` once the real pin is assigned.
+**Pin: `PB7`** (`GPIOB` / `GPIO_PIN_7` in `pdb_link.c` + `Core/Src/gpio.c`
+as `GPIO_MODE_INPUT`).
 
 ### Freshness / fail-safe timing
 
@@ -160,6 +157,14 @@ claims it). Update `PDB_ESTOP_GPIO_PORT`/`PDB_ESTOP_GPIO_PIN` in
   it is fail-safe by construction: a stream of garbage degrades to the same
   path as silence, not a false "link is fine."
 - Command frames are sent at **50 Hz** (`PDB_TX_PERIOD_MS` = 20 ms).
+- **USB mirror contract:** when the PDB peer is stale, firmware
+  `pdb_link_kill_state()` / `pdb_link_kill_reason()` return
+  `HARD_ESTOP` / `COMMS_LOSS`, and those bytes are copied into the plant
+  image at `system` offsets 14–15. There is no separate USB freshness flag —
+  treat `stale_failsafe` on `hub.pdb_status()` as the host-side check.
+- Soft-kill park ack: after host `ESTOP` / `plant_recovery_all()`, firmware
+  calls `pdb_link_set_soft_kill_ready(true)` while peer kill is still
+  `SOFT_KILL_REQ` (cleared again when peer returns to `NORMAL`).
 
 ---
 

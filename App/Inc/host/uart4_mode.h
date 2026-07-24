@@ -2,27 +2,25 @@
 
 /* UART4 (PC10/PC11) role select — pick one at build time and reflash.
  *
- * UART4_MODE_TELEM:         UART4 keeps its existing role as the alternate
- *                           host_exchange transport (host_transport_uart.c),
- *                           only live when HOST_TRANSPORT_UART is also set.
- * UART4_MODE_DAMIAO_BRIDGE: UART4 is reconfigured to 921600-8N1 and wired to
- *                           an external debug UART (e.g. Damiao motor debug
- *                           port). Raw bytes are tunnelled through the PDU
- *                           channel of the primary USB host_exchange link so
- *                           a host-side script can bridge them to a real
- *                           serial terminal / vendor tool.
- * UART4_MODE_PDB:           PC10/PC11 are wired to the Power Distribution
- *                           Board (see docs/pdb-uart-v1.md, ADR-001 in
- *                           docs/decisions.md). This is what this hardware
- *                           actually ships with — TELEM/DAMIAO_BRIDGE are
- *                           retained only for a board revision that doesn't
- *                           populate the PDB connector; on any board that
- *                           does, those two modes drive the wrong protocol
- *                           onto wires that go to the power board, not just
- *                           "PDB telemetry unavailable while selected."
+ * UART4_MODE_TELEM:         alternate host_exchange transport
+ * UART4_MODE_DAMIAO_BRIDGE: 921600 raw bridge via USB PDU mailbox
+ * UART4_MODE_PDB:           Power Distribution Board (docs/pdb-uart-v1.md)
  */
 #define UART4_MODE_TELEM         0
 #define UART4_MODE_DAMIAO_BRIDGE 1
 #define UART4_MODE_PDB           2
 
 #define UART4_MODE  UART4_MODE_PDB
+
+/* Temporary: overlay RX/TX health on system feedback for CDC prove. */
+#define UART4_BRINGUP_DIAG  1
+
+/* When 1: after init, send one PDBC and expect it back on RX.
+ * Requires a temporary short of UART4 TX↔RX at the Controls JST (PC10↔PC11).
+ * Pass → last_rx shows 'PDBC', valid>=1. Isolates MCU stack from Jetson. */
+#define UART4_LOCAL_LOOPBACK_TEST  0
+
+/* Pace PDB TX one byte per HostTask tick (~1 ms). tegra194-hsuart on the
+ * Jetson corrupts bulk 64 B bursts (RX all 0x00); byte gaps fix decode.
+ * Frame takes ~64 ms → effective PDBC rate ~10–15 Hz. */
+#define UART4_TX_PACE_BYTES  1

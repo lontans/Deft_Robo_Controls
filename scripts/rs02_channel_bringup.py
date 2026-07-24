@@ -25,14 +25,14 @@ from deft_controls_sdk.link.exchange.parse import parse_actuator_feedback, parse
 
 PROTO_ROBSTRIDE = 1
 
-# First product-layout slot per schematic bus (CH1×8, CH2×8, CH3×3, CH4–6×2).
+# First product-layout slot per schematic bus (CH1×8, CH2×8, CH3×4, CH4–6×2).
 CANONICAL_SLOT: Dict[int, int] = {
     1: 0,
     2: 8,
     3: 16,
-    4: 19,
-    5: 21,
-    6: 23,
+    4: 20,
+    5: 22,
+    6: 24,
 }
 
 # Default teleop: one full turn at π/4 rad/s (~8 s).

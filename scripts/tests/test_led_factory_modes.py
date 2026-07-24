@@ -13,6 +13,7 @@ from deft_controls_sdk.link import (
     LED_MODE_BLINK_RED_FAST,
     LED_MODE_BLINK_YELLOW_SLOW,
     LED_MODE_FLASH,
+    LED_MODE_IDLE_CORNFLOWER,
     LED_MODE_OFF,
     LED_MODE_SOLID_GREEN,
     LED_MODE_SOLID_RED,
@@ -33,6 +34,7 @@ FACTORY_MODES = (
     LED_MODE_SOLID_RED,
     LED_MODE_BLINK_YELLOW_SLOW,
     LED_MODE_BLINK_RED_FAST,
+    LED_MODE_IDLE_CORNFLOWER,
 )
 
 
@@ -42,8 +44,8 @@ def _unpack_led(buf: bytes | bytearray) -> tuple[int, int, int]:
 
 
 def test_image_bytes_unchanged_672() -> None:
-    assert IMAGE_BYTES == 672
-    assert len(CommandImage().to_bytes()) == 672
+    assert IMAGE_BYTES == 694
+    assert len(CommandImage().to_bytes()) == 694
 
 
 def test_patch_led_command_round_trips_factory_modes() -> None:
@@ -59,7 +61,7 @@ def test_patch_led_command_round_trips_factory_modes() -> None:
                 assert got_bri == brightness
                 assert got_count == count
     # Only the 2 B LED word was written; image length still 672.
-    assert len(buf) == 672
+    assert len(buf) == 694
 
 
 def test_command_image_set_led_packs_named_modes() -> None:
@@ -69,12 +71,13 @@ def test_command_image_set_led_packs_named_modes() -> None:
         LED_MODE_SOLID_RED,
         LED_MODE_BLINK_YELLOW_SLOW,
         LED_MODE_BLINK_RED_FAST,
+        LED_MODE_IDLE_CORNFLOWER,
     ):
         img = CommandImage(seq=7).set_led(
             LedDesire(mode=mode, master_brightness=12, led_count=0)
         )
         raw = img.to_bytes()
-        assert len(raw) == 672
+        assert len(raw) == 694
         mode_u, bri_u, count_u = _unpack_led(raw)
         assert mode_u == mode
         assert bri_u == 12
@@ -90,3 +93,4 @@ def test_led_mode_constants_match_rfc() -> None:
     assert LED_MODE_SOLID_RED == 5
     assert LED_MODE_BLINK_YELLOW_SLOW == 6
     assert LED_MODE_BLINK_RED_FAST == 7
+    assert LED_MODE_IDLE_CORNFLOWER == 8

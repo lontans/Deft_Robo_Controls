@@ -43,12 +43,11 @@
 #define PDB_TX_PERIOD_MS 20u  /* 50 Hz command rate */
 
 /* -------------------------------------------------------------------------- */
-/* Hard-ESTOP GPIO -- PLACEHOLDER, confirm against schematic before hardware  */
-/* bring-up (see docs/pdb-uart-v1.md open items). PA0 chosen only because it  */
-/* is unclaimed anywhere else in this firmware today.                        */
+/* Hard-ESTOP sense — PB7, PDU-driven (MCU must not drive). Active-low:       */
+/* HIGH = power allowed, LOW = asserted. gpio.c + pdb_link_init: INPUT.       */
 /* -------------------------------------------------------------------------- */
-#define PDB_ESTOP_GPIO_PORT GPIOA
-#define PDB_ESTOP_GPIO_PIN  GPIO_PIN_0
+#define PDB_ESTOP_GPIO_PORT GPIOB
+#define PDB_ESTOP_GPIO_PIN  GPIO_PIN_7
 
 /* -------------------------------------------------------------------------- */
 /* CRC16-CCITT (poly 0x1021, init 0xFFFF) -- bit-banged, not table-driven:    */
@@ -76,12 +75,11 @@ static uint16_t pdb_crc16(const uint8_t *data, uint32_t len)
 /* host_link.c, not host_transport_uart.c's byte-IT/blocking-TX pattern.      */
 /* -------------------------------------------------------------------------- */
 #define PDB_RX_RING_BYTES  256u
-#define PDB_RX_CHUNK_BYTES 64u
 
 static uint8_t           s_rx_ring[PDB_RX_RING_BYTES];
 static volatile uint16_t s_rx_head;
 static volatile uint16_t s_rx_tail;
-static uint8_t           s_rx_chunk[PDB_RX_CHUNK_BYTES];
+static uint8_t           s_rx_byte; /* HAL_UART_Receive_IT single-byte buffer */
 
 static uint8_t  s_rx_accum[PDB_FRAME_BYTES];
 static uint16_t s_rx_fill;
@@ -92,6 +90,8 @@ static bool     s_ever_synced;
 
 static uint8_t           s_tx_frame[PDB_FRAME_BYTES];
 static volatile bool     s_tx_busy;
+static volatile bool     s_tx_active; /* mid paced frame */
+static volatile uint8_t  s_tx_idx;
 static uint32_t          s_last_tx_ms;
 static uint8_t           s_tx_seq;
 
@@ -99,6 +99,26 @@ static uint8_t  s_rail_enable_cmd;
 static uint8_t  s_kill_request;   /* PDB_KILL_NORMAL / SOFT_REQ(ack) / SOFT_READY as sent */
 static bool     s_estop_requested;
 static uint8_t  s_tx_heartbeat;
+
+/* Snapshot of Cube MX_UART4_Init result (no second bring-up). */
+static uint8_t  s_uart_clk_src;
+static uint16_t s_uart_brr;
+static uint32_t s_uart_kernel_hz;
+
+/* Raw RX / error counters — prove Jetson TX reaches UART4 even when frames
+ * fail CRC (mirror stays zero). Sticky error bits use HAL_UART_ERROR_*. */
+static volatile uint32_t s_rx_bytes;
+static volatile uint32_t s_rx_events;
+static volatile uint32_t s_rx_valid;
+static volatile uint32_t s_rx_crc_fail;
+static volatile uint32_t s_rx_last_word;
+static volatile uint32_t s_tx_complete;
+static volatile uint32_t s_uart_err_sticky;
+
+static void pdb_uart_rearm_rx(void)
+{
+	(void)HAL_UART_Receive_IT(&huart4, &s_rx_byte, 1u);
+}
 
 static void pdb_rx_push(const uint8_t *data, uint32_t len)
 {
@@ -112,6 +132,8 @@ static void pdb_rx_push(const uint8_t *data, uint32_t len)
 		take = free_bytes;
 	if (take == 0u)
 		return;
+
+	s_rx_bytes += take;
 
 	first = (uint16_t)(PDB_RX_RING_BYTES - head);
 	if (first > take)
@@ -195,10 +217,16 @@ static bool pdb_frame_valid(const uint8_t *buf)
 
 static void pdb_rx_consume_ready(void)
 {
+	s_rx_last_word = (uint32_t)s_rx_accum[0] |
+	                 ((uint32_t)s_rx_accum[1] << 8) |
+	                 ((uint32_t)s_rx_accum[2] << 16) |
+	                 ((uint32_t)s_rx_accum[3] << 24);
+
 	/* A corrupt/mismatched frame is treated as "no frame this cycle" -- it
 	 * must NOT refresh s_last_rx_ms, so a stream of garbage degrades to the
 	 * same fail-safe path as silence, not a false "link is fine". */
 	if (!pdb_frame_valid(s_rx_accum)) {
+		s_rx_crc_fail++;
 		pdb_rx_resync();
 		return;
 	}
@@ -212,6 +240,7 @@ static void pdb_rx_consume_ready(void)
 	memcpy(s_last_valid_fb, s_rx_accum, PDB_FRAME_BYTES);
 	s_last_rx_ms = HAL_GetTick();
 	s_ever_synced = true;
+	s_rx_valid++;
 	plant_crit_exit();
 	s_rx_fill = 0u;
 }
@@ -254,7 +283,8 @@ static void pdb_build_cmd_frame(uint8_t *buf)
 	buf[3] = (uint8_t)((PDB_MAGIC_CMD >> 24) & 0xFFu);
 	buf[PDB_OFF_VERSION] = PDB_VERSION;
 	buf[PDB_OFF_SEQ] = s_tx_seq++;
-	buf[PDB_OFF_FLAGS] = 0u;
+	/* bit0: host/local ESTOP request latch (PDU still owns hard wire on PB7). */
+	buf[PDB_OFF_FLAGS] = s_estop_requested ? 0x01u : 0u;
 
 	buf[PDB_CMD_OFF_RAIL_ENABLE] = s_rail_enable_cmd;
 	buf[PDB_CMD_OFF_KILL_REQ] = s_kill_request;
@@ -265,29 +295,47 @@ static void pdb_build_cmd_frame(uint8_t *buf)
 	buf[PDB_OFF_CRC + 1u] = (uint8_t)((crc >> 8) & 0xFFu);
 }
 
+static void pdb_tx_kick_byte(void)
+{
+	if (s_tx_idx >= PDB_FRAME_BYTES) {
+		s_tx_active = false;
+		return;
+	}
+	s_tx_busy = true;
+	if (HAL_UART_Transmit_IT(&huart4, &s_tx_frame[s_tx_idx], 1u) != HAL_OK)
+		s_tx_busy = false;
+}
+
 static void pdb_service_tx(void)
 {
 	uint32_t now = HAL_GetTick();
 
+#if UART4_TX_PACE_BYTES
+	/* Continue paced frame: one byte per service call (~1 ms HostTask). */
+	if (s_tx_active) {
+		if (!s_tx_busy)
+			pdb_tx_kick_byte();
+		return;
+	}
+	if (s_last_tx_ms != 0u && (now - s_last_tx_ms) < PDB_TX_PERIOD_MS)
+		return;
+	s_last_tx_ms = (now == 0u) ? 1u : now;
+	pdb_build_cmd_frame(s_tx_frame);
+	s_tx_idx = 0u;
+	s_tx_active = true;
+	pdb_tx_kick_byte();
+#else
 	if (s_tx_busy)
 		return;
 	if (s_last_tx_ms != 0u && (now - s_last_tx_ms) < PDB_TX_PERIOD_MS)
 		return;
-
 	s_last_tx_ms = (now == 0u) ? 1u : now;
+
 	pdb_build_cmd_frame(s_tx_frame);
 	s_tx_busy = true;
 	if (HAL_UART_Transmit_IT(&huart4, s_tx_frame, PDB_FRAME_BYTES) != HAL_OK)
 		s_tx_busy = false;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Hard-ESTOP GPIO -- single owner. Active-low: LOW = asserted/power cut.     */
-/* -------------------------------------------------------------------------- */
-static void pdb_drive_estop_gpio(bool power_allowed)
-{
-	HAL_GPIO_WritePin(PDB_ESTOP_GPIO_PORT, PDB_ESTOP_GPIO_PIN,
-	                  power_allowed ? GPIO_PIN_SET : GPIO_PIN_RESET);
+#endif
 }
 
 /* -------------------------------------------------------------------------- */
@@ -296,6 +344,7 @@ static void pdb_drive_estop_gpio(bool power_allowed)
 void pdb_link_init(void)
 {
 	GPIO_InitTypeDef gi = {0};
+	uint32_t sel;
 
 	s_rx_head = 0u;
 	s_rx_tail = 0u;
@@ -305,6 +354,8 @@ void pdb_link_init(void)
 	s_ever_synced = false;
 
 	s_tx_busy = false;
+	s_tx_active = false;
+	s_tx_idx = 0u;
 	s_last_tx_ms = 0u;
 	s_tx_seq = 0u;
 	s_tx_heartbeat = 0u;
@@ -313,33 +364,140 @@ void pdb_link_init(void)
 	s_kill_request = (uint8_t)PDB_KILL_NORMAL;
 	s_estop_requested = false;
 
-	/* Fail-safe default: asserted (LOW) before the link has ever synced.
-	 * External pull-down on this net (schematic-dependent) should already
-	 * hold it asserted before firmware runs at all -- this just keeps the
-	 * MCU's own drive consistent with that from the first instruction. */
+	/* PDU drives hard-ESTOP — high-Z input only (no MCU drive on this net).
+	 * Pull-up: open/undriven = released (1); PDU asserts by driving LOW. */
 	gi.Pin = PDB_ESTOP_GPIO_PIN;
-	gi.Mode = GPIO_MODE_OUTPUT_PP;
-	gi.Pull = GPIO_PULLDOWN;
-	gi.Speed = GPIO_SPEED_FREQ_LOW;
+	gi.Mode = GPIO_MODE_INPUT;
+	gi.Pull = GPIO_PULLUP;
 	HAL_GPIO_Init(PDB_ESTOP_GPIO_PORT, &gi);
-	pdb_drive_estop_gpio(false);
 
-	(void)HAL_UARTEx_ReceiveToIdle_IT(&huart4, s_rx_chunk, sizeof(s_rx_chunk));
+	/* Use MX_UART4_Init as-is (PCLK1, 115200 8N1, no invert). Snapshot only. */
+	s_uart_brr = (uint16_t)(huart4.Instance->BRR & 0xFFFFu);
+	sel = (RCC->CCIPR & RCC_CCIPR_UART4SEL_Msk) >> RCC_CCIPR_UART4SEL_Pos;
+	s_uart_clk_src = (sel == 2u) ? 1u : (sel == 0u) ? 2u : (uint8_t)(10u + sel);
+	if (sel == 2u)
+		s_uart_kernel_hz = HSI_VALUE;
+	else if (sel == 0u)
+		s_uart_kernel_hz = HAL_RCC_GetPCLK1Freq();
+	else
+		s_uart_kernel_hz = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_UART4);
+
+	s_rx_bytes = 0u;
+	s_rx_events = 0u;
+	s_rx_valid = 0u;
+	s_rx_crc_fail = 0u;
+	s_rx_last_word = 0u;
+	s_tx_complete = 0u;
+	s_uart_err_sticky = 0u;
+
+	pdb_uart_rearm_rx();
+
+#if UART4_LOCAL_LOOPBACK_TEST
+	/* Blocking one-shot: proves MX_UART4 + RX IT + framing without Jetson.
+	 * Short PC10↔PC11 at the Controls connector, reset, read CDC last_rx. */
+	{
+		uint8_t frame[PDB_FRAME_BYTES];
+		uint32_t t0;
+		pdb_build_cmd_frame(frame);
+		(void)HAL_UART_AbortReceive(&huart4);
+		if (HAL_UART_Transmit(&huart4, frame, PDB_FRAME_BYTES, 50u) == HAL_OK) {
+			if (HAL_UART_Receive(&huart4, s_rx_accum, PDB_FRAME_BYTES, 50u) ==
+			    HAL_OK) {
+				s_rx_bytes += PDB_FRAME_BYTES;
+				s_rx_events += PDB_FRAME_BYTES;
+				s_rx_last_word = (uint32_t)s_rx_accum[0] |
+				                 ((uint32_t)s_rx_accum[1] << 8) |
+				                 ((uint32_t)s_rx_accum[2] << 16) |
+				                 ((uint32_t)s_rx_accum[3] << 24);
+				if (pdb_frame_valid(s_rx_accum) ||
+				    pdb_magic_at(s_rx_accum, PDB_MAGIC_CMD)) {
+					/* CMD magic on loopback — accept as pass. */
+					s_rx_valid++;
+					memcpy(s_last_valid_fb, s_rx_accum, PDB_FRAME_BYTES);
+					/* Mirror expects PDBF; keep raw for CDC last_rx. */
+				} else {
+					s_rx_crc_fail++;
+				}
+			} else {
+				s_uart_err_sticky |= 0x8u; /* mark timeout/fail */
+			}
+		}
+		t0 = HAL_GetTick();
+		while ((HAL_GetTick() - t0) < 2u) {
+		}
+		pdb_uart_rearm_rx();
+	}
+#endif
+}
+
+uint8_t pdb_link_uart_clk_src(void)
+{
+	return s_uart_clk_src;
+}
+
+uint16_t pdb_link_uart_brr(void)
+{
+	return s_uart_brr;
+}
+
+uint32_t pdb_link_uart_kernel_hz(void)
+{
+	return s_uart_kernel_hz;
+}
+
+uint32_t pdb_link_rx_byte_count(void)
+{
+	return s_rx_bytes;
+}
+
+uint32_t pdb_link_rx_event_count(void)
+{
+	return s_rx_events;
+}
+
+uint32_t pdb_link_rx_valid_count(void)
+{
+	return s_rx_valid;
+}
+
+uint32_t pdb_link_uart_err_sticky(void)
+{
+	return s_uart_err_sticky;
+}
+
+uint32_t pdb_link_rx_crc_fail_count(void)
+{
+	return s_rx_crc_fail;
+}
+
+uint32_t pdb_link_rx_last_word(void)
+{
+	return s_rx_last_word;
+}
+
+uint32_t pdb_link_tx_complete_count(void)
+{
+	return s_tx_complete;
+}
+
+uint32_t pdb_link_uart_cr1(void)
+{
+	return huart4.Instance->CR1;
+}
+
+uint32_t pdb_link_uart_cr2(void)
+{
+	return huart4.Instance->CR2;
+}
+
+uint32_t pdb_link_uart_cr3(void)
+{
+	return huart4.Instance->CR3;
 }
 
 void pdb_link_service(void)
 {
-	bool fresh;
-
 	pdb_service_rx();
-
-	fresh = pdb_link_is_fresh();
-
-	/* Fail-safe: link stale (including "never synced") or an explicit
-	 * request -> assert. Otherwise allow power. This is the unconditional
-	 * backstop -- it does not wait for the soft-kill handshake. */
-	pdb_drive_estop_gpio(fresh && !s_estop_requested);
-
 	pdb_service_tx();
 }
 
@@ -401,12 +559,18 @@ uint8_t pdb_link_kill_reason(void)
 
 uint8_t pdb_link_estop_sense(void)
 {
-	uint8_t value;
+	/* Local wire sense (PDU-driven PB7). 1 = HIGH / power allowed, 0 = LOW /
+	 * asserted — same polarity as the PDBF estop_sense field. */
+	return (HAL_GPIO_ReadPin(PDB_ESTOP_GPIO_PORT, PDB_ESTOP_GPIO_PIN) ==
+	        GPIO_PIN_SET)
+	           ? 1u
+	           : 0u;
+}
 
-	plant_crit_enter();
-	value = s_last_valid_fb[PDB_FB_OFF_ESTOP_SENSE];
-	plant_crit_exit();
-	return value;
+uint8_t pdb_link_peer_estop_sense(void)
+{
+	/* Stale default 1: do not double-fault LEDs; kill_state already → HARD. */
+	return pdb_link_fresh_byte(PDB_FB_OFF_ESTOP_SENSE, 1u);
 }
 
 void pdb_link_fill_mirror(uint8_t *out)
@@ -422,13 +586,14 @@ void pdb_link_fill_mirror(uint8_t *out)
 /* HAL callbacks -- only compiled when UART4_MODE_PDB is selected, so there   */
 /* is no duplicate-symbol clash with host_transport_uart.c / host_uart_bridge.c */
 /* -------------------------------------------------------------------------- */
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
 	if (huart->Instance != UART4)
 		return;
 
-	pdb_rx_push(s_rx_chunk, size);
-	(void)HAL_UARTEx_ReceiveToIdle_IT(&huart4, s_rx_chunk, sizeof(s_rx_chunk));
+	s_rx_events++;
+	pdb_rx_push(&s_rx_byte, 1u);
+	pdb_uart_rearm_rx();
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
@@ -437,6 +602,25 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 		return;
 
 	s_tx_busy = false;
+	s_tx_complete++;
+#if UART4_TX_PACE_BYTES
+	if (s_tx_idx < PDB_FRAME_BYTES)
+		s_tx_idx++;
+	if (s_tx_idx >= PDB_FRAME_BYTES)
+		s_tx_active = false;
+#endif
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+	if (huart->Instance != UART4)
+		return;
+
+	s_uart_err_sticky |= HAL_UART_GetError(huart);
+	__HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_PEF | UART_CLEAR_FEF |
+	                               UART_CLEAR_NEF | UART_CLEAR_OREF);
+	huart->ErrorCode = HAL_UART_ERROR_NONE;
+	pdb_uart_rearm_rx();
 }
 
 #else /* UART4_MODE != UART4_MODE_PDB -- inert stubs so callers never need an #if */
@@ -450,10 +634,21 @@ bool pdb_link_is_fresh(void) { return false; }
 uint8_t pdb_link_kill_state(void) { return (uint8_t)PDB_KILL_HARD_ESTOP; }
 uint8_t pdb_link_kill_reason(void) { return (uint8_t)PDB_KILL_REASON_COMMS_LOSS; }
 uint8_t pdb_link_estop_sense(void) { return 0u; }
+uint8_t pdb_link_peer_estop_sense(void) { return 1u; }
 void pdb_link_fill_mirror(uint8_t *out)
 {
 	if (out != NULL)
 		memset(out, 0, PDB_FRAME_BYTES);
 }
+uint8_t pdb_link_uart_clk_src(void) { return 0u; }
+uint16_t pdb_link_uart_brr(void) { return 0u; }
+uint32_t pdb_link_uart_kernel_hz(void) { return 0u; }
+uint32_t pdb_link_rx_byte_count(void) { return 0u; }
+uint32_t pdb_link_rx_event_count(void) { return 0u; }
+uint32_t pdb_link_rx_valid_count(void) { return 0u; }
+uint32_t pdb_link_uart_err_sticky(void) { return 0u; }
+uint32_t pdb_link_rx_crc_fail_count(void) { return 0u; }
+uint32_t pdb_link_rx_last_word(void) { return 0u; }
+uint32_t pdb_link_tx_complete_count(void) { return 0u; }
 
 #endif /* UART4_MODE == UART4_MODE_PDB */

@@ -6,7 +6,7 @@ How host software talks to a flashed board. Package:
 | Doc | Role |
 |-----|------|
 | **This page** | What to import and call |
-| [host-exchange-v2.md](host-exchange-v2.md) | 672 B plant image (`CMDH` ↔ `HBHF`) |
+| [host-exchange-v3.md](host-exchange-v3.md) | 694 B plant image (`CMDH` ↔ `HBHF`) |
 | [host-debug-v1.md](host-debug-v1.md) | DEBUG frames (`DBGC` ↔ `DBGF`) |
 | [architecture.md](architecture.md) | Modes, plant tick, staging |
 | [bringup.md](bringup.md) | Flash, buses, teleop how-to |
@@ -38,7 +38,7 @@ with ControlsPcbHub.connect("COM5") as hub:   # Linux: /dev/ttyACM0
 - One process owns the COM port (don’t run dashboard + script together).
 - Host stream ~40 Hz; MCU applies desires at **500 Hz** (hold-last).
 - Prefer `send=False` while streaming — the stream thread resends held desires.
-- Flash host **and** firmware together after a layout bump (v2 = 672 B).
+- Flash host **and** firmware together after a layout bump (v3 = 694 B).
 
 ---
 
@@ -50,7 +50,7 @@ flowchart LR
   Hub --> Plant["PLANT<br/>stream · set_actuator · recover"]
   Hub --> Debug["DEBUG<br/>hub.debug.*"]
   Hub --> Log["LOG<br/>hub.telemetry.*"]
-  Plant --> USB["USB CDC 672 B"]
+  Plant --> USB["USB CDC 694 B"]
   Debug --> USB
   USB --> MCU["app_run + TIM6 500 Hz"]
   MCU --> Log
@@ -73,12 +73,14 @@ There is no `hub.plant` namespace; plant calls are on the hub itself.
 | `ControlsPcbHub.connect(port, *, baud=…, persist_telemetry=False)` | Open CDC. Scripts default **off** for `state.json` rewrite. |
 | `hub.start_streaming(hz=40.0, *, telemetry_hz=10.0)` | Background plant TX + side telemetry thread. Does **not** auto-recover. |
 | `hub.stop_streaming()` / `hub.is_streaming` | Stop / query. |
-| `hub.set_actuator(slot, desire, *, send=True)` | Held MIT desire for `slot` in `0..24`. With streaming, use `send=False`. |
+| `hub.set_actuator(slot, desire, *, send=True)` | Held MIT desire for `slot` in `0..25`. With streaming, use `send=False`. |
 | `hub.held_desire(slot)` / `hub.held_desires()` | What the stream is commanding. |
 | `hub.send_once()` | One write of the held image + one FB poll. |
-| `hub.refresh_feedback(*, slots=None, seconds=0.5, hz=40.0)` | Pump held desires until the 672 B `HBHF` actuator payload is fresh (see below). |
+| `hub.refresh_feedback(*, slots=None, seconds=0.5, hz=40.0)` | Pump held desires until the 694 B `HBHF` actuator payload is fresh (see below). |
 | `hub.set_mcu_state(state, *, send=True)` | `McuState.NORMAL` / `RECOVERY` / `DIAG_ONLY` / `ESTOP`. |
 | `hub.recover()` | `RECOVERY` → `NORMAL` (MCU `plant_recovery_all`). |
+| `hub.pdb_status(raw=None)` | Typed USB PDB kill/rails (`PdbStatus`); stale peer ⇒ HARD/COMMS_LOSS. |
+| `hub.soft_kill_park()` / `hub.soft_kill_park_if_requested()` | Clear desires + `ESTOP`; FW acks `SOFT_KILL_READY` when peer is `SOFT_KILL_REQ`. |
 | `hub.port` / `hub.close()` | COM name / teardown (`with` supported). |
 
 ### Desires and blank MCP
@@ -91,7 +93,7 @@ A slot is **blank** when idle (`kp/kd/vel/τ≈0`) **and** `position == 0`. Blan
 
 ### Stale plant feedback after CFG / DEBUG
 
-Plant `HBHF` actuator fields are **not** filled by DEBUG probe/CFG alone. Until the MCU exchanges CAN under a held plant desire, slot pose/vel in the 672 B image can stay at zero (especially MCP CH4–6, where blank idle skips SPI).
+Plant `HBHF` actuator fields are **not** filled by DEBUG probe/CFG alone. Until the MCU exchanges CAN under a held plant desire, slot pose/vel in the 694 B image can stay at zero (especially MCP CH4–6, where blank idle skips SPI).
 
 **Do not** pick between probe pose and plant FB ad hoc. After assigning CFG:
 
@@ -257,33 +259,43 @@ python -m deft_controls_sdk.debug_dashboard
 
 ## Slot map
 
-Firmware `ACTUATOR_COUNT` = **25** (matches the wire image). Factory-style layout used by the timing probe:
+Firmware `ACTUATOR_COUNT` = **26** (matches the wire image). Factory-style layout used by the timing probe:
 
 | Buses | Slots | Backend |
 |-------|------:|---------|
 | CH1 | 8 | FDCAN |
 | CH2 | 8 | FDCAN |
-| CH3 | 3 | FDCAN |
+| CH3 | 4 | FDCAN |
 | CH4–6 | 2 each | MCP2518 |
 
-Always `cfg_get_table()` before assuming IDs — CFG/NVM overrides factory. Dual-arm teleop recipes in legacy often use slots **0–13** only; the table still has 25 wire slots.
+Always `cfg_get_table()` before assuming IDs — CFG/NVM overrides factory. Dual-arm teleop recipes in legacy often use slots **0–13** only; the table still has 26 wire slots.
+
+### PDB kill / freshness (USB)
+
+- `system.kill_state` / `kill_reason` / `estop_sense` at system offset +14.
+- Stale PDB UART (no valid frame within **200 ms**) ⇒ USB reports
+  `kill_state=HARD_ESTOP` and `kill_reason=COMMS_LOSS` (MCU `pdb_link`).
+- Soft-kill park: host `hub.soft_kill_park()` → MCU `plant_recovery_all()` →
+  `pdb_link_set_soft_kill_ready(true)` while peer is `SOFT_KILL_REQ`.
+- SI scales on `pdb[64]` rails are **placeholder** 10 mV / 10 mA
+  (`counts_to_volts` / `counts_to_amps`).
 
 ---
 
-## Wire image (v2, brief)
+## Wire image (v3, brief)
 
-672 B both ways — see [host-exchange-v2.md](host-exchange-v2.md).
+694 B both ways — see [host-exchange-v3.md](host-exchange-v3.md).
 
 | Offset | Size | Contents |
 |-------:|-----:|----------|
-| 0 | 12 | Header (magic, layout **2**, size **672**, seq) |
-| 12 | 32 | System (tick, mcu_state, plant_block, lap timing, …) |
-| 44 | 550 | Actuators 25×22 (MIT + 2 B meta on feedback) |
-| 594 | 12 | Servos |
-| 606 | 2 | LEDs |
-| 608 | 64 | `pdb[]` — power mirror only on plant path |
+| 0 | 12 | Header (magic, layout **3**, size **694**, seq) |
+| 12 | 32 | System (tick, mcu_state, plant_block, lap timing, kill_*, …) |
+| 44 | 572 | Actuators 26×22 (MIT + 2 B meta on feedback) |
+| 616 | 12 | Servos |
+| 628 | 2 | LEDs |
+| 630 | 64 | `pdb[]` — power mirror only on plant path |
 
-DEBUG tags: [host-debug-v1.md](host-debug-v1.md) (`DBGC`/`DBGF`). v1 (562 B) rejected.
+DEBUG tags: [host-debug-v1.md](host-debug-v1.md) (`DBGC`/`DBGF`). v1/v2 sizes rejected.
 
 ---
 
@@ -292,7 +304,7 @@ DEBUG tags: [host-debug-v1.md](host-debug-v1.md) (`DBGC`/`DBGF`). v1 (562 B) rej
 | Concern | Where |
 |---------|--------|
 | Arrow teleop, brace, YAM soft limits | Prefer hub plant stream; legacy teleop frozen |
-| Raw tag / frame crafting | Don’t — use hub; [host-exchange-v2.md](host-exchange-v2.md) / [host-debug-v1.md](host-debug-v1.md) |
+| Raw tag / frame crafting | Don’t — use hub; [host-exchange-v3.md](host-exchange-v3.md) / [host-debug-v1.md](host-debug-v1.md) |
 | Multi-client COM mux | Not yet — one process owns the port |
 
 ## Single RS02 channel bringup

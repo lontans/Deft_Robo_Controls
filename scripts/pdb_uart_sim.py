@@ -44,6 +44,7 @@ as a guardrail; use a spare USB-UART / Jetson UART header instead.
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import sys
 import time
@@ -278,6 +279,22 @@ def main(argv: Optional[list] = None) -> int:
         default=None,
         help="seconds after start to inject a single SOFT_KILL_REQ and exercise the handshake once; ignored if --random is set",
     )
+    ap.add_argument(
+        "--force-kill-state",
+        type=int,
+        default=None,
+        choices=(0, 1, 2, 3),
+        metavar="N",
+        help="override PDBF kill_state every TX (0 NORMAL / 1 SOFT_KILL_REQ / "
+        "2 SOFT_KILL_READY / 3 HARD_ESTOP); skips KillSim for LED/PDU prove",
+    )
+    ap.add_argument(
+        "--force-kill-reason",
+        type=int,
+        default=7,
+        metavar="N",
+        help="kill_reason when --force-kill-state is set (default 7=OTHER)",
+    )
     ap.add_argument("--random", action="store_true", help="continuous randomized telemetry (within --*-jitter-pct of the given centers) + repeated random fault-cycling (see --fault-interval-s/--fault-hold-s), instead of fixed values / a single scripted kill")
     ap.add_argument("--seed", type=int, default=None, help="seed the RNG for reproducible --random runs")
     ap.add_argument("--voltage-jitter-pct", type=float, default=2.0, help="--random: +/- pct wander around --pack-v/--rail-v centers")
@@ -286,6 +303,15 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--fault-interval-s", nargs=2, type=float, default=[20.0, 60.0], metavar=("MIN", "MAX"), help="--random: seconds between auto-recovering and the next random fault trigger")
     ap.add_argument("--fault-hold-s", nargs=2, type=float, default=[3.0, 10.0], metavar=("MIN", "MAX"), help="--random: seconds to hold SOFT_KILL_READY (contactors open) before auto-recovering to NORMAL")
     ap.add_argument("--quiet", action="store_true", help="suppress the periodic status line")
+    ap.add_argument(
+        "--tx-pace-us",
+        type=int,
+        default=None,
+        metavar="US",
+        help="delay between TX bytes in microseconds (0=bulk write). "
+        "Default: 500 on /dev/ttyTHS* (tegra HSUART bulk write returns NULs "
+        "on header loopback; paced TX works), else 0",
+    )
     args = ap.parse_args(argv)
 
     if args.seed is not None:
@@ -306,13 +332,32 @@ def main(argv: Optional[list] = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
+    pace_us = args.tx_pace_us
+    if pace_us is None:
+        # tegra194-hsuart (/dev/ttyTHS*): bulk write() loopback reads back
+        # leading/all 0x00; ~500 us/byte pacing echoes cleanly. Not needed on
+        # normal USB-UARTs.
+        port_name = args.port.strip()
+        pace_us = 500 if ("ttyTHS" in port_name or "ttyTHS" in os.path.basename(port_name)) else 0
+
+    def uart_write(ser: "serial.Serial", data: bytes) -> None:
+        if pace_us <= 0:
+            ser.write(data)
+            return
+        gap = pace_us / 1_000_000.0
+        for b in data:
+            ser.write(bytes([b]))
+            time.sleep(gap)
+
     try:
-        # write_timeout=0: non-blocking TX. Without this, ser.write() blocks
-        # forever once the OS/driver TX buffer fills if nothing drains the
-        # other end (e.g. no Controls board attached yet) -- this sim must
-        # keep running and printing status regardless of whether anything
-        # is listening.
-        ser = serial.Serial(args.port, args.baud, timeout=0, write_timeout=0)
+        # write_timeout=0: non-blocking bulk TX when unpaced. With pacing we
+        # need a real timeout so a stuck CTS/driver cannot hang forever.
+        ser = serial.Serial(
+            args.port,
+            args.baud,
+            timeout=0,
+            write_timeout=(1.0 if pace_us > 0 else 0),
+        )
     except serial.SerialException as exc:
         print(f"Cannot open {args.port}: {exc}", file=sys.stderr)
         gpio.close()
@@ -345,9 +390,10 @@ def main(argv: Optional[list] = None) -> int:
 
     mode_desc = "random telemetry+fault-cycling" if args.random else "fixed values"
     estop_desc = f"GPIO board pin {args.gpio_estop}" if args.gpio_estop is not None else f"fixed={args.estop_sense}"
+    pace_desc = f"tx_pace={pace_us}us/byte" if pace_us > 0 else "tx_pace=bulk"
     print(
         f"[pdb-sim] TX PDBF @ {args.hz:.1f} Hz on {args.port} ({args.baud} 8N1) "
-        f"-- {mode_desc}, estop_sense: {estop_desc} -- Ctrl+C to stop"
+        f"-- {mode_desc}, {pace_desc}, estop_sense: {estop_desc} -- Ctrl+C to stop"
     )
 
     try:
@@ -363,6 +409,14 @@ def main(argv: Optional[list] = None) -> int:
 
             kill.tick(last_cmd["kill_request"] if last_cmd is not None else KILL_NORMAL)
 
+            if args.force_kill_state is not None:
+                kill_state = args.force_kill_state
+                kill_reason = args.force_kill_reason
+            else:
+                kill_state = kill.state
+                kill_reason = kill.reason
+            estop_sense = gpio.read(args.estop_sense)
+
             if now >= next_tx:
                 next_tx = now + period if next_tx < now - period else next_tx + period
                 heartbeat_echo = last_cmd["heartbeat"] if last_cmd is not None else 0
@@ -374,8 +428,7 @@ def main(argv: Optional[list] = None) -> int:
                 # Contactor readback reflects reality: forced 0 (all open)
                 # while SOFT_KILL_READY, so this byte isn't just an echo of
                 # the CLI flag regardless of the simulated kill state.
-                contactor_state = 0 if kill.state == KILL_SOFT_READY else args.contactor_state
-                estop_sense = gpio.read(args.estop_sense)
+                contactor_state = 0 if kill_state == KILL_SOFT_READY else args.contactor_state
                 frame = pack_feedback(
                     seq=tx_seq & 0xFF,
                     pack_v=pack_v,
@@ -383,14 +436,14 @@ def main(argv: Optional[list] = None) -> int:
                     pack_i=pack_i,
                     rail_i=rail_i,
                     contactor_state=contactor_state,
-                    kill_state=kill.state,
-                    kill_reason=kill.reason,
+                    kill_state=kill_state,
+                    kill_reason=kill_reason,
                     estop_sense=estop_sense,
                     fault_flags=0,
                     heartbeat_echo=heartbeat_echo,
                 )
                 try:
-                    ser.write(frame)
+                    uart_write(ser, frame)
                 except serial.SerialTimeoutException:
                     pass  # peer not draining yet (e.g. no Controls board attached) -- drop and retry
                 tx_seq += 1
@@ -408,8 +461,8 @@ def main(argv: Optional[list] = None) -> int:
                     )
                 print(
                     f"[pdb-sim] tx_seq={tx_seq:6d} "
-                    f"kill_state={KILL_STATE_NAMES[kill.state]:16s} "
-                    f"kill_reason={KILL_REASON_NAMES[kill.reason]:8s} "
+                    f"kill_state={KILL_STATE_NAMES.get(kill_state, str(kill_state)):16s} "
+                    f"kill_reason={KILL_REASON_NAMES.get(kill_reason, str(kill_reason)):8s} "
                     f"estop_sense={estop_sense} "
                     f"{rx_desc}"
                 )

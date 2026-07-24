@@ -82,7 +82,10 @@ def float_to_uint(x: float, x_min: float, x_max: float, bits: int) -> int:
 
 
 def uint_to_float(raw: int, x_min: float, x_max: float, bits: int) -> float:
-    max_val = 65535 if bits >= 16 else ((1 << bits) - 1)
+    """Inverse of float_to_uint — same max_val ((1<<bits)-1), not 65535-only."""
+    if bits <= 0 or bits > 16:
+        return x_min
+    max_val = (1 << bits) - 1
     return x_min + (float(raw) * (x_max - x_min) / float(max_val))
 
 

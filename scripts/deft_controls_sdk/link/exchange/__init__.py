@@ -1,4 +1,4 @@
-"""Byte contract helpers for the 672 B host exchange image (layout v2).
+"""Byte contract helpers for the 694 B host exchange image (layout v3).
 
   wire_layout.py — constants / offsets (plant + DEBUG magics)
   transport.py   — serial open + frame reader (HBHF / DBGF demux)
@@ -60,8 +60,10 @@ from .parse import (
     PLANT_BLOCK_NAMES,
     parse_actuator_feedback,
     parse_feedback_header,
+    parse_pdb_mirror,
     parse_servo_feedback,
     parse_svd_plant_timing,
+    parse_system_kill,
     parse_system_timing,
 )
 from .transport import (
@@ -151,9 +153,11 @@ __all__ = [
     "parse_dm_from_actuator",
     "parse_dm_probe_pdu",
     "parse_feedback_header",
+    "parse_pdb_mirror",
     "parse_probe_pdu",
     "parse_servo_feedback",
     "parse_svd_plant_timing",
+    "parse_system_kill",
     "parse_system_timing",
     "patch_actuator_desire",
     "patch_led_command",

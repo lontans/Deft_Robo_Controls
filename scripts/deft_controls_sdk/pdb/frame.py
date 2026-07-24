@@ -127,10 +127,23 @@ def pack_command(
     rail_enable_cmd: int = 0,
     kill_request: int = KILL_NORMAL,
     heartbeat: int = 0,
+    flags: int = 0,
 ) -> bytes:
-    """Build one 64 B PDBC command frame (Controls -> PDB)."""
+    """Build one 64 B PDBC command frame (Controls -> PDB).
+
+    ``flags`` bit0 matches firmware ``s_estop_requested`` (host/local E-STOP
+    latch). Other flag bits reserved 0.
+    """
     buf = bytearray(FRAME_BYTES)
-    struct.pack_into("<IBBB", buf, OFF_MAGIC, MAGIC_CMD, VERSION, seq & 0xFF, 0)
+    struct.pack_into(
+        "<IBBB",
+        buf,
+        OFF_MAGIC,
+        MAGIC_CMD,
+        VERSION,
+        seq & 0xFF,
+        flags & 0xFF,
+    )
     buf[CMD_OFF_RAIL_ENABLE] = rail_enable_cmd & 0xFF
     buf[CMD_OFF_KILL_REQ] = kill_request & 0xFF
     buf[CMD_OFF_HEARTBEAT] = heartbeat & 0xFF
@@ -145,6 +158,7 @@ def parse_command(buf: bytes) -> Optional[dict]:
     seq = buf[OFF_SEQ]
     return {
         "seq": seq,
+        "flags": buf[OFF_FLAGS],
         "rail_enable_cmd": buf[CMD_OFF_RAIL_ENABLE],
         "kill_request": buf[CMD_OFF_KILL_REQ],
         "heartbeat": buf[CMD_OFF_HEARTBEAT],

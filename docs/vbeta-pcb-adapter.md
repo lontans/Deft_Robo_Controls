@@ -3,6 +3,44 @@
 Replace `I2RTArmDriver` and `FeatherPlatformClient` with PCB-backed drivers in
 `scripts/deft_controls_sdk/vbeta/`. Cameras / episode packing stay in vbeta.
 
+## Reference checkout (`docs/deft_vbeta_ref/deft_vbeta`)
+
+Declared in [`.gitmodules`](../.gitmodules) as a real submodule
+(`gitlab.com/deftrobotics/deft_vbeta`) — the existing `160000` gitlink
+already committed to this repo pointed at a valid commit with no
+`.gitmodules` entry to explain it, so `git submodule` tooling couldn't see
+it. Fixing that is just the gitlink pointer (a few dozen bytes); it does
+**not** commit the 36 MB working tree — that stays untracked inside the
+submodule's own `.git`, per the existing bloat-avoidance call in
+[`act-lap-bloat-deepdive-2026-07-23.md`](act-lap-bloat-deepdive-2026-07-23.md).
+Read-only reference for contract-matching; never edit files under it from
+this repo.
+
+## Parity status (vs `docs/deft_vbeta_ref/deft_vbeta` @ `6cd886f`)
+
+Checked method-for-method against the reference `I2RTArmDriver`,
+`FeatherPlatformClient`, and `YAMAIMobile` call sites (arms, platform
+non-lift, neck, `yam_product_rows`/CFG). Everything actually called by
+`YAMAIMobile` on these surfaces is matched; `motor_models`/`motor_indices`
+(I2RT properties unused for the YAM/I2RT arm path — only feetech/dynamixel
+calibration scripts touch them) were not ported since nothing calls them.
+
+**Fixed:** `PcbPlatformClient` was double-applying `neck_pitch_offset_deg` —
+`YAMAIMobile.convert_vr_head_angles` already bakes the offset into pitch
+before enqueueing `"neck_cmd"`, and the reference `FeatherPlatformClient`
+control loop forwards pitch/yaw raw (`neck.go_to(pitch, yaw)`, no second
+offset). `PcbPlatformClient._apply_neck` re-added it, which would have
+pointed the physical neck wrong under real teleop. Removed the constructor's
+`neck_pitch_offset_deg` param; `neck_cmd` now forwards pitch/yaw unmodified,
+matching the reference. Regression-guarded by
+`test_platform_neck_cmd_no_double_offset` in
+[`scripts/tests/test_deft_controls_sdk_vbeta.py`](../scripts/tests/test_deft_controls_sdk_vbeta.py).
+
+Known, intentional divergences (not bugs — see Method maps below):
+`base_cmd` is limited vs. Feather's `nav_planner` go_to/rotate; lift is a
+stub; `PcbPlatformClient` is in-process (no subprocess), so `is_alive()`
+means "connected" rather than "child process alive".
+
 ## USB COM ownership
 
 Exactly **one** process owns CDC. Hot loop = soft-DFU + streaming + smoke/matrix.
@@ -19,7 +57,9 @@ Exactly **one** process owns CDC. Hot loop = soft-DFU + streaming + smoke/matrix
 
 ## Slot map (YAM product CFG)
 
-`ACTUATOR_COUNT = 25`. Neck = `servo[]`. LEDs = SK9822 word.
+`ACTUATOR_COUNT = 26` (host exchange layout v3, [`docs/host-exchange-v3.md`](host-exchange-v3.md) —
+bumped from v2/25 by Track B's PDU-SDK contract work; image 694 B, servos @ 616,
+LED @ 628, PDB/DEBUG mailbox @ 630). Neck = `servo[]`. LEDs = SK9822 word.
 
 | Slots | Name | Bus | Protocol |
 |------:|------|-----|----------|
@@ -28,9 +68,13 @@ Exactly **one** process owns CDC. Hot loop = soft-DFU + streaming + smoke/matrix
 | 14–16 | BwC, BwR, BwL | CH4–6 MCP | RobStride |
 | 17–19 | BpC, BpR, BpL | CH4–6 MCP | RobStride |
 | 20 | lift **reserved** | CH3 | **disabled** until bringup |
-| 21–24 | spare | — | disabled |
+| 21–25 | spare | — | disabled |
 
-Distinct from the all-RobStride timing-matrix CFG used by load benches.
+`yam_product_rows()` (the YAM-specific CFG this adapter applies) keeps all of
+20–25 disabled/spare — distinct from the plant's generic factory-default NVM
+layout (`CH1×8, CH2×8, CH3×4, CH4–6×2`) and from the all-RobStride
+timing-matrix CFG used by load benches, both of which are Track B's bench
+territory, not the YAM product mapping.
 
 ## Lift (stub)
 
@@ -64,7 +108,7 @@ Default MIT gains (bringup): kp ≈ `(40,60,90,60,25,25,20)`, kd ≈ `1.0`.
 |`base_target_cmd` / `send_target_state`|**Preferred.** Steer pos + drive vel → slots 14–19|
 |`base_cmd`|**Limited.** `(turn_deg, linear_m_s, angular_deg_s)`: all-zero → stop; otherwise hold common steer angle and **zero drive** (no Feather `nav_planner`). Teleop that needs go_to/rotate must stay host-side or use `base_target_cmd`|
 |`lift_cmd`|stub|
-|`neck_cmd`|servo 0/1|
+|`neck_cmd`|servo 0/1, pitch/yaw forwarded raw (no offset — caller already applied it)|
 |`heartbeat`|refresh watchdog clock|
 |`enable/disable_drive_current`|re-apply / blank **drive** slots only|
 |`get_state()`|angles/vels from FB; lift zeros; `lift_unimplemented=1`|
@@ -74,7 +118,11 @@ Watchdog ≈ 1 s without heartbeat/cmd → zero drive + lift stub 0 (steer held)
 ### LEDs
 
 `set_led(mode, brightness, count=0)` / `led_off()` → `hub.set_led(LedDesire(...))`.
-Modes: 0=OFF, 1=TEST, 2=FLASH.
+Modes: 0=OFF, 1=TEST, 2=FLASH, 3=SOLID_GREEN, 4=SOLID_YELLOW, 5=SOLID_RED,
+6=BLINK_YELLOW_SLOW, 7=BLINK_RED_FAST, 8=IDLE_CORNFLOWER (`led_idle()`,
+`#6495ED`, flat 500 ms on/off — Track B's default for PDB `NORMAL`+fresh,
+replacing solid green). Not part of the reference `deft_vbeta` surface —
+PCB-only, no I2RT/Feather equivalent to match.
 
 ## Units
 
@@ -111,8 +159,11 @@ robot.follower_arms = {
 # calls send_command / get_state / heartbeat on robot.feather_client.
 robot.feather_client = PcbPlatformClient(
     session, use_neck=robot.use_feather_neck,
-    neck_pitch_offset_deg=robot.neck_pitch_offset_deg,
 )
+# Do NOT pass neck_pitch_offset_deg here: YAMAIMobile.convert_vr_head_angles
+# already bakes it into pitch before "neck_cmd" is enqueued. PcbPlatformClient
+# forwards pitch/yaw raw (matches reference FeatherPlatformClient control loop) —
+# applying the offset again here would double it.
 # Skip Feather subprocess connect path: PcbPlatformClient.connect is cheap.
 # Ensure robot.connect() still calls feather_client.connect() — it does today.
 ```

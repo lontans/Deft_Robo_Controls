@@ -37,8 +37,15 @@ void plant_command_image_dispatch_plant(const host_command_image_t *cmd)
 
 	if (mcu_state == PLANT_MCU_STATE_RECOVERY || mcu_state == PLANT_MCU_STATE_ESTOP) {
 		plant_recovery_all();
+		/* Soft-kill handshake: once parked, ack SOFT_KILL_READY to PDB.
+		 * Only while peer still reports SOFT_KILL_REQ (docs/pdb-uart-v1.md). */
+		if (pdb_link_kill_state() == (uint8_t)PDB_KILL_SOFT_REQ)
+			pdb_link_set_soft_kill_ready(true);
 		return;
 	}
+
+	if (pdb_link_kill_state() == (uint8_t)PDB_KILL_NORMAL)
+		pdb_link_set_soft_kill_ready(false);
 
 	if (mcu_state == PLANT_MCU_STATE_DIAG_ONLY)
 		return;
@@ -79,8 +86,13 @@ void plant_command_image_dispatch_debug(const host_command_image_t *cmd)
 
 	if (mcu_state == PLANT_MCU_STATE_RECOVERY || mcu_state == PLANT_MCU_STATE_ESTOP) {
 		plant_recovery_all();
+		if (pdb_link_kill_state() == (uint8_t)PDB_KILL_SOFT_REQ)
+			pdb_link_set_soft_kill_ready(true);
 		return;
 	}
+
+	if (pdb_link_kill_state() == (uint8_t)PDB_KILL_NORMAL)
+		pdb_link_set_soft_kill_ready(false);
 
 	bool pdu_rs2 = plant_diag_is_rs2_command(cmd);
 	bool pdu_dxl = plant_diag_is_dxl_command(cmd);

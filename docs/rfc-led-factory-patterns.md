@@ -29,7 +29,8 @@ No new fields, no `IMAGE_BYTES` change, no schema version bump.
 | 5 | `SOLID_RED` | Factory fail / blocked (steady) |
 | 6 | `BLINK_YELLOW_SLOW` | Caution (slow yellow blink) |
 | 7 | `BLINK_RED_FAST` | E-stop / fault attention (fast red blink) |
-| 8..31 | — | Reserved; MCU treats as blank (same as unknown today) |
+| 8 | `IDLE_CORNFLOWER` | Idle: cornflower `#6495ED` (100,149,237); 500 on / 500 off (1 Hz 50%) |
+| 9..31 | — | Reserved; MCU treats as blank (same as unknown today) |
 
 Factory / traffic-light patterns are **solid or blink fills** of one SK9822
 band. They intentionally do **not** re-implement the TEST chase.

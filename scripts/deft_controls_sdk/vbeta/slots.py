@@ -20,7 +20,7 @@ BASE_DRIVE_SLOTS: Dict[str, int] = {"BpC": 17, "BpR": 18, "BpL": 19}
 BASE_SLOTS: Tuple[int, ...] = (14, 15, 16, 17, 18, 19)
 
 LIFT_SLOT = 20  # reserved, CFG disabled
-SPARE_SLOTS: Tuple[int, ...] = (21, 22, 23, 24)
+SPARE_SLOTS: Tuple[int, ...] = (21, 22, 23, 24, 25)
 
 # DXL neck host servo slots
 NECK_PITCH_SERVO_SLOT = 0
@@ -51,7 +51,7 @@ def arm_slots(side: str) -> Tuple[int, ...]:
 
 
 def yam_product_rows() -> List[Tuple[int, bool, int, int, int]]:
-    """(bus, enabled, protocol, motor_id, master_id) per slot 0..24."""
+    """(bus, enabled, protocol, motor_id, master_id) per slot 0..25."""
     rows: List[Tuple[int, bool, int, int, int]] = []
 
     # Left arm CH1 Damiao ESC 0x01..0x07
@@ -70,8 +70,8 @@ def yam_product_rows() -> List[Tuple[int, bool, int, int, int]]:
 
     # Lift reserved disabled on CH3
     rows.append((3, False, PROTO_NONE, 0, 0))
-    # Spare
-    for _ in range(4):
+    # Spare (layout v3: five disabled CH3 pads → 26 slots)
+    for _ in range(5):
         rows.append((3, False, PROTO_NONE, 0, 0))
 
     if len(rows) != ACTUATOR_COUNT:
@@ -103,7 +103,7 @@ def cubemars_yam_rows() -> List[Tuple[int, bool, int, int, int]]:
         rows.append((bus, True, PROTO_ROBSTRIDE, 0x02, 0))
 
     rows.append((3, False, PROTO_NONE, 0, 0))
-    for _ in range(4):
+    for _ in range(5):
         rows.append((3, False, PROTO_NONE, 0, 0))
 
     if len(rows) != ACTUATOR_COUNT:

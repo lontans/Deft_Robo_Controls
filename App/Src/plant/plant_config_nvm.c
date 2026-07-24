@@ -319,7 +319,7 @@ static void build_nvm_image(plant_cfg_nvm_image_t *img)
 
 void plant_config_load_factory_defaults(void)
 {
-	/* Product-shaped table (25 slots): CH1×8, CH2×8, CH3×3, CH4–6×2 each.
+	/* Product-shaped table (26 slots): CH1×8, CH2×8, CH3×4, CH4–6×2 each.
 	 * motor_id unique per bus (reuse across buses). Override via CFG SET. */
 	static const struct {
 		uint8_t bus;
@@ -327,7 +327,7 @@ void plant_config_load_factory_defaults(void)
 	} k_layout[] = {
 		{ (uint8_t)CAN_BUS_CH1, 8u },
 		{ (uint8_t)CAN_BUS_CH2, 8u },
-		{ (uint8_t)CAN_BUS_CH3, 3u },
+		{ (uint8_t)CAN_BUS_CH3, 4u },
 		{ (uint8_t)CAN_BUS_CH4, 2u },
 		{ (uint8_t)CAN_BUS_CH5, 2u },
 		{ (uint8_t)CAN_BUS_CH6, 2u },
