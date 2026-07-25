@@ -22,7 +22,7 @@ parks ESTOP. ``--estop-after SEC`` asserts host ESTOP and checks MCU latch.
 Dashboard ``HARD`` + ``COMMS_LOSS`` with host ``mcu_state=0`` means stale PDU
 UART, not GPIO.
 
-``killall -9`` does not stop CAN — Ctrl-C / ``_tmp_stop_can.py``.
+``killall -9`` does not stop CAN — Ctrl-C / ``stop_can.py``.
 """
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ from deft_controls_sdk.vbeta.slots import (  # noqa: E402
     _DAMIAO_MASTER,
 )
 from deft_controls_sdk.vbeta.yam_bench_clear_left import CLEAR_HI, CLEAR_LO  # noqa: E402
-from rs02_channel_bringup import rs02_resolve_start  # noqa: E402
+from deft_controls_sdk.bench.rs02_motion import rs02_resolve_start  # noqa: E402
 
 STREAM_HZ = 20.0
 J2 = 1
@@ -419,12 +419,25 @@ def _probe_base(hub) -> Dict[int, float]:
         for slot, bus, proto, mid, _master, label in BASE_ROWS:
             if proto != PROTO_ROBSTRIDE:
                 continue
-            try:
-                # probe = reset→enable on this id only (siblings stay armed).
-                resp = hub.debug.probe_robstride(bus=bus, motor_id=mid)
-            except Exception as exc:
-                print(f"  probe {label}: {exc}", flush=True)
-                continue
+            # Bus already reset-swept above. Enable-only — another PROBE_RESET
+            # here knocks the daisy sibling (CH5 0x70/0x74) and often leaves
+            # the second ID unarmed (fb frozen, cmd integrator still walks).
+            resp = None
+            attempts = 3 if is_mcp_bus(bus) else 2
+            for attempt in range(1, attempts + 1):
+                try:
+                    resp = hub.debug.probe_robstride(
+                        bus=bus,
+                        motor_id=mid,
+                        timeout_s=2.0 if is_mcp_bus(bus) else 0.55,
+                        reset=False,
+                    )
+                except Exception as exc:
+                    print(f"  probe {label} try={attempt}: {exc}", flush=True)
+                    resp = None
+                if resp and resp.get("found"):
+                    break
+                time.sleep(0.12)
             if resp and resp.get("found"):
                 q = float(resp["position"])
                 if abs(q) < 1e-6:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exclusive COM: DXL neck + SK9822 LED smoke."""
+"""Deprecated shim — use ``python vbeta_smoke.py neck …``."""
 from vbeta_smoke_lib import neck_led_main
 
 if __name__ == "__main__":

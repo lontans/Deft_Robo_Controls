@@ -9,7 +9,7 @@ This module lets the *host* independently recompute the same policy from the
 raw ``pdb[]`` mirror and park proactively — works even before that firmware
 lands, and as defense-in-depth afterward.
 
-Keep these counts aligned with ``App/Inc/host/pdb_vi_limits.h`` (Cursonier).
+Keep these counts aligned with ``App/Inc/host/pdb_vi_limits.h``.
 Provisional; tune after the first real PDB capture (docs/pdb-uart-v1.md).
 """
 from __future__ import annotations

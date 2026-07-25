@@ -80,7 +80,7 @@ under normal bus lag rather than genuine rail contact.
 
 ## Verified
 
-**Date:** 2026-07-24, live board on Jetson, `python scripts/_tmp_launch_continuous.py`.
+**Date:** 2026-07-24, live board on Jetson, `python scripts/launch_continuous.py`.
 
 Sibling-safe reset-then-probe sequence, all three RobStride IDs found:
 ```
@@ -108,6 +108,14 @@ s22=-11.36/-11.41@+0.79 s23=-11.39/-11.44@+0.79 s24=-11.47/-11.48@+0.79   # rail
 `cmd/fb` stay within ~0.06 rad of each other throughout (well under `BASE_LEAD=0.45`) — no lead-cap
 throttling needed at `base_rate=π/4 rad/s`. Full run recorded to
 `.deft_session/recordings/record_20260724T214351.ndjson` on the Jetson.
+
+## Open issue — CH5 `0x74` silent (2026-07-25)
+
+Post–Mission Impossible bench check: MCP kick + `discover`/`probe` for **only** `0x74` on bus 5
+returned no CAN frames (`found=0`, `raw_frames=0`). Sibling `0x70` on the same bus still probes
+live. Earlier the same day continuous/M4 had `0x74` `found=1`. Not closed in software — treat as
+HW/ID/power on the daisy second node until a probe returns `found=1` again. Details:
+[`continuous-ops.md`](continuous-ops.md) “Open bench issues.”
 
 ## Known falsehoods retired
 

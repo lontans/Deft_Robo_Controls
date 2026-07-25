@@ -177,7 +177,7 @@ YAM-shaped drivers that own plant slots via one `PcbRobotSession` (exclusive COM
 - `PcbNeckDriver` / `set_led` — DXL neck + SK9822
 
 Contract + slot map: [vbeta-pcb-adapter.md](vbeta-pcb-adapter.md) (includes YAMAIMobile patch sketch).
-Script hygiene: [scripts-hygiene.md](scripts-hygiene.md). Smokes: `scripts/vbeta_arm_smoke.py`, `vbeta_base_smoke.py`, `vbeta_neck_led_smoke.py`.
+Script hygiene: [scripts-hygiene.md](scripts-hygiene.md). Smokes: `scripts/vbeta_smoke.py arm`, `vbeta_smoke.py base`, `vbeta_smoke.py neck`.
 
 ```python
 from deft_controls_sdk.vbeta import PcbRobotSession, PcbArmDriver, PcbPlatformClient
@@ -359,7 +359,7 @@ python scripts/soft_dfu_flash.py
 **Bandwidth matrix (after flash)**
 
 ```powershell
-python _tmp_mcp_timing_probe.py --port COM5 --seconds 3.0 --hz 40
+python bench_load_matrix.py --port COM5 --hz 40 --scenario all
 ```
 
 **Black-box a run**

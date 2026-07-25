@@ -28,8 +28,8 @@ python yam_arm_clear_range.py --apply-cfg
 Prove clamps:
 
 ```powershell
-python vbeta_arm_smoke.py --side left --hold --hold-s 3
-python vbeta_arm_smoke.py --side left --jog --joint 0 --delta 0.05
+python vbeta_smoke.py arm --side left --hold --hold-s 3
+python vbeta_smoke.py arm --side left --jog --joint 0 --delta 0.05
 ```
 
 ## Results (fill after run)

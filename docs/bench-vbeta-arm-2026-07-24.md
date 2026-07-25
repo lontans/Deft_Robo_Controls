@@ -22,7 +22,7 @@ Owner: Cursor (D1). Layout stays **694 B / v3 / 26 slots** (no 800 B).
 ## Command
 
 ```text
-python scripts/vbeta_arm_smoke.py --port COM5 --side left --apply-cfg --hold-s 2.0
+python scripts/vbeta_smoke.py arm --port COM5 --side left --apply-cfg --hold-s 2.0
 ```
 
 ## Results

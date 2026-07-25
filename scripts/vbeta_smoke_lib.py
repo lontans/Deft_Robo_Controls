@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""HW smoke for vbeta PCB adapters. Owns COM exclusively — close dashboard first.
+"""HW smoke implementations for vbeta PCB adapters.
 
-Laptop:
-    python vbeta_arm_smoke.py --side left --hold --hold-s 3
-    python vbeta_arm_smoke.py --side left --jog --joint 0 --delta 0.05
-    python vbeta_base_smoke.py
-    python vbeta_neck_led_smoke.py
+Prefer the unified CLI:
 
-Jetson (when HW gate opens — do not run until rig ready):
-    cd ~/controls_pcb/scripts
-    python3 vbeta_arm_smoke.py --port /dev/ttyACM0 --side left --apply-cfg --hold
-    python3 vbeta_arm_smoke.py --port /dev/ttyACM0 --side left --apply-cfg --jog --delta 0.05
+    python vbeta_smoke.py arm --side left --hold --hold-s 3
+    python vbeta_smoke.py arm --side left --jog --joint 0 --delta 0.05
+    python vbeta_smoke.py base
+    python vbeta_smoke.py neck
 
+Owns COM exclusively — disconnect the debug dashboard first.
 Goals are soft-limit clamped via deft_controls_sdk.vbeta.yam_limits.
-soft_kill_park_if_requested is ticked during hold/jog when PDB FB is present.
 """
 from __future__ import annotations
 

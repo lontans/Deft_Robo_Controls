@@ -156,6 +156,16 @@ Never Soft-DFU the live teleop serial.
 | Wall time | ~15–26 s/cycle |
 | ST-Link | none |
 
+### Jetson caveat (2026-07-24 evening)
+
+When only **`3167376F3435`** is plugged (the former sibling), soft-enter can drop
+CDC without `0483:DF11` enumerating on the Jetson USB tree. Treat that as
+**USB Soft-DFU blocked on this host+serial combo** until re-proven: recover with
+ST-Link SWD (`nBOOT0=1` + flash ELF), then re-run
+`--require-usb-dfu --serial <scan>` once DF11 is visible again. Prefer the
+previously proven Soft-DFU serial (`3167375E3435`) when both boards are available.
+Always `scan` first and pin `--serial`.
+
 ## Related
 
 - Firmware: `App/Src/host/soft_dfu.c`, `App/Inc/host/soft_dfu.h`

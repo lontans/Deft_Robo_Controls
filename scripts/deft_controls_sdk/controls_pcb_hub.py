@@ -158,6 +158,9 @@ class ControlsPcbHub:
     def set_servo(self, slot: int, desire: ServoDesire, *, send: bool = True) -> None:
         self._connection.set_servo(slot, desire, send=send)
 
+    def clear_servos(self, *, send: bool = True) -> None:
+        self._connection.clear_servos(send=send)
+
     def set_led(self, desire: LedDesire, *, send: bool = True) -> None:
         self._connection.set_led(desire, send=send)
 
@@ -170,6 +173,12 @@ class ControlsPcbHub:
 
     def held_desires(self) -> dict:
         return self._connection.held_desires()
+
+    def held_servo(self, slot: int) -> Optional[ServoDesire]:
+        return self._connection.held_servo(slot)
+
+    def held_servos(self) -> dict:
+        return self._connection.held_servos()
 
     @property
     def is_streaming(self) -> bool:

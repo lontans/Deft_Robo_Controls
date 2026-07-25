@@ -75,7 +75,7 @@ run, not a placeholder.
 ## Verified
 
 **Date:** 2026-07-24, live board on Jetson (`192.168.50.48`, `/dev/ttyACM0`), via
-`python scripts/_tmp_launch_continuous.py` (drives `yam_continuous_all.py --cruise-up 0.18
+`python scripts/launch_continuous.py` (drives `yam_continuous_all.py --cruise-up 0.18
 --cruise-down 0.12 --engage-s 2.4 --base-rate 0.7854 --record --duration 50`).
 
 Discover (all 7 Damiao ESCs present on CH1):

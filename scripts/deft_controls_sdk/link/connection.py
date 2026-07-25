@@ -365,6 +365,15 @@ class Connection:
         with self._state_lock:
             return dict(self._desires)
 
+    def held_servo(self, slot: int) -> Optional[ServoDesire]:
+        with self._state_lock:
+            return self._servos.get(slot)
+
+    def held_servos(self) -> Dict[int, ServoDesire]:
+        """Snapshot all held DXL servo desires in one lock (mirrors held_desires())."""
+        with self._state_lock:
+            return dict(self._servos)
+
     @staticmethod
     def _is_plant_feedback(raw: bytes) -> bool:
         hdr = parse_feedback_header(raw)

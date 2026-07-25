@@ -8,11 +8,11 @@ their live evidence from. Read this one first if you're about to run continuous 
 
 ## AI quickstart
 
-- **One-shot remote launch (recommended)**: `python scripts/_tmp_launch_continuous.py` from a
+- **One-shot remote launch (recommended)**: `python scripts/launch_continuous.py` from a
   machine with SSH to the Jetson (`192.168.50.48`, user `deft-robotics`, password from env
   `JETSON_PASS`, bench default `4565`). It: kills any stale `yam_continuous_all.py`/`pdb_uart_sim.py`,
   clears a leftover `soft_kill_request` flag, syncs the current local copies of the driver + SDK
-  files it needs via SFTP, runs `_tmp_stop_can.py` remotely to blank any leftover CAN state, starts
+  files it needs via SFTP, runs `stop_can.py` remotely to blank any leftover CAN state, starts
   `pdb_uart_sim.py` and `yam_continuous_all.py --record --duration 50` in the background, waits for
   latch+cruise, writes a follow-mode `soft_kill_request`, and pulls back the log tail. This is the
   proven, reproducible path — prefer it over ad hoc manual SSH unless you're actively debugging one
@@ -23,7 +23,7 @@ their live evidence from. Read this one first if you're about to run continuous 
 - **Stop it**: Ctrl-C (SIGINT/SIGTERM both hooked, runs `_cleanup()` — blanks all desires, clears
   DXL, sets `DIAG_ONLY`, restores idle LED). **`killall -9` does NOT stop CAN** — a hard-killed
   process leaves the last-commanded MIT frames latched on the bus. If you had to hard-kill, run
-  `python3 _tmp_stop_can.py` afterward to blank everything.
+  `python3 stop_can.py` afterward to blank everything.
 - **Dashboard must stay in follow mode** while continuous owns CDC — do not click Connect COM in the
   debug dashboard against the same port continuous is using. The dashboard reads
   `.deft_session/state.json` (written by `persist_telemetry=True`) for live display, and its
@@ -44,8 +44,8 @@ their live evidence from. Read this one first if you're about to run continuous 
 
 ### Why the launch script syncs files instead of just SSH-running in place
 
-`_tmp_launch_continuous.py` runs from a local checkout and `sftp.put()`s a fixed list of files
-(`yam_continuous_all.py`, `pdb_uart_sim.py`, `_tmp_stop_can.py`, `rs02_channel_bringup.py`, and a
+`launch_continuous.py` runs from a local checkout and `sftp.put()`s a fixed list of files
+(`yam_continuous_all.py`, `pdb_uart_sim.py`, `stop_can.py`, `rs02_channel_bringup.py`, and a
 handful of `deft_controls_sdk/` modules) to the Jetson's working copy before launching anything
 remotely. This exists because the Jetson's checkout can otherwise drift from whatever's being
 actively edited locally — syncing just the files the run actually touches (not a full repo push)
@@ -96,10 +96,39 @@ A run that *doesn't* look like this — a joint stuck at `fault=0` after the fin
 dropping toward single digits, or an unhandled traceback instead of `cleanup()`/`done` — is the
 actual failure signature worth investigating, not the PDU state.
 
+### Open bench issues (2026-07-25)
+
+Captured after Mission Impossible / continuous follow-up on the same Jetson board. Continuous was
+stopped; dedicated discovers/probes used (not “skip and keep cruising”).
+
+1. **CH5 RobStride `0x74` silent on CAN**
+   - `discover_robstride_all(bus=5, start=0x74, end=0x74)` → no hit.
+   - `probe_robstride(bus=5, motor_id=0x74)` → `found=0`, `raw_frames=0` (no CAN reply), including
+     after MCP SESSION kick and after resetting sibling `0x70`. Same miss on bus 6.
+   - Control: `0x70` on CH5 still probes `found=1` (same session).
+   - Earlier the same day (M4 / continuous) `0x74` had probed `found=1` at ~`+2.51` rad — so this is
+     a **regression / HW-or-ID state**, not “never wired.” Host continuous cannot arm what the MCP
+     path never hears. Next checks: power/CAN drop on the daisy second node, confirm ID with the
+     RobStride tool, reseat CH5 chain.
+
+2. **DXL neck: present OK, torque goals do not move**
+   - Stream present discover still returns both IDs (observed `pitch=1754`, `yaw=645`).
+   - Commanding torque-on goals for ~5 s (`pitch→2300`, `yaw→1400`) with stream + paced
+     `send_once` each tick left `end_fb` unchanged (`1754` / `645`).
+   - Note: yaw present `645` is **below** firmware `servo_table[1].pos_min=700` — even so, pitch is
+     in-range and also did not move. Treat as PeripheralTask / torque path / bus issue, not only
+     clamp math. Earlier 2026-07-24 continuous had tracking cmd/fb; this session does not.
+
+3. **J2 CLEAR lift vs brace hold**
+   - When J2 drives toward the CLEAR high/low, other arm joints sometimes **do not hold pose hard
+     enough** (brace kp/kd insufficient under the moving J2 load). That can look like multi-joint
+     sag or intermittent MIT green loss even when latch initially succeeded. Follow-up: raise brace
+     gains on non-J2 slots during cruise, or slow J2 rates when brace torque peaks.
+
 ## Verified
 
 **Date:** 2026-07-24, live board on Jetson (`192.168.50.48`, `/dev/ttyACM0`), full run via
-`python scripts/_tmp_launch_continuous.py`, `yam_continuous_all.py --cruise-up 0.18 --cruise-down
+`python scripts/launch_continuous.py`, `yam_continuous_all.py --cruise-up 0.18 --cruise-down
 0.12 --engage-s 2.4 --base-rate 0.7854 --record --duration 50`, soft-killed via follow-mode flag
 after ~26 s of cruise (well past the 30 s continuous-tracking bar once boot+latch+engage time is
 included — see the peripheral docs for the exact per-system evidence). Clean exit:
@@ -124,7 +153,7 @@ python3 -c "import serial.tools.list_ports as p; [print(x.device, x.hwid) for x 
 
 - **"`killall -9` is a safe way to stop continuous."** False — it stops the Python process but
   leaves the last MIT command frames latched on the CAN bus. Always Ctrl-C (clean `_cleanup()`) or,
-  if you already hard-killed, follow up with `_tmp_stop_can.py`.
+  if you already hard-killed, follow up with `stop_can.py`.
 - **"The dashboard needs to Connect COM to see live data during continuous."** False — follow mode
   (reading `.deft_session/state.json`) gives full live telemetry without taking the port, and is the
   *required* mode whenever another process owns CDC.

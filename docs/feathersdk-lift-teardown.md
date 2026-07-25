@@ -223,7 +223,7 @@ per `bringup.md` §2's schematic mapping) and run a discovery pass.
 13. Update `vbeta-pcb-adapter.md`'s "Lift (stub)" section to describe the
     real wire-up once shipped; drop the "no-op" language.
 14. Add `scripts/vbeta_lift_smoke.py` alongside the existing
-    `vbeta_arm_smoke.py`/`vbeta_base_smoke.py`/`vbeta_neck_led_smoke.py` —
+    `vbeta_smoke.py arm`/`vbeta_smoke.py base`/`vbeta_smoke.py neck` —
     same exclusive-COM pattern, small creep-and-back motion.
 15. Extend `scripts/tests/test_deft_controls_sdk_vbeta.py`'s fake-hub
     contract tests to cover the lift path once it does something other than

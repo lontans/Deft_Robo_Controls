@@ -161,10 +161,15 @@ def probe(
     bus: int,
     motor_id: int,
     timeout_s: float = 0.55,
+    reset: bool = True,
 ) -> Optional[dict]:
-    """Bench probe: reset (FDCAN only) then enable-only. Mirrors legacy probe_id's
-    default path (kind=PROBE_ENABLE_ONLY); the kp/kd ctrl-probe kinds are not
-    exposed here yet — add if a caller needs PROBE_FULL/PROBE_CTRL_ONLY."""
+    """Bench probe: optional reset then enable-only.
+
+    Default ``reset=True`` (standalone bring-up). For daisy-chained MCP buses
+    (CH5 ``0x70``+``0x74``), callers should reset *all* IDs once, then probe each
+    with ``reset=False`` — a mid-chain ``PROBE_RESET`` can knock the sibling out
+    of MIT or leave the second ID unarmed.
+    """
     mcp = is_mcp_bus(bus)
     # MCP: firmware enable listen ~420 ms + blocking SPI TX; keep ≥2 s like discover.
     enable_timeout_s = _mcp_discover_timeout(timeout_s) if mcp else timeout_s
@@ -172,10 +177,9 @@ def probe(
     with lease(connection, telemetry, bus=bus):
         if telemetry is not None:
             telemetry.set_connected(True, mode="discover")
-        # Always reset→enable. Skipping reset on MCP left a daisy-chained sibling
-        # (e.g. 0x70) in MIT-enabled state so 0x74 never actually armed.
-        _send_diag(connection, motor_id, PROBE_RESET, reset_timeout_s, bus=bus)
-        time.sleep(0.05)
+        if reset:
+            _send_diag(connection, motor_id, PROBE_RESET, reset_timeout_s, bus=bus)
+            time.sleep(0.05)
         resp = _send_diag(connection, motor_id, PROBE_ENABLE_ONLY, enable_timeout_s, bus=bus)
         if resp is None:
             print(f"MISS  id=0x{motor_id:02X}")

@@ -69,7 +69,7 @@ not get its own timing loop.
 
 ## Verified
 
-**Date:** 2026-07-24, live board on Jetson, `python scripts/_tmp_launch_continuous.py`
+**Date:** 2026-07-24, live board on Jetson, `python scripts/launch_continuous.py`
 (`yam_continuous_all.py --record --duration 50`, neck DXL enabled by default — no `--no-dxl`).
 
 Present discover, both IDs resolved:
@@ -89,6 +89,13 @@ dxl=2934/2824|2358/2563
 Command and feedback track within ~100–300 native steps throughout (normal servo-loop lag at
 `DXL_CRUISE_TICK_S=280`, not a fault). Full run recorded to
 `.deft_session/recordings/record_20260724T214351.ndjson` on the Jetson.
+
+## Open issue — present without motion (2026-07-25)
+
+Torque-off present discover still works (e.g. `pitch=1754`, `yaw=645`), but commanding torque-on
+goals for several seconds (stream + `send_once`) left feedback unchanged. Pitch was inside
+`servo_table` limits; yaw present was slightly below `pos_min=700`. Contrast with the verified
+2026-07-24 cruise where cmd/fb tracked. See [`continuous-ops.md`](continuous-ops.md) open issues.
 
 ## Known falsehoods retired
 

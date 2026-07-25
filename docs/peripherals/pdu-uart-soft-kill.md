@@ -80,7 +80,7 @@ request.
 ## Verified
 
 **Date:** 2026-07-24, live board on Jetson (`192.168.50.48`), via
-`python scripts/_tmp_launch_continuous.py`.
+`python scripts/launch_continuous.py`.
 
 **Follow-mode soft-kill park — worked end to end.** With `yam_continuous_all.py` owning COM and the
 dashboard running separately in follow mode, writing the flag file directly (same mechanism the

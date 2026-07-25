@@ -38,6 +38,7 @@ from deft_controls_sdk.vbeta import (
     deg_to_steps,
     led_caution,
     led_fault,
+    clamp_q7,
     led_idle,
     led_off,
     led_solid_green,
@@ -158,11 +159,14 @@ def test_arm_goal_position_clamped_by_default() -> None:
     session, store = _session()
     arm = PcbArmDriver(session, side="left", skip_home_on_connect=True)
     arm.is_connected = True
-    # J2 soft lo ≈ 0.05; command below published floor.
+    # Out-of-envelope command must land on the same soft window as clamp_q7
+    # (MuJoCo ± left bench-clear motor frame when CLEAR_ACTIVE).
     q = np.array([0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 1.5], dtype=np.float32)
+    expected = clamp_q7(q, "left")
     arm.write("Goal_Position", q)
-    assert store.actuators[LEFT_ARM_SLOTS[1]].position > -0.5
-    assert store.actuators[LEFT_ARM_SLOTS[1]].position >= 0.0
+    got = store.actuators[LEFT_ARM_SLOTS[1]].position
+    assert got == pytest.approx(float(expected[1]))
+    assert not np.allclose(expected, q)
 
 
 def test_arm_zero_torque() -> None:

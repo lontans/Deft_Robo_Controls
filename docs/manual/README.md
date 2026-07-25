@@ -6,6 +6,10 @@ each chapter points to; this page does not duplicate it. If a chapter and
 its linked doc ever disagree, the linked doc wins (this page is a map, not
 the territory).
 
+**Operator workbook (exercises):** [user-tutorial.md](../user-tutorial.md) —
+flash, discover, vbeta/continuous prove, cleanup. Use that when you want
+checkboxes; use this TOC when you want the chapter map.
+
 ## Contents
 
 1. [Setup / Jetson / serial ownership](#1-setup--jetson--serial-ownership)

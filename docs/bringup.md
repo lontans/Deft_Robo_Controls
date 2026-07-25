@@ -98,7 +98,7 @@ One process owns COM. Plant motion = top-level hub methods (`set_actuator`, `sta
 
 ## 4. Legacy teleop / joint CLI (frozen — prefer SDK/vbeta for new work)
 
-New teleop work should use `vbeta_arm_smoke.py --side left|right` (see §3) or
+New teleop work should use `vbeta_smoke.py arm --side left|right` (see §3) or
 `hub.set_actuator(...)` directly. The commands below are the legacy
 `scripts/legacy/control_hub.py` CLI — kept only for the full daisy-chain
 Damiao discover (`--discover --host-only`, lists **every** ID on the bus;
@@ -246,14 +246,18 @@ RobStride on all enabled slots. Probe skips CFG SET if the table already matches
 ```powershell
 cd scripts
 # Host plant TX 40 Hz (dashboard default)
-python _tmp_mcp_timing_probe.py --port COM5 --seconds 3.0 --hz 40
+python bench_load_matrix.py --port COM5 --hz 40 --scenario all
 
 # Stress host TX
-python _tmp_mcp_timing_probe.py --port COM5 --seconds 3.0 --hz 200
+python bench_load_matrix.py --port COM5 --hz 200 --scenario all
 
 # GUI (same COM — not concurrent with the probe)
 python -m deft_controls_sdk.debug_dashboard --port COM5 --http-port 8766 --hz 40
 ```
+
+`bench_load_matrix.py` is the durable successor to the retired
+`_tmp_mcp_timing_probe.py` — see
+[bench-optimize-and-load-matrix-plan.md](bench-optimize-and-load-matrix-plan.md).
 
 Watch: `raw_fb_hz`, `ack_lag_max`, `lap_ms`, `ticks_pending`. CH4–6 ACT LEDs should
 strobe under hold (empty bus / no ACK included).
@@ -305,7 +309,7 @@ rails every tick; all-25 rotates poll/RX across six buses so average MCP SPI/lap
 | TXQ service / FRESET SM | `App/Src/plant/can/mcp2518fd.c` |
 | MCP decimate + coalesce flush | `App/Src/plant/plugins/robstride.c` |
 | Heavy-load FDCAN + bus poll RR | `robstride.c`, `App/Src/plant/actuator.c` |
-| Timing matrix | `scripts/_tmp_mcp_timing_probe.py` |
+| Timing matrix | `scripts/bench_load_matrix.py` |
 | Lap timing in thermo PDU | `plant_timing_thermo_fill` bytes 16..21 |
 
 ---

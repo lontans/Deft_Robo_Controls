@@ -136,28 +136,36 @@ The one to run after **any** firmware change touching the plant loop, CAN/SPI dr
 $env:PYTHONIOENCODING='utf-8'
 
 # Classic matrix, host 40 Hz — should be OVERALL ack_lag OK
-python _tmp_mcp_timing_probe.py --port COM5 --seconds 3.0 --hz 40
+python bench_load_matrix.py --port COM5 --hz 40 --scenario all
 
 # Stress: elevated host rate (capability check, not required to pass)
-python _tmp_mcp_timing_probe.py --port COM5 --seconds 3.0 --hz 200
-python _tmp_mcp_timing_probe.py --port COM5 --seconds 3.0 --hz 500
+python bench_load_matrix.py --port COM5 --hz 200 --scenario all
+python bench_load_matrix.py --port COM5 --hz 500 --scenario all
 ```
 
 Watch `raw_fb_hz`, `cmd_seq_lag` (8-bit `last_command_seq`), `act_lap_ms`/`act_lap_peak_ms` (PlantTask), `periph_lap_ms`/`periph_lap_peak_ms` (PeripheralTask), and `ticks_pending`/`ticks_svc`. Cross-check `cmd_rx_seq` (USB RX stage) vs `cmd_applied_seq` (plant mount) when diagnosing lag — Host starvation shows high cmd lag with healthy act_lap.
 
-Related, narrower probes for chasing a specific symptom:
+`bench_load_matrix.py` is the durable successor to the retired
+`_tmp_mcp_timing_probe.py` / `_tmp_rate_rx_sweep.py` / `_tmp_load_matrix_report.py`
+(see [scripts-hygiene.md](scripts-hygiene.md)) — full spec in
+[bench-optimize-and-load-matrix-plan.md](bench-optimize-and-load-matrix-plan.md).
+For chasing a specific symptom, narrow the scenario instead of running `all`:
 
 ```powershell
-# Sweep host TX rates with/without RX-sim — isolates USB-stage vs plant-apply cost
-python _tmp_rate_rx_sweep.py --port COM5 --seconds 2.0
+# Isolate one bus (TX-only vs plant-apply cost on just that channel)
+python bench_load_matrix.py --port COM5 --hz 40 --scenario ch1
 
-# Check last_image_id/last_applied_image_id readbacks — where does mount lag USB stage?
-python _tmp_image_id_verify.py
+# CH4-6 together — the Apply-accumulate footgun (docs/api.md §"blank" note)
+python bench_load_matrix.py --port COM5 --hz 40 --scenario mcp
 
-# Full real-hardware smoke: RS02 CH6 + Dynamixels + LEDs, optional ×25 RX-sim load
-python _tmp_bus6_real_hw.py --skip-cali
-python _tmp_bus6_real_hw.py --skip-cali --no-rx-sim-actuators   # single real slot only
+# TX-only baseline, no RX-sim, no plant-apply cost at all
+python bench_load_matrix.py --port COM5 --hz 40 --scenario idle
 ```
+
+`_tmp_bus6_real_hw.py` (full real-hardware smoke: RS02 CH6 + Dynamixels +
+LEDs) is archived to `scripts/legacy/` — import-broken (referenced the
+now-deleted `_tmp_mcp_timing_probe.py`) before this pass, kept as reference
+only.
 
 ---
 

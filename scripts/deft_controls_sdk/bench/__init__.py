@@ -74,8 +74,22 @@ class DebugAPI:
             self._connection, self._telemetry, bus=bus, start=start, end=end
         )
 
-    def probe_robstride(self, *, bus: int, motor_id: int, timeout_s: float = 0.55) -> Optional[dict]:
-        return _robstride.probe(self._connection, self._telemetry, bus=bus, motor_id=motor_id, timeout_s=timeout_s)
+    def probe_robstride(
+        self,
+        *,
+        bus: int,
+        motor_id: int,
+        timeout_s: float = 0.55,
+        reset: bool = True,
+    ) -> Optional[dict]:
+        return _robstride.probe(
+            self._connection,
+            self._telemetry,
+            bus=bus,
+            motor_id=motor_id,
+            timeout_s=timeout_s,
+            reset=reset,
+        )
 
     def calibrate_robstride(
         self,

@@ -64,7 +64,7 @@ a real mechanical constraint the way `RS_P_MIN`/`RS_P_MAX` are for RobStride.
 
 ## Verified
 
-**Date:** 2026-07-24, live board on Jetson, `python scripts/_tmp_launch_continuous.py`.
+**Date:** 2026-07-24, live board on Jetson, `python scripts/launch_continuous.py`.
 
 Discover (dynamic ID resolution, master computed from the discovered ID):
 ```

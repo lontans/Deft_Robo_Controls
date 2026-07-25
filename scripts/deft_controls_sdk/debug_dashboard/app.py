@@ -26,9 +26,12 @@ from pathlib import Path
 from typing import Literal, Optional
 from urllib.parse import urlparse
 
-from deft_controls_sdk import ActuatorDesire, ControlsPcbHub, McuState
+from deft_controls_sdk import ActuatorDesire, ControlsPcbHub, McuState, ServoDesire
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD, list_ports_info
 from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
+
+from . import remote_continuous
+from .teleop import TeleopEngine, build_actuator_specs, build_servo_specs
 
 # Peer (e.g. yam_continuous_all) owns CDC while dashboard follows state.json —
 # Soft-kill Park writes this flag; the peer parks and deletes it.
@@ -68,6 +71,24 @@ class AppState:
         )
         self.hub: Optional[ControlsPcbHub] = None
         self.control_mode: ControlMode = "observe"
+
+        # Teleop (per-slot target+cruise slew — see teleop.py) and its slot-group model.
+        # "bench" is the default CFG map because that's what's actually wired/live-verified
+        # on the current bench (base on slots 22-25) — see base-robstride-mcp.md's "Known
+        # falsehoods retired". "product" is offered purely as the wizard's CFG-map hint.
+        self.cfg_map: str = "bench"
+        self.actuator_specs = build_actuator_specs(self.cfg_map)
+        self.servo_specs = build_servo_specs()
+        self.teleop = TeleopEngine(
+            hub_getter=lambda: self.hub, feedback_getter=self._teleop_feedback_snapshot,
+        )
+
+        # Continuous mode launch/stop over SSH — swappable so tests can drive the HTTP
+        # contract without paramiko or a real host (see remote_continuous.py docstring).
+        self.continuous_launcher = remote_continuous.default_launcher
+        self.continuous_stopper = remote_continuous.default_stopper
+        self._continuous_lock = threading.Lock()
+        self._continuous_status: dict = {"state": "unknown", "detail": None}
 
     @property
     def connected(self) -> bool:
@@ -114,6 +135,7 @@ class AppState:
             if mode == "control":
                 self._enter_control_locked()
             else:
+                self.teleop.disengage_all()
                 hub.set_auto_soft_kill(False)
                 for slot in range(ACTUATOR_COUNT):
                     hub.set_actuator(slot, ActuatorDesire(), send=False)
@@ -129,6 +151,7 @@ class AppState:
 
     def disconnect(self) -> None:
         with self._lock:
+            self.teleop.disengage_all()
             if self.hub is not None:
                 # Leave MCU in DIAG_ONLY so disconnect does not freeze an ESTOP
                 # latch from a soft-kill park that happened while connected.
@@ -234,6 +257,162 @@ class AppState:
             )
         return {"streaming": True, "held": held}
 
+    # -- Teleop (per-slot target+cruise slew) --------------------------------------------
+
+    def set_cfg_map(self, cfg_map: str) -> None:
+        """UI-only relabeling of which slots are "base" — see teleop.py's
+        build_actuator_specs docstring. Never touches board CFG."""
+        if cfg_map not in ("bench", "product"):
+            raise ValueError("cfg_map must be 'bench' or 'product'")
+        self.cfg_map = cfg_map
+        self.actuator_specs = build_actuator_specs(cfg_map)
+
+    def teleop_groups(self) -> dict:
+        def spec_dict(spec) -> dict:
+            return {
+                "slot": spec.slot, "group": spec.group, "label": spec.label,
+                "protocol": spec.protocol, "verified": spec.verified,
+                "lo": spec.lo, "hi": spec.hi, "seed_relative": spec.seed_relative,
+                "cruise_max": spec.cruise_max, "cruise_default": spec.cruise_default,
+            }
+        return {
+            "cfg_map": self.cfg_map,
+            "actuators": {slot: spec_dict(spec) for slot, spec in self.actuator_specs.items()},
+            "servos": {slot: spec_dict(spec) for slot, spec in self.servo_specs.items()},
+        }
+
+    def _teleop_feedback_snapshot(self) -> dict:
+        """One telemetry read per teleop tick (not per slot) — feeds the settled-hold
+        damping/flag logic in teleop.py, never used to move a commanded target."""
+        actuators = self.telemetry.snapshot().actuators
+        return {i: a for i, a in enumerate(actuators) if a is not None}
+
+    def _current_actuator_position(self, slot: int) -> Optional[float]:
+        """Seed for engaging teleop — never invent a probe pose (see
+        base-robstride-mcp.md). Prefer the currently-held desire (what the
+        stream is already resending); fall back to the latest live feedback
+        sample; if neither exists yet, the caller must refuse to engage."""
+        hub = self.hub
+        if hub is not None:
+            held = hub.held_desire(slot)
+            if held is not None:
+                return held.position
+        fb = self.telemetry.snapshot().actuators[slot]
+        if fb is not None:
+            return fb.get("position")
+        return None
+
+    def teleop_actuator_target(self, slot: int, *, target: float, cruise: float) -> None:
+        spec = self.actuator_specs.get(slot)
+        if spec is None:
+            raise ValueError(f"slot {slot} is not a known actuator in the '{self.cfg_map}' CFG map")
+        if not spec.verified:
+            raise ValueError(f"{spec.label} (slot {slot}) has no live-verified range on this bench yet")
+        self._require_hub()
+        seed = self._current_actuator_position(slot)
+        if seed is None:
+            raise RuntimeError(f"no live position for slot {slot} yet — wait for feedback before teleop")
+        self.teleop.engage_actuator(slot, spec=spec, seed=seed, target=target, cruise=cruise)
+
+    def teleop_actuator_jog(self, slot: int, *, direction: int, cruise: float) -> None:
+        spec = self.actuator_specs.get(slot)
+        if spec is None:
+            raise ValueError(f"slot {slot} is not a known actuator in the '{self.cfg_map}' CFG map")
+        if not spec.verified:
+            raise ValueError(f"{spec.label} (slot {slot}) has no live-verified range on this bench yet")
+        self._require_hub()
+        seed = self._current_actuator_position(slot)
+        if seed is None:
+            raise RuntimeError(f"no live position for slot {slot} yet — wait for feedback before teleop")
+        self.teleop.jog_actuator(slot, spec=spec, seed=seed, direction=direction, cruise=cruise)
+
+    def teleop_actuator_stop(self, slot: int) -> None:
+        self.teleop.stop_actuator(slot)
+
+    def _current_servo_position(self, slot: int) -> Optional[float]:
+        hub = self.hub
+        if hub is None:
+            return None
+        held = hub.held_servo(slot)
+        return held.native_step_position if held is not None else None
+
+    def teleop_servo_target(self, slot: int, *, target: float, cruise: float) -> None:
+        spec = self.servo_specs.get(slot)
+        if spec is None:
+            raise ValueError(f"slot {slot} is not a neck servo slot (0=pitch, 1=yaw)")
+        self._require_hub()
+        self.teleop.engage_servo(slot, spec=spec, target=target, cruise=cruise)
+
+    def teleop_servo_stop(self, slot: int) -> None:
+        self.teleop.stop_servo(slot)
+
+    def teleop_servo_idle(self, slot: int) -> None:
+        """Release torque on one neck servo only — see dxl-neck.md's
+        ``ServoDesire(servo_id=0)`` per-slot clear fallback (the same one
+        ``idle_group("neck")`` uses for both, here scoped to one)."""
+        spec = self.servo_specs.get(slot)
+        if spec is None:
+            raise ValueError(f"slot {slot} is not a neck servo slot (0=pitch, 1=yaw)")
+        hub = self._require_hub()
+        self.teleop.disengage_servo(slot)
+        hub.set_servo(slot, ServoDesire(servo_id=0), send=False)
+
+    def idle_group(self, group: str) -> None:
+        """Blank every desire in one teleop group at once — the "idle
+        movement for each base actuator / neck / arm" ask. Always safe
+        regardless of whether the group's range is live-verified (Idle never
+        commands a position, unlike target-teleop)."""
+        hub = self._require_hub()
+        if group == "neck":
+            for slot in self.servo_specs:
+                self.teleop.disengage_servo(slot)
+            hub.clear_servos(send=False)
+            return
+        if group not in ("base", "arm_left", "arm_right"):
+            raise ValueError("group must be one of: base, arm_left, arm_right, neck")
+        for slot, spec in self.actuator_specs.items():
+            if spec.group == group:
+                self.teleop.disengage_actuator(slot)
+                hub.set_actuator(slot, ActuatorDesire(), send=False)
+
+    # -- Continuous mode (SSH launch/stop on the Jetson) ----------------------------------
+
+    def launch_continuous(self, *, duration_s: float = 0.0) -> dict:
+        with self._continuous_lock:
+            self._continuous_status = {"state": "launching", "detail": None}
+
+        def _run() -> None:
+            try:
+                result = self.continuous_launcher(duration_s=duration_s)
+                status = {"state": "launched", "detail": result}
+            except Exception as exc:  # noqa: BLE001 — surface to the UI, don't crash the thread
+                status = {"state": "error", "detail": str(exc)}
+            with self._continuous_lock:
+                self._continuous_status = status
+
+        threading.Thread(target=_run, name="deft-dashboard-continuous-launch", daemon=True).start()
+        return {"state": "launching"}
+
+    def stop_continuous(self) -> dict:
+        with self._continuous_lock:
+            self._continuous_status = {"state": "stopping", "detail": None}
+
+        def _run() -> None:
+            try:
+                result = self.continuous_stopper()
+                status = {"state": "stopped", "detail": result}
+            except Exception as exc:  # noqa: BLE001
+                status = {"state": "error", "detail": str(exc)}
+            with self._continuous_lock:
+                self._continuous_status = status
+
+        threading.Thread(target=_run, name="deft-dashboard-continuous-stop", daemon=True).start()
+        return {"state": "stopping"}
+
+    def continuous_status(self) -> dict:
+        with self._continuous_lock:
+            return dict(self._continuous_status)
+
 
 _HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -293,6 +472,9 @@ _HTML = """<!DOCTYPE html>
   }
   .card h2 { margin: 0 0 0.75rem; font-size: 0.8rem; color: var(--muted);
     text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+  .card summary { cursor: pointer; list-style-position: outside; }
+  .card summary h2 { display: inline; margin: 0; }
+  .card details[open] summary { margin-bottom: 0.25rem; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.75rem; }
   .kv .k { display: block; color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
   .kv .v { font-variant-numeric: tabular-nums; font-size: 1.05rem; margin-top: 0.15rem; }
@@ -320,6 +502,17 @@ _HTML = """<!DOCTYPE html>
   .active-badge.active { color: var(--yellow); }
   .active-badge.idle { color: var(--muted); }
   td.held { font-variant-numeric: tabular-nums; }
+  .teleop-row {
+    display: grid; grid-template-columns: 6rem 1fr 4.5rem 3.6rem auto 8rem;
+    gap: 0.5rem; align-items: center; padding: 0.3rem 0; border-bottom: 1px solid var(--line);
+    font-size: 0.8rem;
+  }
+  .teleop-row.disabled { opacity: 0.45; }
+  .teleop-row input[type=range] { width: 100%; }
+  .teleop-row .val { font-variant-numeric: tabular-nums; text-align: right; }
+  .teleop-row button { padding: 0.25rem 0.4rem; font-size: 0.75rem; }
+  .teleop-row .btn-group { display: flex; gap: 0.3rem; }
+  .teleop-row .meta.flagged { color: var(--yellow); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -341,6 +534,7 @@ _HTML = """<!DOCTYPE html>
     </div>
     <p class="banner ok" id="modeBanner">Idle — not owning COM. Connect opens observe mode (DIAG_ONLY); plant motors stay gated until Enable control.</p>
     <p class="err" id="connError"></p>
+    <p class="meta" id="sessionMeta"></p>
   </section>
   <section class="card">
     <p class="summary" id="summary">—</p>
@@ -360,41 +554,87 @@ _HTML = """<!DOCTYPE html>
     <h2>PDU / soft-kill</h2>
     <div class="grid" id="pdu"></div>
     <div class="row" style="margin-top:0.5rem">
-      <button class="estop" id="softKillBtn" onclick="softKillPark()">Soft-kill Park</button>
+      <button class="estop" id="softKillBtn" onclick="softKillPark()"
+        title="Independent of Enable control / ESTOP button — works in observe too, and in follow mode signals the CDC-owning peer">Soft-kill Park</button>
       <span class="meta" id="pdbMeta"></span>
     </div>
     <p class="err" id="pdbError"></p>
+    <p class="meta" id="pdbResult"></p>
   </section>
   <section class="card">
-    <h2>Plant control</h2>
+    <details id="plantControlDetails">
+      <summary><h2 style="display:inline">Plant control</h2> <span class="meta" id="plantControlSummaryMeta"></span></summary>
+      <div class="row" style="margin-top:0.75rem">
+        <button id="mcuNormal" onclick="setMcuState(0)">NORMAL</button>
+        <button id="mcuRecovery" onclick="setMcuState(1)">RECOVERY</button>
+        <button id="mcuDiag" onclick="setMcuState(2)" title="Blocks plant apply per firmware">DIAG_ONLY</button>
+        <button id="mcuEstop" class="estop" onclick="setMcuState(3)"
+          title="Control-only latch — needs Control mode (Enable control) to be armed. Not the same as Soft-kill Park, which works without Control mode.">ESTOP</button>
+        <button id="recoverBtn" onclick="recover()">Recover</button>
+        <button id="idleAllBtn" onclick="idleAll()">Idle all slots</button>
+        <span class="streaming-badge" id="streamingBadge">streaming: —</span>
+      </div>
+      <p class="err" id="ctrlError"></p>
+      <p class="meta">raw per-slot Apply (position/kp/kd) is in the table below — prefer Teleop below for normal driving</p>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>slot</th><th colspan="5">feedback (measured)</th>
+              <th colspan="4">commanded (held — what's actually being sent)</th>
+              <th colspan="4">apply new command</th>
+            </tr>
+            <tr>
+              <th></th>
+              <th>pos</th><th>vel</th><th>τ</th><th>temp</th><th>fault</th>
+              <th>state</th><th>pos</th><th>kp</th><th>kd</th>
+              <th>set pos</th><th>kp</th><th>kd</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="acts"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>Continuous mode</h2>
     <div class="row">
-      <button id="mcuNormal" onclick="setMcuState(0)">NORMAL</button>
-      <button id="mcuRecovery" onclick="setMcuState(1)">RECOVERY</button>
-      <button id="mcuDiag" onclick="setMcuState(2)" title="Blocks plant apply per firmware">DIAG_ONLY</button>
-      <button id="mcuEstop" class="estop" onclick="setMcuState(3)">ESTOP</button>
-      <button id="recoverBtn" onclick="recover()">Recover</button>
-      <button id="idleAllBtn" onclick="idleAll()">Idle all slots</button>
-      <span class="streaming-badge" id="streamingBadge">streaming: —</span>
+      <button id="continuousLaunchBtn" onclick="continuousLaunch()">Launch continuous</button>
+      <label class="meta">duration s (0 = until stopped) <input type="number" id="continuousDuration" value="0" step="1" style="width:5rem"></label>
+      <button id="continuousStopBtn" onclick="continuousStop()">Stop continuous (hard)</button>
+      <span class="meta" id="continuousStatus"></span>
     </div>
-    <p class="err" id="ctrlError"></p>
-    <div style="overflow-x:auto">
-      <table>
-        <thead>
-          <tr>
-            <th>slot</th><th colspan="5">feedback (measured)</th>
-            <th colspan="4">commanded (held — what's actually being sent)</th>
-            <th colspan="4">apply new command</th>
-          </tr>
-          <tr>
-            <th></th>
-            <th>pos</th><th>vel</th><th>τ</th><th>temp</th><th>fault</th>
-            <th>state</th><th>pos</th><th>kp</th><th>kd</th>
-            <th>set pos</th><th>kp</th><th>kd</th><th></th>
-          </tr>
-        </thead>
-        <tbody id="acts"></tbody>
-      </table>
+    <p class="banner" id="continuousBanner">Launch runs <code>yam_continuous_all.py</code> on the Jetson over SSH (syncs current files first) — the CDC port then belongs to that process, not this dashboard. Disconnect COM here before launching. Prefer Soft-kill Park above to stop it cleanly; "Stop continuous (hard)" is the pkill+CAN-blank fallback for a wedged process.</p>
+  </section>
+
+  <section class="card">
+    <h2>Teleop</h2>
+    <div class="row">
+      <label class="meta">CFG map
+        <select id="cfgMapSelect" onchange="setCfgMap()">
+          <option value="bench">bench (22–25, live-verified on this rig)</option>
+          <option value="product">product (14–19, not wired on this bench)</option>
+        </select>
+      </label>
+      <button onclick="idleGroup('arm_left')" title="Blanks ALL 7 left-arm joints at once — every joint loses holding torque simultaneously. For one joint, use that joint's own Idle button below.">Idle L-arm (all 7 joints)</button>
+      <button onclick="idleGroup('arm_right')" title="Blanks ALL 7 right-arm joints at once.">Idle R-arm (all 7 joints)</button>
+      <button onclick="idleGroup('base')">Idle base (all)</button>
+      <button onclick="idleGroup('neck')">Idle neck (both)</button>
     </div>
+    <p class="banner warn" style="margin-top:0.5rem">Idle = zero torque on that joint — it will swing/drop under gravity or load from a neighboring joint if unsupported. Prefer Stop (freezes in place, keeps holding torque) unless you actually want it to go slack. The group buttons above idle every joint in that group at once — use a row's own Idle for just one joint.</p>
+    <p class="err" id="teleopError"></p>
+
+    <h3 style="font-size:0.85rem;color:var(--muted);margin:0.9rem 0 0.3rem">Arm — left (bench live-verified, drag = target, host walks there)</h3>
+    <div id="armLeftRows"></div>
+    <h3 style="font-size:0.85rem;color:var(--muted);margin:0.9rem 0 0.3rem">Arm — right (no live-verified range on this bench yet — Idle only)</h3>
+    <div id="armRightRows"></div>
+
+    <h3 style="font-size:0.85rem;color:var(--muted);margin:0.9rem 0 0.3rem">Base actuators — speed + start/stop (bench: CH5/CH6, slots 22–25)</h3>
+    <div id="baseRows"></div>
+
+    <h3 style="font-size:0.85rem;color:var(--muted);margin:0.9rem 0 0.3rem">Neck (2x Dynamixel)</h3>
+    <div id="neckRows"></div>
   </section>
 </main>
 <script>
@@ -466,7 +706,28 @@ function enableControl() { postAction("/api/control_mode", { mode: "control" }, 
 function toObserve() { postAction("/api/control_mode", { mode: "observe" }, setConnError); }
 function setMcuState(n) { postAction("/api/mcu_state", { state: n }, setCtrlError); }
 function recover() { postAction("/api/recover", {}, setCtrlError); }
-function softKillPark() { postAction("/api/pdb/soft_kill_park", {}, setPdbError); }
+async function softKillPark() {
+  const resultEl = document.getElementById("pdbResult");
+  resultEl.textContent = "parking…";
+  try {
+    const r = await fetch("/api/pdb/soft_kill_park", { method: "POST" });
+    const data = await r.json();
+    if (!r.ok) {
+      setPdbError(data.error || `request failed (${r.status})`);
+      resultEl.textContent = "";
+    } else {
+      setPdbError("");
+      const now = new Date().toLocaleTimeString();
+      resultEl.textContent = data.mode === "direct"
+        ? `parked direct (MCU → ESTOP, desires blanked) at ${now}`
+        : `flag written at ${now} — ${data.path || "soft_kill_request"} (peer must poll to act)`;
+    }
+  } catch (e) {
+    setPdbError(String(e));
+    resultEl.textContent = "";
+  }
+  tick();
+}
 function idleAll() { postAction("/api/actuator/idle_all", {}, setCtrlError); }
 function applyActuator(slot) {
   const g = id => parseFloat(document.getElementById(id).value);
@@ -501,6 +762,134 @@ function buildActuatorRows(count) {
   document.getElementById("acts").innerHTML = rows;
   actuatorRowsBuilt = true;
 }
+
+// -- Teleop (per-slot target+cruise slew) — replaces "type a number, hit Apply" -----------
+
+let teleopGroups = null;
+let teleopRowsBuilt = false;
+
+async function loadTeleopGroups() {
+  try {
+    const r = await fetch("/api/teleop/groups");
+    teleopGroups = await r.json();
+    document.getElementById("cfgMapSelect").value = teleopGroups.cfg_map;
+    buildTeleopRows();
+  } catch (e) {
+    setTeleopError("teleop groups failed: " + e);
+  }
+}
+
+function setTeleopError(msg) { document.getElementById("teleopError").textContent = msg || ""; }
+
+async function setCfgMap() {
+  const map = document.getElementById("cfgMapSelect").value;
+  await postAction("/api/cfg_map", { map }, setTeleopError);
+  teleopRowsBuilt = false;
+  await loadTeleopGroups();
+}
+
+function idleGroup(group) { postAction(`/api/idle_group/${group}`, {}, setTeleopError); }
+
+function teleopArmRow(spec) {
+  const s = spec.slot;
+  if (!spec.verified) {
+    return `<div class="teleop-row disabled" id="armRow${s}">
+      <span>${spec.label}</span>
+      <span class="meta">not live-verified on this bench — see arm-damiao-ch1.md</span>
+      <span></span><span></span>
+      <span class="btn-group"><button onclick="idleActuator(${s})" title="Zero torque on this joint only — it will move/drop under gravity/load if unsupported">Idle</button></span>
+      <span></span>
+    </div>`;
+  }
+  const mid = ((spec.lo + spec.hi) / 2).toFixed(3);
+  return `<div class="teleop-row" id="armRow${s}">
+    <span>${spec.label}</span>
+    <input type="range" id="armSlider${s}" min="${spec.lo}" max="${spec.hi}" step="0.01" value="${mid}"
+      oninput="document.getElementById('armVal${s}').textContent = this.value">
+    <span class="val" id="armVal${s}">${mid}</span>
+    <input type="number" id="armCruise${s}" value="${spec.cruise_default}" step="0.05" min="0" max="${spec.cruise_max}" title="cruise rad/s">
+    <span class="btn-group">
+      <button id="armGo${s}" onclick="teleopArmSet(${s})" title="Walk to the slider's position at the cruise rate">Go</button>
+      <button id="armStop${s}" onclick="teleopArmStop(${s})" title="Freeze here — keeps full holding torque, does not go slack">Stop</button>
+      <button id="armIdle${s}" onclick="idleActuator(${s})" title="Zero torque on THIS joint only — it will move/drop under gravity/load from a neighbor if unsupported">Idle</button>
+    </span>
+    <span class="meta" id="armCmd${s}">—</span>
+  </div>`;
+}
+
+function teleopBaseRow(spec) {
+  const s = spec.slot;
+  return `<div class="teleop-row" id="baseRow${s}">
+    <span>${spec.label}</span>
+    <span class="meta">slot ${s} · ${spec.protocol}${spec.seed_relative ? " · window is ±2π from seed" : ""}</span>
+    <span></span>
+    <input type="number" id="baseCruise${s}" value="${spec.cruise_default}" step="0.05" min="0" max="${spec.cruise_max}" title="cruise rad/s">
+    <span class="btn-group">
+      <button id="baseJogP${s}" onclick="teleopBaseJog(${s}, 1)">Jog +</button>
+      <button id="baseJogM${s}" onclick="teleopBaseJog(${s}, -1)">Jog −</button>
+      <button id="baseStop${s}" onclick="teleopBaseStop(${s})" title="Freeze here — keeps holding torque">Stop</button>
+      <button id="baseIdle${s}" onclick="idleActuator(${s})" title="Zero torque on this actuator only">Idle</button>
+    </span>
+    <span class="meta" id="baseCmd${s}"></span>
+  </div>`;
+}
+
+function teleopNeckRow(spec) {
+  const s = spec.slot;
+  const mid = Math.round((spec.lo + spec.hi) / 2);
+  return `<div class="teleop-row" id="neckRow${s}">
+    <span>${spec.label}</span>
+    <input type="range" id="neckSlider${s}" min="${spec.lo}" max="${spec.hi}" step="1" value="${mid}"
+      oninput="document.getElementById('neckVal${s}').textContent = this.value">
+    <span class="val" id="neckVal${s}">${mid}</span>
+    <input type="number" id="neckCruise${s}" value="${spec.cruise_default}" step="10" min="0" max="${spec.cruise_max}" title="cruise native-steps/s">
+    <span class="btn-group">
+      <button id="neckGo${s}" onclick="teleopNeckSet(${s})">Go</button>
+      <button id="neckStop${s}" onclick="teleopNeckStop(${s})" title="Freeze here">Stop</button>
+      <button id="neckIdle${s}" onclick="teleopNeckIdle(${s})" title="Release torque on this servo only">Idle</button>
+    </span>
+    <span class="meta" id="neckCmd${s}">—</span>
+  </div>`;
+}
+
+function buildTeleopRows() {
+  if (!teleopGroups) return;
+  const acts = teleopGroups.actuators;
+  const armLeft = Object.values(acts).filter(s => s.group === "arm_left").sort((a, b) => a.slot - b.slot);
+  const armRight = Object.values(acts).filter(s => s.group === "arm_right").sort((a, b) => a.slot - b.slot);
+  const base = Object.values(acts).filter(s => s.group === "base").sort((a, b) => a.slot - b.slot);
+  const neck = Object.values(teleopGroups.servos).sort((a, b) => a.slot - b.slot);
+  document.getElementById("armLeftRows").innerHTML = armLeft.map(teleopArmRow).join("");
+  document.getElementById("armRightRows").innerHTML = armRight.map(teleopArmRow).join("");
+  document.getElementById("baseRows").innerHTML = base.map(teleopBaseRow).join("");
+  document.getElementById("neckRows").innerHTML = neck.map(teleopNeckRow).join("");
+  teleopRowsBuilt = true;
+}
+
+function teleopArmSet(slot) {
+  const target = parseFloat(document.getElementById(`armSlider${slot}`).value);
+  const cruise = parseFloat(document.getElementById(`armCruise${slot}`).value) || 0;
+  postAction(`/api/teleop/actuator/${slot}`, { target, cruise }, setTeleopError);
+}
+function teleopArmStop(slot) { postAction(`/api/teleop/actuator/${slot}/stop`, {}, setTeleopError); }
+function teleopBaseJog(slot, direction) {
+  const cruise = parseFloat(document.getElementById(`baseCruise${slot}`).value) || 0;
+  postAction(`/api/teleop/actuator/${slot}/jog`, { direction, cruise }, setTeleopError);
+}
+function teleopBaseStop(slot) { postAction(`/api/teleop/actuator/${slot}/stop`, {}, setTeleopError); }
+function teleopNeckSet(slot) {
+  const target = parseFloat(document.getElementById(`neckSlider${slot}`).value);
+  const cruise = parseFloat(document.getElementById(`neckCruise${slot}`).value) || 0;
+  postAction(`/api/teleop/servo/${slot}`, { target, cruise }, setTeleopError);
+}
+function teleopNeckStop(slot) { postAction(`/api/teleop/servo/${slot}/stop`, {}, setTeleopError); }
+function teleopNeckIdle(slot) { postAction(`/api/teleop/servo/${slot}/idle`, {}, setTeleopError); }
+
+function continuousLaunch() {
+  const duration_s = parseFloat(document.getElementById("continuousDuration").value) || 0;
+  postAction("/api/continuous/launch", { duration_s }, setTeleopError);
+}
+function continuousStop() { postAction("/api/continuous/stop", {}, setTeleopError); }
 
 async function tick() {
   try {
@@ -588,7 +977,7 @@ async function tick() {
         pdbHint = "parked — SOFT_KILL_READY acked";
     }
     if (!s.connected && canSoftKill && !pdbHint)
-      pdbHint = "follow mode — Park signals continuous via soft_kill_request";
+      pdbHint = "follow mode — Park writes soft_kill_request; only yam_continuous_all polls it today (vbeta peers do not)";
     pdbMeta.textContent = pdbHint;
 
     // Connection card
@@ -604,6 +993,9 @@ async function tick() {
       : (s.following_state_file
           ? `following ${s.state_path || "state.json"}${s.peer_connected ? " (peer live)" : ""}`
           : "not connected — Connect (observe) is safe; Enable control only when you want motors");
+    document.getElementById("sessionMeta").textContent = s.session_dir
+      ? `session dir: ${s.session_dir} (set DEFT_SESSION_DIR to override — this dashboard and any peer script must agree, or follow mode reads nothing)`
+      : "";
     const banner = document.getElementById("modeBanner");
     if (!s.connected && !s.following_state_file) {
       banner.className = "banner ok";
@@ -613,10 +1005,10 @@ async function tick() {
       banner.textContent = "Follow mode — reading state.json only. Soft-kill Park signals the peer; do not Connect while continuous owns CDC.";
     } else if (inObserve) {
       banner.className = "banner";
-      banner.textContent = "Observe — streaming telemetry, MCU DIAG_ONLY, auto soft-kill off. Board will not ESTOP from PDU V/I on connect. Enable control when ready to command.";
+      banner.textContent = "Observe — streaming telemetry, MCU DIAG_ONLY, auto soft-kill off. Board will not ESTOP from PDU V/I on connect. Enable control when ready to command. Soft-kill Park works right now regardless — it does not need Control mode.";
     } else {
       banner.className = "banner warn";
-      banner.textContent = "Control — MCU NORMAL + soft-kill auto-park armed. Idle all / Back to observe before Disconnect if you parked.";
+      banner.textContent = "Control — MCU NORMAL + soft-kill auto-park armed. Idle all / Back to observe before Disconnect if you parked. Soft-kill Park ≠ Enable control: Park is the always-available kill; Enable control is what arms the ESTOP button and Apply.";
     }
 
     // Plant control gating — ESTOP only when we own COM (follow mode uses Soft-kill Park)
@@ -637,6 +1029,9 @@ async function tick() {
     if (activeCount >= 2 && (s.stream_ack_lag || 0) >= 26) {
       streamBadge.title = "Multiple ACTIVE holds — Apply accumulates. Idle all before switching buses.";
     }
+    // Glanceable even when the Plant control dropdown is collapsed.
+    document.getElementById("plantControlSummaryMeta").textContent =
+      `mcu=${s.mcu_state ?? "—"} · streaming=${s.streaming ? "ON" : "OFF"}${activeCount ? ` · ${activeCount} active` : ""}`;
 
     // Actuator rows: build once, then only touch feedback/held cells + button
     // disabled state — never re-render the <input> elements themselves, or
@@ -670,6 +1065,48 @@ async function tick() {
         if (idleBtn) idleBtn.disabled = !inControl;
       });
     }
+
+    // Teleop card: build rows once groups are known, gate every control on
+    // inControl same as the raw table, and show each engaged slot's live
+    // commanded position (from the host-side slew engine, not the slider —
+    // never touch the slider/inputs themselves here, same rule as above).
+    if (!teleopRowsBuilt && teleopGroups) buildTeleopRows();
+    for (const id of ["armLeftRows", "armRightRows", "baseRows", "neckRows"]) {
+      document.querySelectorAll(`#${id} button`).forEach(b => { b.disabled = !inControl; });
+    }
+    const teleopAct = (s.teleop && s.teleop.actuators) || {};
+    const teleopSrv = (s.teleop && s.teleop.servos) || {};
+    if (teleopGroups) {
+      Object.keys(teleopGroups.actuators).forEach(slotStr => {
+        const slot = Number(slotStr);
+        const st = teleopAct[slot] ?? teleopAct[slotStr];
+        const armCmd = document.getElementById(`armCmd${slot}`);
+        if (armCmd) {
+          armCmd.textContent = st
+            ? `→ ${fmt(st.target, 3)} @ ${fmt(st.cruise, 2)} rad/s${st.flagged ? " · ⚠ large tracking error — under load?" : ""}`
+            : "idle";
+          armCmd.classList.toggle("flagged", !!(st && st.flagged));
+        }
+        const baseCmd = document.getElementById(`baseCmd${slot}`);
+        if (baseCmd) {
+          baseCmd.textContent = st ? `→ ${fmt(st.target, 2)}${st.flagged ? " · ⚠ tracking error" : ""}` : "";
+          baseCmd.classList.toggle("flagged", !!(st && st.flagged));
+        }
+      });
+      Object.keys(teleopGroups.servos).forEach(slotStr => {
+        const slot = Number(slotStr);
+        const st = teleopSrv[slot] ?? teleopSrv[slotStr];
+        const neckCmd = document.getElementById(`neckCmd${slot}`);
+        if (neckCmd) neckCmd.textContent = st ? (st.seeded ? `→ ${fmt(st.target, 0)} (now ${fmt(st.pos, 0)})` : "seeding present position…") : "idle";
+      });
+    }
+
+    // Continuous mode card
+    const cl = s.continuous_launch || { state: "unknown" };
+    document.getElementById("continuousStatus").textContent =
+      cl.state + (cl.detail ? `: ${typeof cl.detail === "string" ? cl.detail : JSON.stringify(cl.detail)}` : "");
+    document.getElementById("continuousLaunchBtn").disabled = !!s.connected || cl.state === "launching";
+    document.getElementById("continuousStopBtn").disabled = cl.state === "stopping";
   } catch (e) {
     document.getElementById("summary").textContent = "UI fetch failed: " + e;
   }
@@ -682,6 +1119,7 @@ async function toggleRecord() {
   btn.disabled = false;
 }
 loadPorts();
+loadTeleopGroups();
 setInterval(tick, 200);
 tick();
 </script>
@@ -747,6 +1185,9 @@ def make_handler(state: AppState):
                             peer_connected = bool(payload.get("connected"))
                             payload["following_state_file"] = True
                             payload["state_path"] = str(sp)
+                            payload["session_dir"] = str(sp.parent)
+                            payload["cfg_map"] = state.cfg_map
+                            payload["continuous_launch"] = state.continuous_status()
                             payload["peer_connected"] = peer_connected
                             payload["connected"] = False
                             payload["control_mode"] = "idle"
@@ -772,6 +1213,10 @@ def make_handler(state: AppState):
                 payload.update(state.held_snapshot())
                 payload["control_mode"] = state.control_mode if state.connected else "idle"
                 payload["following_state_file"] = False
+                payload["session_dir"] = str(state.telemetry.session_dir)
+                payload["cfg_map"] = state.cfg_map
+                payload["continuous_launch"] = state.continuous_status()
+                payload["teleop"] = state.teleop.snapshot()
                 # Idle (no COM) must not look like a board fault — telemetry
                 # cache grades disconnected as "red"; soften for the UI.
                 if not state.connected:
@@ -788,6 +1233,9 @@ def make_handler(state: AppState):
                 return
             if path == "/api/ports":
                 self._send_json({"ports": list_ports_info()})
+                return
+            if path == "/api/teleop/groups":
+                self._send_json(state.teleop_groups())
                 return
             self.send_error(404)
 
@@ -831,6 +1279,56 @@ def make_handler(state: AppState):
                     if state.control_mode != "control":
                         raise RuntimeError("Enable control first (observe mode is read-only)")
                     state.idle_all_actuators()
+                elif path == "/api/cfg_map":
+                    state.set_cfg_map(body.get("map") or "bench")
+                elif path.startswith("/api/idle_group/"):
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    if state.control_mode != "control":
+                        raise RuntimeError("Enable control first (observe mode is read-only)")
+                    state.idle_group(path[len("/api/idle_group/") :])
+                elif path.startswith("/api/teleop/servo/"):
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    if state.control_mode != "control":
+                        raise RuntimeError("Enable control first (observe mode is read-only)")
+                    rest = path[len("/api/teleop/servo/") :]
+                    if rest.endswith("/stop"):
+                        state.teleop_servo_stop(int(rest[: -len("/stop")]))
+                    elif rest.endswith("/idle"):
+                        state.teleop_servo_idle(int(rest[: -len("/idle")]))
+                    else:
+                        state.teleop_servo_target(
+                            int(rest),
+                            target=float(body["target"]),
+                            cruise=float(body.get("cruise", 0.0)),
+                        )
+                elif path.startswith("/api/teleop/actuator/"):
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    if state.control_mode != "control":
+                        raise RuntimeError("Enable control first (observe mode is read-only)")
+                    rest = path[len("/api/teleop/actuator/") :]
+                    if rest.endswith("/stop"):
+                        state.teleop_actuator_stop(int(rest[: -len("/stop")]))
+                    elif rest.endswith("/jog"):
+                        state.teleop_actuator_jog(
+                            int(rest[: -len("/jog")]),
+                            direction=int(body.get("direction", 1)),
+                            cruise=float(body.get("cruise", 0.0)),
+                        )
+                    else:
+                        state.teleop_actuator_target(
+                            int(rest),
+                            target=float(body["target"]),
+                            cruise=float(body.get("cruise", 0.0)),
+                        )
+                elif path == "/api/continuous/launch":
+                    self._send_json(state.launch_continuous(duration_s=float(body.get("duration_s", 0.0))))
+                    return
+                elif path == "/api/continuous/stop":
+                    self._send_json(state.stop_continuous())
+                    return
                 elif path.startswith("/api/actuator/"):
                     if not state.connected:
                         raise RuntimeError("not connected")

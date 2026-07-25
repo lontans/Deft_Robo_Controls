@@ -134,7 +134,7 @@ left/right mirrored. API: `load_yam_limits`, `soft_limits_q7`, `clamp_q7`,
 host soft stops for relative hold/jog, not a substitute for calibration. Absolute
 teleop still needs zeros (see [bringup.md](bringup.md)).
 
-One-arm smoke (clamped): `vbeta_arm_smoke.py --hold` / `--jog` — Jetson CLI
+One-arm smoke (clamped): `vbeta_smoke.py arm --hold` / `--jog` — Jetson CLI
 documented in `vbeta_smoke_lib.py` docstring; HW prove deferred until rig ready.
 
 ### Platform — `PcbPlatformClient` ↔ `FeatherPlatformClient`

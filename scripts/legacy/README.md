@@ -18,4 +18,10 @@ $env:PYTHONPATH = "legacy;."
 python legacy/control_hub.py --help
 ```
 
-Prefer SDK / `vbeta_*_smoke.py` for new work.
+Prefer SDK / `vbeta_smoke.py` / `yam_continuous_all.py` for new work.
+
+### Archived from scripts/ root (2026-07-24 streamline)
+
+`yam_rig_smoke_suite.py`, `yam_base_rotate_prove.py`, `dxl_servo_clear_range.py`,
+`yam_arm_clear_teleop.py` — superseded by continuous / product prove / bus56 lab /
+`yam_arm_clear_range.py` / `yam_dxl_clear_teleop.py`.

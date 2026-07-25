@@ -45,8 +45,12 @@ pack/unpack, CRC16, host-position interp).
    ```powershell
    cd scripts
    $env:PYTHONIOENCODING='utf-8'
-   python _tmp_load_matrix_report.py --port COM5 --skip-real --skip-cali --trials 3 --seconds 8
+   python bench_load_matrix.py --port COM5 --scenario all --trials 3 --seconds 8
    ```
+
+   (`_tmp_load_matrix_report.py` no longer exists — `bench_load_matrix.py` is
+   the durable successor, see
+   [bench-optimize-and-load-matrix-plan.md](bench-optimize-and-load-matrix-plan.md).)
 
 4. **Write `docs/bench-load-matrix-release-<date>.md`** with the same table
    shape as the existing bench docs (§A real CH6, §B ×25 rx_sim, bandwidth
