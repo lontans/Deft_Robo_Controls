@@ -6,7 +6,7 @@ the other docs in this directory ([arm-damiao-ch1.md](arm-damiao-ch1.md),
 [base-damiao-ch6.md](base-damiao-ch6.md), [pdu-uart-soft-kill.md](pdu-uart-soft-kill.md)) all draw
 their live evidence from. Read this one first if you're about to run continuous on the live board.
 
-## AI quickstart
+## Quickstart
 
 - **One-shot remote launch (recommended)**: `python scripts/launch_continuous.py` from a
   machine with SSH to the Jetson (`192.168.50.48`, user `deft-robotics`, password from env
@@ -40,7 +40,7 @@ their live evidence from. Read this one first if you're about to run continuous 
 - **Don't** run two drivers (continuous + `yam_dxl_clear_teleop.py`, or two continuous instances)
   against the same board's CDC port concurrently — only one process can own it.
 
-## Human deep dive
+## Deep dive
 
 ### Why the launch script syncs files instead of just SSH-running in place
 

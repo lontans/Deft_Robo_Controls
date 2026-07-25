@@ -5,7 +5,7 @@ at slot 24 (see [base-robstride-mcp.md](base-robstride-mcp.md) for that motor an
 kick/discover mechanics). Source of truth: `scripts/yam_continuous_all.py` `BASE_ROWS` (row for
 slot 25) and the `_probe_base()` / `_tick_base_and_dxl()` functions in that same script.
 
-## AI quickstart
+## Quickstart
 
 - **Bus/slot/ID**: MCP CH6 (bus 6), slot `25`, motor ID `0x06`, master RX ID `0x16` (`= (mid + 0x10)
   & 0xFF`, computed from the discovered ID — not hardcoded like the arm's `_DAMIAO_MASTER` table).
@@ -30,7 +30,7 @@ slot 25) and the `_probe_base()` / `_tick_base_and_dxl()` functions in that same
   `discover_damiao` returns, so if the physical ESC's configured ID ever changes, the master ID
   computed here changes with it automatically (no manual table edit needed, unlike the CH1 arm).
 
-## Human deep dive
+## Deep dive
 
 ### Why this motor needs its own seed path
 

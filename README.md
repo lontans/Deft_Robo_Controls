@@ -12,7 +12,7 @@ parked on `feat/mcp-decoupled-optimzation`.
 
 | Doc | Contents |
 |-----|----------|
-| [docs/manual/README.md](docs/manual/README.md) | **Human instruction book** — setup, flash, plant map, PDU, recovery |
+| [docs/manual/README.md](docs/manual/README.md) | Instruction book — setup, flash, plant map, PDU, recovery |
 | [docs/bringup.md](docs/bringup.md) | How to run + bench stories |
 | [docs/api.md](docs/api.md) | Host SDK call surface |
 | [docs/host-exchange-v3.md](docs/host-exchange-v3.md) | **694 B** wire layout |

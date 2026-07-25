@@ -411,7 +411,7 @@ Expect `... cali listen` and shaft spin. Cold cali fail (no prior teleop) → ha
 - [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md) — mixed CAN detail
 - [architecture.md](architecture.md) · [host-exchange-v3.md](host-exchange-v3.md) · [decisions.md](decisions.md)
 - **[docs/peripherals/](peripherals/continuous-ops.md)** — live-verified (2026-07-24, real
-  Jetson board) AI+human operating manuals per peripheral: arm CH1 Damiao, DXL neck, base
+  Jetson board) operating manuals per peripheral: arm CH1 Damiao, DXL neck, base
   RobStride (bus5/6), base Damiao (CH6), PDU UART/soft-kill, and continuous-ops (launch/stop,
   stream health, "what good looks like"). Start at
   [continuous-ops.md](peripherals/continuous-ops.md) if you're about to run the live board.

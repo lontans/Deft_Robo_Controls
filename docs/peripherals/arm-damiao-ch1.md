@@ -5,7 +5,7 @@ Live-verified operating manual for the YAM left-arm Damiao chain on FDCAN1
 (`LEFT_ARM_SLOTS`, `DEFAULT_ARM_KP`/`KD`), `scripts/deft_controls_sdk/vbeta/yam_bench_clear_left.py`
 (`CLEAR_LO`/`CLEAR_HI`), driver script `scripts/yam_continuous_all.py`.
 
-## AI quickstart
+## Quickstart
 
 - **Bus / protocol**: FDCAN1, `PROTO_DAMIAO`, ESC IDs `0x01..0x07` → slots `0..6`
   (`LEFT_ARM_SLOTS = range(0,7)`), master RX IDs `0x11..0x17` (`_DAMIAO_MASTER`).
@@ -15,7 +15,7 @@ Live-verified operating manual for the YAM left-arm Damiao chain on FDCAN1
   then `hub.debug.cfg_set_slot(slot=i, bus=1, protocol=PROTO_DAMIAO, motor_id=0x01+i, master_id=_DAMIAO_MASTER[i], enabled=True, persist=False)`
   per slot, wrapped in `pause_plant_stream(hub)`.
 - **Enable order matters**: latch joints **one at a time** (progressive latch), not all 7 at once —
-  see Human deep dive. J4 (index 3) routinely needs an extra retry.
+  see Deep dive. J4 (index 3) routinely needs an extra retry.
 - **fault byte semantics**: `fault == 1` means **MIT-armed/green**, not an error. `fault == 0` means
   not yet latched. `(fault & 0xF) >= 8` is an actual hard fault — stop.
 - **J2 (index 1) is the only joint driven with continuous motion** in the bench cruise pattern;
@@ -31,7 +31,7 @@ Live-verified operating manual for the YAM left-arm Damiao chain on FDCAN1
   returns `None`/skips a joint whose `abs(position) < 1e-3` because that's indistinguishable from
   "no live FB yet" on this rig.
 
-## Human deep dive
+## Deep dive
 
 ### Why progressive latch, not all-at-once
 

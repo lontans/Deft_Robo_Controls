@@ -8,7 +8,7 @@ truth (host side): `scripts/deft_controls_sdk/pdb/status.py`, `scripts/deft_cont
 (`soft_kill_park()` follow-mode branch), driver `scripts/yam_continuous_all.py`
 (`session.service_soft_kill()`, `_dashboard_soft_kill_requested()`).
 
-## AI quickstart
+## Quickstart
 
 - **Read status**: `hub.pdb_status()` → `PdbStatus` with `.kill_state_name`, `.kill_reason_name`,
   `.estop_sense`, `.stale_failsafe` (bool). No separate USB "is the PDU link fresh" flag exists —
@@ -32,14 +32,14 @@ truth (host side): `scripts/deft_controls_sdk/pdb/status.py`, `scripts/deft_cont
 - **Don't** poll for a PDU "freshness" USB byte that doesn't exist — check `stale_failsafe` on the
   parsed system-kill status instead; a garbled or missing physical PDB frame degrades to the same
   `HARD_ESTOP`/`COMMS_LOSS` signature you'd see from an actually-tripped hard ESTOP, by design (see
-  Human deep dive).
+  Deep dive).
 - **Don't** assume `pdb_uart_sim.py` running == a fresh PDU link. It can silently die on the serial
   read (`/dev/ttyTHS1` is flaky on this Jetson — see Verified section) and the last thing anyone
   sees is `stale_failsafe: true` on the next `pdb_status()` read, same as if the PDB were physically
   unplugged. Check `ps -ef | grep pdb_uart_sim` / `/tmp/pdb_uart_sim.log` on the Jetson if kill state
   won't leave `HARD_ESTOP/COMMS_LOSS`.
 
-## Human deep dive
+## Deep dive
 
 ### Why "stale" and "hard-faulted" look identical on USB
 

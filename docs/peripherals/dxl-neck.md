@@ -5,7 +5,7 @@ Live-verified operating manual for the neck pitch/yaw Dynamixel pair. Source of 
 `servo_table[]` (position clamps, mirrored in `scripts/yam_dxl_clear_teleop.py` `SERVO_CFG`),
 driver scripts `scripts/yam_continuous_all.py` and `scripts/yam_dxl_clear_teleop.py`.
 
-## AI quickstart
+## Quickstart
 
 - **IDs / slots**: pitch = DXL ID `1` → servo slot `0` (`NECK_PITCH_DXL_ID`/`NECK_PITCH_SERVO_SLOT`),
   yaw = DXL ID `2` → servo slot `1` (`NECK_YAW_DXL_ID`/`NECK_YAW_SERVO_SLOT`).
@@ -31,7 +31,7 @@ driver scripts `scripts/yam_continuous_all.py` and `scripts/yam_dxl_clear_teleop
   a time. Never launch both against the same board. The debug dashboard must stay in **follow mode**
   (no Connect COM) while either owns the port — see `docs/peripherals/continuous-ops.md`.
 
-## Human deep dive
+## Deep dive
 
 ### Why torque-off discover first
 

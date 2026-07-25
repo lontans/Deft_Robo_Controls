@@ -6,7 +6,7 @@ by the current bench base rig. Source of truth: `scripts/yam_continuous_all.py` 
 `build_rs2_probe_command`, `build_rs2_scan_command`). For the Damiao motor that shares CH6, see
 [base-damiao-ch6.md](base-damiao-ch6.md).
 
-## AI quickstart
+## Quickstart
 
 - **Bus/slot map (bench, current)** — this is the *live wiring on this bench*, not the idealized
   product map in `slots.py::yam_product_rows()` (which puts base steer/drive on slots 14–19 with
@@ -44,7 +44,7 @@ by the current bench base rig. Source of truth: `scripts/yam_continuous_all.py` 
   probe reading) rather than defaulting to 0.0, which is a real (and wrong) commandable position on
   this joint.
 
-## Human deep dive
+## Deep dive
 
 ### Why MCP buses need a kick
 

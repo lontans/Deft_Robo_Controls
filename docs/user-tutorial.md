@@ -1,14 +1,14 @@
 # Controls PCB — user tutorial (exercises)
 
-Hands-on checklist for a human on the bench. Complete each exercise in order;
-check boxes as you go. This file is the **operator workbook**; deep truth stays
-in the linked docs (if they disagree, the linked doc wins).
+Hands-on checklist for the bench. Complete each exercise in order; check boxes
+as you go. This file is the **operator workbook**; deep truth stays in the
+linked docs (if they disagree, the linked doc wins).
 
-**Dashboard note:** Claudistic is rewriting debug-dashboard teleop / Soft-kill
-UX. Treat GUI steps as *optional / may look different*. Prefer the CLI paths
-below until the dashboard work lands — they do not depend on that UI.
+**Dashboard note:** Debug-dashboard teleop / Soft-kill UX may still be in flux.
+Treat GUI steps as *optional / may look different*. Prefer the CLI paths below
+until that UI is settled — they do not depend on it.
 
-**Cursonier note:** Use this file as the walkthrough spine; expand with
+Use this file as the walkthrough spine; expand with
 [`manual/README.md`](manual/README.md) chapters when teaching.
 
 ---
@@ -215,7 +215,7 @@ Only if you chose continuous in Exercise 1. Ops manual:
 Typical remote launcher:
 
 ```bash
-# From host, with JETSON_PASS set — see continuous-ops.md AI quickstart
+# From host, with JETSON_PASS set — see continuous-ops.md quickstart
 python scripts/launch_continuous.py
 ```
 
@@ -226,7 +226,7 @@ python scripts/launch_continuous.py
 
 ---
 
-## Exercise 8 — Dashboard (optional — Claudistic in progress)
+## Exercise 8 — Dashboard (optional)
 
 **Goal:** Observe health without fighting the CLI owner.
 
@@ -241,16 +241,16 @@ python -m deft_controls_sdk.debug_dashboard --http-port 8766 --no-browser
 
 2. **Without Connect:** follow mode if something else writes `scripts/.deft_session/state.json`.
 3. **Connect (observe):** telemetry / DIAG_ONLY — safe look, not teleop.
-4. **Enable control:** only when you intend to command (Claudistic teleop landing here).
+4. **Enable control:** only when you intend to command.
 5. **Soft-kill Park:** when this process owns COM → direct park; when follow-only →
    flag file for continuous. If the button “does nothing,” check which mode you are in.
 
 **Pass:**
 
 - [ ] I can open the UI without stealing CDC from a running prove
-- [ ] I understand observe vs control (even if buttons move under Claudistic)
+- [ ] I understand observe vs control
 
-Skip teleop-via-GUI until Claudistic marks dashboard teleop ready; use Exercise 6/7 instead.
+Skip teleop-via-GUI if the dashboard control UX is still unsettled; use Exercise 6/7 instead.
 
 ---
 
@@ -293,8 +293,8 @@ Read: [manual §4](manual/README.md#4-pdu--soft-kill), [pdu-uart-soft-kill.md](p
 
 ## How this relates to `vbeta-live-prove-plan.md`
 
-That plan is the **detailed** CLI prove for Claude-Vbeta. This tutorial is the
-**human** path. Mapping:
+That plan is the **detailed** CLI prove for the vbeta stack. This tutorial is
+the operator exercise path. Mapping:
 
 | Tutorial | Prove plan |
 |----------|------------|
@@ -304,7 +304,7 @@ That plan is the **detailed** CLI prove for Claude-Vbeta. This tutorial is the
 | Ex 6 direct adapters | §5 default (not YAMAIMobile) |
 | Ex 9 soft-kill | §6 (incl. dashboard flag gap) |
 
-You can finish Exercises 1–6 **without** Claudistic finishing dashboard teleop.
+You can finish Exercises 1–6 without waiting on dashboard teleop UX.
 You **do** need CDC free (dashboard Disconnect).
 
 ---

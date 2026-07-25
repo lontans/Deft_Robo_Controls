@@ -43,7 +43,7 @@ scripts/_tmp_*_jetson*.py
 
 # Local agent / IDE scratch (not product source)
 .claude/
-.cursor/plans/
+.cursor/
 
 # Root / agent scratch — never commit dumps or recovery trees
 /*.csv

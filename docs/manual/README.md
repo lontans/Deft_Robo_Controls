@@ -1,10 +1,9 @@
 # Deft Controls PCB — Manual
 
-Human instruction book for the Controls PCB stack. This is a **table of
-contents that links out** — the deep, verified content lives in the docs
-each chapter points to; this page does not duplicate it. If a chapter and
-its linked doc ever disagree, the linked doc wins (this page is a map, not
-the territory).
+Instruction book for the Controls PCB stack. This is a **table of contents
+that links out** — the deep, verified content lives in the docs each chapter
+points to; this page does not duplicate it. If a chapter and its linked doc
+ever disagree, the linked doc wins (this page is a map, not the territory).
 
 **Operator workbook (exercises):** [user-tutorial.md](../user-tutorial.md) —
 flash, discover, vbeta/continuous prove, cleanup. Use that when you want
@@ -106,8 +105,8 @@ cross-reference comments in both files):
 
 ## 5. Arms / base / neck
 
-Live-verified, per-peripheral operating manuals (AI quickstart + human deep
-dive + what's actually been proven on this bench) — **[§6](#6-continuous-vs-vbeta-stack)
+Live-verified, per-peripheral operating manuals (quickstart + deep dive +
+what's actually been proven on this bench) — **[§6](#6-continuous-vs-vbeta-stack)
 first** if you're about to run something, then:
 
 - [peripherals/arm-damiao-ch1.md](../peripherals/arm-damiao-ch1.md) — arm CH1 Damiao (CFG, enable
