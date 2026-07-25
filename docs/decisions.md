@@ -1,6 +1,6 @@
 # Architecture decisions
 
-Dated decisions for the Deft controls stack. **Current on-wire contract remains [host-exchange-v1.md](host-exchange-v1.md) (562 B)** until a deliberate layout bump is implemented and flashed. This file is the vision to implement against when that work starts.
+Dated decisions for the Deft controls stack. **Current on-wire contract is [host-exchange-v3.md](host-exchange-v3.md) (694 B, layout v3)** — see the 2026-07-24 note at the end of ADR-001 below. v1/v2 are archived under `docs/legacy/`.
 
 Related narrative: [architecture.md](architecture.md).
 
@@ -10,7 +10,7 @@ Related narrative: [architecture.md](architecture.md).
 
 | | |
 |--|--|
-| **Status** | Implemented (layout v2, 672 B) — see [host-exchange-v2.md](host-exchange-v2.md) |
+| **Status** | Implemented (layout v2, 672 B) — see [legacy/host-exchange-v2.md](legacy/host-exchange-v2.md); superseded by [host-exchange-v3.md](host-exchange-v3.md) |
 | **Date** | 2026-07-20 (implemented 2026-07-21) |
 | **Context** | Plant health was cannibalizing the 32 B USB `pdu` mailbox (SVD timing vs CFG/discover). Power-distribution (PDB) telemetry needs 8×(V,I) plus soft-kill choreography and does not fit cleanly in 32 B UART. Dual-arm plant keeps 25 wire actuator slots. Host control loop ~30 Hz; MCU plant 500 Hz hold-last. |
 
@@ -130,8 +130,9 @@ here to preserve the historical record.
 ## Related
 
 - [architecture.md](architecture.md) — runtime + host API modes
-- [host-exchange-v2.md](host-exchange-v2.md) — **current** 672 B plant contract
+- [host-exchange-v3.md](host-exchange-v3.md) — **current** 694 B plant contract
 - [host-debug-v1.md](host-debug-v1.md) — DEBUG frames
-- [host-exchange-v1.md](host-exchange-v1.md) — archived 562 B contract
+- [legacy/host-exchange-v2.md](legacy/host-exchange-v2.md) — archived 672 B contract
+- [legacy/host-exchange-v1.md](legacy/host-exchange-v1.md) — archived 562 B contract
 - [bringup.md](bringup.md) — how to run
 - [lessons.md](lessons.md) — bugs and durable findings

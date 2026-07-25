@@ -6,8 +6,8 @@ performed by this agent. Executor: Cursor (owns `App/`/`Core/`, COM5, soft-DFU).
 ## Problem
 
 Every act_lap / fb_hz number in
-[bench-load-matrix-2026-07-22.md](bench-load-matrix-2026-07-22.md) and
-[bench-load-matrix-2026-07-23.md](bench-load-matrix-2026-07-23.md) was
+[legacy/bench-load-matrix-2026-07-22.md](legacy/bench-load-matrix-2026-07-22.md) and
+[legacy/bench-load-matrix-2026-07-23.md](legacy/bench-load-matrix-2026-07-23.md) was
 measured on the **Debug** configuration, which builds at `-O0`. A **Release**
 configuration already exists in [`.cproject`](../.cproject)
 (`com.st.stm32cube.ide.mcu.gnu.managedbuild.config.exe.release.1049488396`,
@@ -51,7 +51,7 @@ pack/unpack, CRC16, host-position interp).
 4. **Write `docs/bench-load-matrix-release-<date>.md`** with the same table
    shape as the existing bench docs (§A real CH6, §B ×25 rx_sim, bandwidth
    baseline by bus group), so it's a direct row-for-row comparison against
-   [bench-load-matrix-2026-07-23.md](bench-load-matrix-2026-07-23.md).
+   [legacy/bench-load-matrix-2026-07-23.md](legacy/bench-load-matrix-2026-07-23.md).
 
 ## Success metric
 

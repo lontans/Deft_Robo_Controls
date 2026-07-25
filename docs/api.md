@@ -192,17 +192,20 @@ with PcbRobotSession.connect(apply_yam_cfg=False) as session:
 
 ## Soft-DFU — one-shot flash
 
+Full ops (Windows drivers, Jetson udev, recovery, prove criteria): [`docs/soft-dfu.md`](soft-dfu.md).
+
 **Preferred (one-liner):**
 
 ```powershell
 python scripts/soft_dfu_flash.py
 # optional: --image Debug/DeftRoboticsControlsPCB.elf
-# optional: --serial 3167376F3435   # only if multiple boards
+# optional: --serial 3167375E3435   # pin board when multiple CDC present
+# optional: --require-usb-dfu       # fail instead of ST-Link SWD fallback
 ```
 
-Auto-finds STM32 CDC → soft-enters ROM DFU → programs → leaves via reset trampoline.
-If `0483:DF11` never appears (common on some Windows USB stacks), the same script
-falls back to ST-Link SWD via CubeProg when an ST-Link is connected.
+Auto-finds STM32 CDC → soft-enters ROM DFU (option-byte `nBOOT0`) → programs →
+Leave restores flash boot. ST-Link SWD is recovery-only; success prints
+`flash ok — CDC at …` with no `(SWD)`.
 
 Linux / Jetson: same Python entry, or `./scripts/soft_dfu_flash.sh` (sudo + dfu-util).
 

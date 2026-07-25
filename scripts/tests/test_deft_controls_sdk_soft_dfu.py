@@ -157,16 +157,20 @@ def test_main_flash_wires_to_flash_firmware(monkeypatch: pytest.MonkeyPatch) -> 
 
     called = {}
 
-    def _flash(image, *, serial=None, flash_address=0, confirm=True):
+    def _flash(image, *, serial=None, flash_address=0, confirm=True, require_usb_dfu=False):
         called["image"] = image
         called["serial"] = serial
         called["address"] = flash_address
+        called["require_usb_dfu"] = require_usb_dfu
         return "/dev/ttyACM0"
 
     monkeypatch.setattr(mod, "flash_firmware", _flash)
-    assert main(["flash", "--serial", "ABC", "--image", "/tmp/x.elf"]) == 0
+    assert main(
+        ["flash", "--serial", "ABC", "--image", "/tmp/x.elf", "--require-usb-dfu"]
+    ) == 0
     assert called["serial"] == "ABC"
     assert called["image"] == "/tmp/x.elf"
+    assert called["require_usb_dfu"] is True
 
 
 def test_dfu_util_flash_retries_sudo_on_access_denied(
@@ -286,6 +290,29 @@ def test_flash_firmware_falls_back_to_swd_when_df11_missing(
     monkeypatch.setattr(mod, "_cubeprog_flash_swd", _swd)
     assert mod.flash_firmware(elf, confirm=True) == "COM5"
     assert calls == {"swd": 1, "usb": 0}
+
+
+def test_flash_firmware_require_usb_dfu_rejects_swd_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import deft_controls_sdk.bench.soft_dfu as mod
+    import pytest
+
+    elf = tmp_path / "fw.elf"
+    elf.write_bytes(b"\x7fELF")
+
+    monkeypatch.setattr(mod, "_which_cubeprog", lambda: "STM32_Programmer_CLI")
+    monkeypatch.setattr(mod, "_which_dfu_util", lambda: None)
+    monkeypatch.setattr(mod, "wait_for_dfu", lambda **kw: False)
+    monkeypatch.setattr(mod, "enter_bootloader", lambda **kw: "COM5")
+    monkeypatch.setattr(mod, "_cubeprog_swd_probe", lambda *_a, **_k: True)
+
+    def _swd(_image):
+        raise AssertionError("SWD must not run with require_usb_dfu")
+
+    monkeypatch.setattr(mod, "_cubeprog_flash_swd", _swd)
+    with pytest.raises(RuntimeError, match="USB-only Soft-DFU"):
+        mod.flash_firmware(elf, confirm=True, require_usb_dfu=True)
 
 
 def test_soft_dfu_flash_entrypoint_defaults_to_flash() -> None:

@@ -22,13 +22,63 @@ typedef struct {
 
 extern uint32_t _estack;
 
-static void soft_dfu_leave_reset(void)
+static void soft_dfu_flash_wait_bsy(void)
 {
-	/* AN3156 Leave jumps into app code without a chip reset; USB FS is left
-	 * dirty and CDC often never re-enumerates. Force a real system reset. */
-	NVIC_SystemReset();
+	while ((FLASH->SR & FLASH_SR_BSY) != 0u) {
+	}
+}
+
+/*
+ * Program nBOOT0 via option bytes and launch (resets the MCU).
+ *
+ * This board has nSWBOOT0=0 (BOOT0 taken from the nBOOT0 option bit). Soft
+ * MEMRMP jumps into system memory leave CDC dead without enumerating
+ * 0483:DF11 on this hardware; forcing system-memory boot through nBOOT0=0
+ * does enumerate DFU (verified on the bench). Leave restores nBOOT0=1.
+ *
+ * Register-level so the Leave trampoline can call this before HAL exists.
+ * Does not return on success (OBL_LAUNCH resets).
+ */
+static void soft_dfu_ob_launch_nboot0(uint32_t nboot0_set)
+{
+	uint32_t optr;
+
+	soft_dfu_flash_wait_bsy();
+
+	if ((FLASH->CR & FLASH_CR_LOCK) != 0u) {
+		FLASH->KEYR = FLASH_KEY1;
+		FLASH->KEYR = FLASH_KEY2;
+	}
+	if ((FLASH->CR & FLASH_CR_OPTLOCK) != 0u) {
+		FLASH->OPTKEYR = FLASH_OPTKEY1;
+		FLASH->OPTKEYR = FLASH_OPTKEY2;
+	}
+
+	optr = FLASH->OPTR;
+	/* Keep boot selection on the option bit (not the BOOT0 pin / PB8). */
+	optr &= ~FLASH_OPTR_nSWBOOT0;
+	if (nboot0_set != 0u) {
+		optr |= FLASH_OPTR_nBOOT0;
+	} else {
+		optr &= ~FLASH_OPTR_nBOOT0;
+	}
+
+	FLASH->OPTR = optr;
+	FLASH->CR |= FLASH_CR_OPTSTRT;
+	soft_dfu_flash_wait_bsy();
+
+	/* Clears OPTSTRT and forces an option-byte reload + system reset. */
+	FLASH->CR |= FLASH_CR_OBL_LAUNCH;
+
 	for (;;) {
 	}
+}
+
+static void soft_dfu_leave_reset(void)
+{
+	/* AN3156 Leave jumps here without a chip reset. Restore flash boot
+	 * (nBOOT0=1) then OBL_LAUNCH resets into the app with clean USB. */
+	soft_dfu_ob_launch_nboot0(1u);
 }
 
 __attribute__((section(".soft_dfu_leave_vt"), used))
@@ -40,7 +90,7 @@ static const soft_dfu_leave_vt_t soft_dfu_leave_vt = {
 /* Placed in the dedicated .dfu_sig section (see STM32G474RETX_FLASH.ld,
  * right after .bss) so it survives a warm reset: that section sits outside
  * the _sbss.._ebss range Reset_Handler's LoopFillZerobss zeroes, and
- * outside .data's flash-copy range too. */
+ * outside .data's flash-copy range too. Legacy soft-jump fallback only. */
 __attribute__((section(".dfu_sig"))) static soft_dfu_sig_t s_dfu_sig;
 
 bool soft_dfu_is_command(const host_command_image_t *cmd)
@@ -84,16 +134,17 @@ void soft_dfu_on_command(const host_command_image_t *cmd)
 {
 	(void)cmd;
 
-	s_dfu_sig.magic = SOFT_DFU_MAGIC;
-	s_dfu_sig.guard = SOFT_DFU_GUARD;
-
-	/* Ensure signature is visible before the reset clears pipelines. */
-	__DSB();
-	__ISB();
-
 	soft_dfu_usb_force_disconnect();
 
-	NVIC_SystemReset(); /* never returns */
+	/* Primary path: option-byte boot into system memory (USB DFU). */
+	soft_dfu_ob_launch_nboot0(0u);
+
+	/* Unreachable unless OB programming refused to launch — legacy soft jump. */
+	s_dfu_sig.magic = SOFT_DFU_MAGIC;
+	s_dfu_sig.guard = SOFT_DFU_GUARD;
+	__DSB();
+	__ISB();
+	NVIC_SystemReset();
 
 	for (;;) {
 	}

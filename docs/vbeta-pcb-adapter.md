@@ -12,7 +12,7 @@ already committed to this repo pointed at a valid commit with no
 it. Fixing that is just the gitlink pointer (a few dozen bytes); it does
 **not** commit the 36 MB working tree — that stays untracked inside the
 submodule's own `.git`, per the existing bloat-avoidance call in
-[`act-lap-bloat-deepdive-2026-07-23.md`](act-lap-bloat-deepdive-2026-07-23.md).
+[`act-lap-bloat-deepdive-2026-07-23.md`](legacy/act-lap-bloat-deepdive-2026-07-23.md).
 Read-only reference for contract-matching; never edit files under it from
 this repo.
 

@@ -267,5 +267,5 @@ with ControlsPcbHub.connect("COM5") as hub:
 
 - [api.md](api.md) — what each call does (reference)
 - [bringup.md](bringup.md) — bench history, postmortems, dual-arm/Damiao stories
-- [host-exchange-v2.md](host-exchange-v2.md) / [host-debug-v1.md](host-debug-v1.md) — wire formats
+- [host-exchange-v3.md](host-exchange-v3.md) / [host-debug-v1.md](host-debug-v1.md) — wire formats
 - [lessons.md](lessons.md) — durable bug list

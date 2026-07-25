@@ -864,6 +864,7 @@ def flash_firmware(
     serial: Optional[str] = None,
     flash_address: int = _APP_FLASH_BASE,
     confirm: bool = True,
+    require_usb_dfu: bool = False,
 ) -> str:
     """One-shot flash: soft-DFU USB when possible, else ST-Link SWD fallback.
 
@@ -874,8 +875,9 @@ def flash_firmware(
     Order:
       1. If ``0483:DF11`` already present → USB program + Leave
       2. Else soft-enter from CDC → wait for DF11 → USB program + Leave
-      3. If DF11 never appears (common Windows WinUSB gap) and CubeProg can
-         open ST-Link SWD → SWD program + reset (recovers a stuck board)
+      3. If DF11 never appears and CubeProg can open ST-Link SWD → SWD
+         program + reset (recovery only). Disabled when
+         ``require_usb_dfu=True`` (prove loops / production USB-only).
     """
     if not confirm:
         raise ValueError("flash_firmware() requires confirm=True")
@@ -894,10 +896,21 @@ def flash_firmware(
             "no flasher found — install dfu-util (Linux) or STM32CubeProgrammer"
         )
 
-    swd_ok = bool(use_cube and _cubeprog_swd_probe(cube))
-    # When ST-Link can recover us, don't burn 12s waiting for a DF11 that
-    # often never enumerates on Windows; USB-only hosts still get a long wait.
-    dfu_wait_s = 3.0 if swd_ok else 12.0
+    swd_ok = bool(use_cube and _cubeprog_swd_probe(cube)) and not require_usb_dfu
+    # Option-byte soft-enter + DF11 re-enum needs a few seconds; keep a long
+    # wait for USB-only proves. When SWD recovery is allowed, fail faster.
+    dfu_wait_s = 12.0 if require_usb_dfu or not swd_ok else 5.0
+
+    def _no_swd(msg: str) -> RuntimeError:
+        return RuntimeError(
+            f"{msg}. USB-only Soft-DFU required"
+            + (" (--require-usb-dfu)." if require_usb_dfu else ".")
+            + " Windows: app CDC must be usbser (not WinUSB on 0483:5740);"
+            + " DF11 needs WinUSB/ST DFU. Linux: udev"
+            + " scripts/udev/99-stm32-dfu.rules or soft_dfu_flash.sh."
+            + " ST-Link SWD is recovery-only — re-run without"
+            + " --require-usb-dfu if you need it."
+        )
 
     in_dfu = wait_for_dfu(serial=serial, timeout_s=0.5)
     if not in_dfu:
@@ -905,14 +918,13 @@ def flash_firmware(
             port = enter_bootloader(confirm=True, serial=serial)
             print(f"soft-entered DFU from {port}", flush=True)
         except RuntimeError as exc:
-            # No CDC (board stuck after a prior soft enter?) — try SWD.
             if swd_ok:
                 print(
                     f"no app CDC ({exc}); recovering via ST-Link SWD…",
                     flush=True,
                 )
                 return _flash_via_swd(img, serial=serial)
-            raise
+            raise _no_swd(f"no app CDC for soft-enter ({exc})") from exc
 
         if not wait_for_dfu(serial=serial, timeout_s=dfu_wait_s):
             print(
@@ -923,13 +935,7 @@ def flash_firmware(
             if swd_ok:
                 print("falling back to ST-Link SWD…", flush=True)
                 return _flash_via_swd(img, serial=serial)
-            raise RuntimeError(
-                "DFU device 0483:DF11 did not appear and no ST-Link SWD "
-                "fallback is available. Windows: install WinUSB for 0483:DF11 "
-                "(Zadig) or keep ST-Link connected. Linux: check lsusb / udev "
-                "(scripts/udev/99-stm32-dfu.rules) or re-run with "
-                "scripts/soft_dfu_flash.sh"
-            )
+            raise _no_swd("DFU device 0483:DF11 did not appear")
     else:
         print("already in DFU (0483:DF11)", flush=True)
 
@@ -952,15 +958,15 @@ def flash_firmware(
         if swd_ok:
             print("Leave DFU timed out — recovering via ST-Link SWD…", flush=True)
             return _flash_via_swd(img, serial=serial)
-        raise RuntimeError("Leave DFU timed out — DF11 still present")
+        raise _no_swd("Leave DFU timed out — DF11 still present")
 
     cdc = wait_for_cdc(serial=serial, timeout_s=12.0)
     if not cdc:
         if swd_ok:
             print("CDC missing after Leave — recovering via ST-Link SWD…", flush=True)
             return _flash_via_swd(img, serial=serial)
-        raise RuntimeError(
-            "app CDC did not reappear after Leave — power-cycle or ST-Link reset"
+        raise _no_swd(
+            "app CDC did not reappear after Leave — power-cycle the board"
         )
     print(f"flash ok — CDC at {cdc}", flush=True)
     return cdc
@@ -995,6 +1001,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--address",
         default=f"0x{_APP_FLASH_BASE:08X}",
         help=argparse.SUPPRESS,  # advanced dfu-util base; keep hidden
+    )
+    f.add_argument(
+        "--require-usb-dfu",
+        action="store_true",
+        help=(
+            "fail instead of falling back to ST-Link SWD "
+            "(USB-only Soft-DFU prove loops)"
+        ),
     )
 
     e = sub.add_parser("enter", help="reset board into ROM DFU")
@@ -1044,6 +1058,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             serial=args.serial,
             flash_address=addr,
             confirm=True,
+            require_usb_dfu=bool(args.require_usb_dfu),
         )
         return 0
 

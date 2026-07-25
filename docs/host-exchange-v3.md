@@ -2,7 +2,7 @@
 
 Fixed **694-byte** binary images in both directions. Same layout on USB CDC and UART.
 
-**Supersedes** [host-exchange-v2.md](host-exchange-v2.md) (672 B / 25 actuators). Decision record:
+**Supersedes** [legacy/host-exchange-v2.md](legacy/host-exchange-v2.md) (672 B / 25 actuators). Decision record:
 [decisions.md](decisions.md) ADR-001.
 
 **Source of truth:** `App/Inc/host/host_exchange_schema.h`,

@@ -16,11 +16,11 @@ The host publishes **desire** commands at its own rate (hold-last-command). The 
 
 ## Host API modes
 
-One physical link (USB CDC or UART), one 562 B cyclic frame in each direction — but two jobs share it: soft-realtime plant control and bench diagnostics. App code should choose a **mode**, never a `pdu` tag directly. See Host API modes below and [bringup.md](bringup.md).
+One physical link (USB CDC or UART), one 694 B cyclic frame in each direction — but two jobs share it: soft-realtime plant control and bench diagnostics. App code should choose a **mode**, never a `pdu` tag directly. See Host API modes below and [bringup.md](bringup.md).
 
 | Mode | Wire behavior (today, under the hood) | Host API surface |
 |------|----------------------------------------|------------------|
-| **PLANT** | Cyclic 562 B, `pdu=0`, stream ~30–100 Hz | Top-level hub: `set_actuator`, `start_streaming`, `recover`, … |
+| **PLANT** | Cyclic 694 B, `pdu=0`, stream ~30–100 Hz | Top-level hub: `set_actuator`, `start_streaming`, `recover`, … |
 | **DEBUG** | Same link, tagged PDU / diag sessions; plant apply gated | `hub.debug.*` (exclusive lease) |
 | **HEALTH** | Derived from feedback system word + link metrics | Feedback / status fields (no separate `hub.health` yet) |
 | **LOG** | Host-side events / snapshots — `state.json` + NDJSON fault/manual recording (`telemetry/recorder.py`) | `hub.telemetry.start_recording()` / `stop_recording()`, auto on fault |
@@ -69,7 +69,7 @@ flowchart TB
 
 `scripts/deft_controls_sdk/ControlsPcbHub` is the live host API — plant control is **top-level** (`set_actuator`, `start_streaming`, `recover`, …); there is no `hub.plant` namespace. `hub.debug` is a bench lease (`deft_controls_sdk/bench/`) for discover/CFG. `hub.telemetry` reads the shared feedback cache (`TelemetryCache` → `state.json`). RobStride/Damiao discover are ported (fabricated-frame tests); RS02 calibrate is not ported yet (`scripts/deft_controls_sdk/README.md`). `python -m deft_controls_sdk.debug_dashboard` opens a `ControlsPcbHub` from the browser and becomes the sole COM owner on Connect. Until a future `hubd` mux exists, **one process owns COM** — do not open a second dashboard or legacy CLI against the same port. Frozen predecessors live under `scripts/legacy/`.
 
-**Legacy tangle** (what this replaces as the primary story): *teleop / dashboard / CLI / plugins → all open COM → same 562 B → pdu tag?* — every app had to know wire/pdu details to pick a mode. The mode table + diagram above is the target story; `docs/host-exchange-v1.md` remains the byte-level source of truth underneath it.
+**Legacy tangle** (what this replaces as the primary story): *teleop / dashboard / CLI / plugins → all open COM → same 694 B → pdu tag?* — every app had to know wire/pdu details to pick a mode. The mode table + diagram above is the target story; `docs/host-exchange-v3.md` remains the byte-level source of truth underneath it.
 
 ## Plant runtime gates (firmware)
 
@@ -137,8 +137,8 @@ Lower-level realization of the `Mux`/`Ser`/`PlantPath`/`DiagPath`/`Gates` boxes 
 ```mermaid
 flowchart LR
   subgraph host["Host (control_hub)"]
-    CMD["562 B command image"]
-    FB["562 B feedback image"]
+    CMD["694 B command image"]
+    FB["694 B feedback image"]
   end
 
   subgraph main["Main loop"]
@@ -173,15 +173,15 @@ flowchart LR
 
 | Buffer | Size / type | Writer | Reader | Notes |
 |--------|-------------|--------|--------|-------|
-| Wire command image | 562 B | Host | `host_link` | Magic + layout v1 |
+| Wire command image | 694 B | Host | `host_link` | Magic + layout v3 |
 | `actuator_desire_stage[]` | 14 × command | Main | TIM6 `actuator_apply_desire` | `actuator_desire_pending` |
 | `actuator_desire_live[]` | Plant RAM | TIM6 | plugin `apply_cycle` | Hold-last between host updates |
 | `actuator_state_live[]` | Plant RAM | Plugins / CAN parse | TIM6 `actuator_capture_state` | Per-motor feedback |
 | `actuator_state_stage[]` | 14 × feedback | TIM6 | `host_feedback_image_fetch` | Snapshot for host |
-| Wire feedback image | 562 B | `host_link` | Host | Magic + tick + ack seq |
+| Wire feedback image | 694 B | `host_link` | Host | Magic + tick + ack seq |
 | CAN RX rings | 128 frames / bus | ISR | `can_router_poll` | Drop-oldest on overflow |
 
-**Wire vs plant:** Exchange structs define **25 actuator slots** on the wire. Firmware uses `ACTUATOR_COUNT` (**14**, dual YAM) ≤ `HOST_EXCHANGE_ACTUATOR_SLOTS`. Slots 0–6 map to arm1 (CH1), 7–13 to arm2 (CH2) in `plant_config.c`.
+**Wire vs plant:** Exchange structs define **26 actuator slots** on the wire (`HOST_EXCHANGE_ACTUATOR_SLOTS`, `App/Inc/host/host_exchange_schema.h`). Firmware `ACTUATOR_COUNT` == `HOST_EXCHANGE_ACTUATOR_SLOTS` — plant table is the wire table, no separate compiled-in split. Per-slot bus/protocol assignment is CFG-driven at runtime; see [bringup.md](bringup.md) for current plant config.
 
 ## Module map
 
@@ -245,21 +245,21 @@ On each TIM6 period:
 ## Invariants
 
 - Plant rate is **500 Hz** regardless of host command rate (~40 Hz teleop).
-- Host images: **layout v1**, **562 bytes**, little-endian.
+- Host images: **layout v3**, **694 bytes**, little-endian.
 - RobStride: **29-bit extended CAN 2.0 @ 1 Mbps**.
 - Plant teleop: idle **kp=0 kd=0** (backdrivable); RS2 teleop via PDU uses separate path.
 - RS2 teleop exit does **not** call `RECOVERY` (avoids all-bus reset / LED flood). Damiao teleop may use `RECOVERY` on exit.
 
-## Wire contracts (layout v2 — shipped)
+## Wire contracts (layout v3 — shipped)
 
 | | Current |
 |--|---------|
-| USB host image | **672 B**, [host-exchange-v2.md](host-exchange-v2.md) |
+| USB host image | **694 B**, [host-exchange-v3.md](host-exchange-v3.md) |
 | System block | **32 B** health + lap timing |
-| Actuator slot | **22 B** (20 MIT + 2 B meta identity on fb) |
+| Actuator slot | **22 B** × 26 (20 MIT + 2 B meta identity on fb) |
 | USB `pdb[]` | **64 B**; DEBUG mailbox = `pdb[0..31]` until dedicated DEBUG messages |
 | Controls ↔ PDB UART | **LIVE** (`UART4_MODE_PDB`): UART4 PC10/PC11, IT RX-to-idle + IT TX, `pdb_link` on HostTask; soft-kill park / rail-enable APIs still unfinished; hard ESTOP GPIO placeholder PA0 |
-| Host stream rate | ~30–50 Hz typical; USB FS has headroom at 672 B |
+| Host stream rate | ~30–50 Hz typical; USB FS has headroom at 694 B |
 
 ```text
 header       12
@@ -287,5 +287,5 @@ Full decision text: **[decisions.md](decisions.md)** ADR-001.
 - [decisions.md](decisions.md) — ADR-001 host 672 B + PDB UART 64 B
 - [bringup.md](bringup.md) — current how-to (SDK + dual-arm)
 - [lessons.md](lessons.md) — open bugs + durable bring-up lessons
-- [host-exchange-v1.md](host-exchange-v1.md) — **current** 562 B layout
+- [host-exchange-v3.md](host-exchange-v3.md) — **current** 694 B layout (v1/v2 superseded, see `docs/legacy/`)
 - [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md) — mixed std/ext FDCAN detail

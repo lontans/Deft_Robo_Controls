@@ -2,7 +2,7 @@
 
 Fixed **64-byte** binary frames, both directions, over a dedicated UART link
 between the Controls PCB and the Power Distribution Board (PDB) MCU.
-**Separate from** the USB host_exchange link ([host-exchange-v2.md](host-exchange-v2.md))
+**Separate from** the USB host_exchange link ([host-exchange-v3.md](host-exchange-v3.md))
 — this is a distinct physical connection with its own framing, not a tag on
 the USB image. Decision record: [decisions.md](decisions.md) ADR-001.
 
@@ -239,4 +239,4 @@ bit-exact Python port of `App/Src/host/pdb_link.c` — see
 
 - [decisions.md](decisions.md) — ADR-001, the decision record this implements
 - [architecture.md](architecture.md) — three-layer power path narrative
-- [host-exchange-v2.md](host-exchange-v2.md) — the USB link this mirrors into (`system.kill_state`/`kill_reason`/`estop_sense`, `pdb[64]`)
+- [host-exchange-v3.md](host-exchange-v3.md) — the USB link this mirrors into (`system.kill_state`/`kill_reason`/`estop_sense`, `pdb[64]`)

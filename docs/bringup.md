@@ -3,12 +3,12 @@
 **As of Jul 2026.** Dual YAM Damiao arms are the live plant path. Prefer
 [`scripts/deft_controls_sdk/`](../scripts/deft_controls_sdk/README.md) and
 [`api.md`](api.md). Legacy is frozen ([`scripts/legacy/README.md`](../scripts/legacy/README.md))
-pending SDK-only prove-out, then gitignore. Wire: [host-exchange-v2.md](host-exchange-v2.md),
+pending SDK-only prove-out, then gitignore. Wire: [host-exchange-v3.md](host-exchange-v3.md),
 DEBUG: [host-debug-v1.md](host-debug-v1.md). Compact bug list: [lessons.md](lessons.md).
 
 This file keeps **how to run** plus the **bench stories** worth not losing
 (Damiao daisy, dual-arm firmware fixes, plant-cadence regression, CH4 MCP2518FD +
-MCP2562 timeline, USB FB rate on the 25-slot CH1–6 plant). Full CH4 postmortem:
+MCP2562 timeline, USB FB rate on the 26-slot CH1–6 plant). Full CH4 postmortem:
 [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md). USB FB
 matrix: §7a.
 
@@ -375,7 +375,7 @@ Expect `... cali listen` and shaft spin. Cold cali fail (no prior teleop) → ha
 |-------|--------|
 | PC3 blink | Plant alive |
 | CAN ACT LEDs | Traffic (MCP needs non-blank desire or probe) |
-| `cfg_get_table` / `config show` | 25 slots; dual-arm uses 0–13 enabled |
+| `cfg_get_table` / `config show` | 26 slots (layout v3); enabled subset is CFG-defined |
 | Damiao discover | FOUND + esc/master |
 | CH4 smoke | `tx_ok`, TEC, probe HIT (see §8) |
 
@@ -405,4 +405,9 @@ Expect `... cali listen` and shaft spin. Cold cali fail (no prior teleop) → ha
 - [lessons.md](lessons.md) — open bugs + closed one-liners
 - [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md) — full MCP2562/CH4 story
 - [fdcan-dual-id-mixed-bus.md](fdcan-dual-id-mixed-bus.md) — mixed CAN detail
-- [architecture.md](architecture.md) · [host-exchange-v1.md](host-exchange-v1.md) · [decisions.md](decisions.md)
+- [architecture.md](architecture.md) · [host-exchange-v3.md](host-exchange-v3.md) · [decisions.md](decisions.md)
+- **[docs/peripherals/](peripherals/continuous-ops.md)** — live-verified (2026-07-24, real
+  Jetson board) AI+human operating manuals per peripheral: arm CH1 Damiao, DXL neck, base
+  RobStride (bus5/6), base Damiao (CH6), PDU UART/soft-kill, and continuous-ops (launch/stop,
+  stream health, "what good looks like"). Start at
+  [continuous-ops.md](peripherals/continuous-ops.md) if you're about to run the live board.
