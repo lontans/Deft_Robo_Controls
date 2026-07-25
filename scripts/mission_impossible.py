@@ -48,7 +48,7 @@ REPO = SCRIPTS.parent
 FINDINGS = REPO / "docs" / "mission_impossible_findings.md"
 
 ARM_KP = tuple(float(x) for x in DEFAULT_ARM_KP)
-ARM_KD = float(DEFAULT_ARM_KD)
+ARM_KD = tuple(float(x) for x in DEFAULT_ARM_KD)  # per-joint, was a flat scalar
 
 
 def _utc() -> str:
@@ -661,7 +661,7 @@ def cmd_m3(args: argparse.Namespace) -> int:
                         position=float(q0[s]),
                         velocity=0.0,
                         kp=float(ARM_KP[s]) * latch_scale * s_gain,
-                        kd=ARM_KD,
+                        kd=float(ARM_KD[s]),
                     )
                 session.set_actuators(desires, send=False)
                 session.send_once()
@@ -748,7 +748,7 @@ def cmd_m3(args: argparse.Namespace) -> int:
                     position=float(cmd[i]),
                     velocity=0.0,
                     kp=float(ARM_KP[i]) * 0.5,
-                    kd=ARM_KD,
+                    kd=float(ARM_KD[i]),
                 )
             session.set_actuators(desires, send=False)
             session.send_once()
@@ -784,7 +784,7 @@ def cmd_m3(args: argparse.Namespace) -> int:
                         position=float(cmd[i]),
                         velocity=0.0,
                         kp=float(ARM_KP[i]) * 0.5,
-                        kd=ARM_KD,
+                        kd=float(ARM_KD[i]),
                     )
                 session.set_actuators(desires, send=False)
                 session.send_once()

@@ -8,6 +8,7 @@ import numpy as np
 
 from deft_controls_sdk.link import ActuatorDesire
 from deft_controls_sdk.vbeta.session import PcbRobotSession
+from deft_controls_sdk.vbeta.gravity_comp import GravityComp
 from deft_controls_sdk.vbeta.slots import (
     DEFAULT_ARM_KD,
     DEFAULT_ARM_KP,
@@ -35,7 +36,8 @@ class PcbArmDriver:
         *,
         side: str = "left",
         kp: Sequence[float] = DEFAULT_ARM_KP,
-        kd: float = DEFAULT_ARM_KD,
+        kd: Sequence[float] = DEFAULT_ARM_KD,
+        gravity_comp: Optional[GravityComp] = None,
         home_pose: Optional[np.ndarray] = None,
         sleep_pose: Optional[np.ndarray] = None,
         skip_home_on_connect: bool = True,
@@ -48,7 +50,13 @@ class PcbArmDriver:
         self.kp = tuple(float(x) for x in kp)
         if len(self.kp) != 7:
             raise ValueError("kp must have length 7")
-        self.kd = float(kd)
+        self.kd = tuple(float(x) for x in kd)
+        if len(self.kd) != 7:
+            raise ValueError("kd must have length 7")
+        # Opt-in gravity feedforward torque (i2rt-style). None (default) keeps
+        # torque=0.0 on every command — identical behavior to before this was
+        # added. See deft_controls_sdk.vbeta.gravity_comp / docs/i2rt-vs-ours-arm-compare.md P2.
+        self.gravity_comp = gravity_comp
         self.is_connected = False
         self.clamp_goals = bool(clamp_goals)
         self.soft_margin = float(soft_margin)
@@ -176,13 +184,18 @@ class PcbArmDriver:
             if dq is not None
             else np.zeros(7, dtype=np.float32)
         )
+        # Static gravity torque for the 6 arm joints only (gripper/J7 = 0.0,
+        # matches i2rt zero-padding the gripper slot in compute_gravity_compensation).
+        torque = np.zeros(7, dtype=np.float32)
+        if self.gravity_comp is not None:
+            torque[:6] = self.gravity_comp.compute(q[:6])
         for i, slot in enumerate(self.slots):
             out[slot] = ActuatorDesire(
                 position=float(q[i]),
                 velocity=float(vel[i]),
                 kp=float(self.kp[i]),
-                kd=self.kd,
-                torque=0.0,
+                kd=float(self.kd[i]),
+                torque=float(torque[i]),
             )
         return out
 
