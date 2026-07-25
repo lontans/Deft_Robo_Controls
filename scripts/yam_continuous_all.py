@@ -8,10 +8,19 @@ left wrists faulted (no clear/enable/MIT) — do not use that path.
 DXL neck (host servo slots 0/1, IDs 1/2): torque-off discover → hold present →
 gentle clear bounce (same as yam_rig_smoke_suite / yam_dxl_clear_teleop).
 
-Base MCP 22-25: live-FB center + sine amp (proven RS path; no snap-to-0).
+Base MCP 22-25: continuous spin with vel FF; reverse only when the command
+integrator hits an RS MIT rail / Damiao soft window (not FB-lag mid-travel).
 
 Telemetry: ``persist_telemetry=True`` → ``.deft_session/state.json``.
+Use ``--record`` for NDJSON under ``.deft_session/recordings/``.
 Dashboard: run without Connect COM to follow that file.
+
+PDU / estop: plant stream auto-parks on ``SOFT_KILL_REQ``; status lines log
+``pdb_status`` (``estop_sense``, kill reason). Dashboard Soft-kill Park while
+following state.json writes ``.deft_session/soft_kill_request`` — this process
+parks ESTOP. ``--estop-after SEC`` asserts host ESTOP and checks MCU latch.
+Dashboard ``HARD`` + ``COMMS_LOSS`` with host ``mcu_state=0`` means stale PDU
+UART, not GPIO.
 
 ``killall -9`` does not stop CAN — Ctrl-C / ``_tmp_stop_can.py``.
 """
@@ -32,13 +41,21 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 from deft_controls_sdk import ActuatorDesire, LedDesire, McuState, ServoDesire  # noqa: E402
+from deft_controls_sdk.bench.lease import lease  # noqa: E402
 from deft_controls_sdk.bench.soft_dfu import find_cdc_port  # noqa: E402
-from deft_controls_sdk.link.api_types import LED_MODE_IDLE_CORNFLOWER  # noqa: E402
+from deft_controls_sdk.link.api_types import (  # noqa: E402
+    LED_MODE_IDLE_CORNFLOWER,
+    FeedbackImage,
+    PlantBlockReason,
+)
 from deft_controls_sdk.link.exchange import (  # noqa: E402
     ACTUATOR_COUNT,
+    PROBE_RESET,
     SESSION_BEGIN,
     SESSION_END,
+    build_rs2_probe_command,
     build_rs2_scan_command,
+    is_mcp_bus,
     parse_probe_pdu,
     parse_servo_feedback,
 )
@@ -57,6 +74,7 @@ from deft_controls_sdk.vbeta.slots import (  # noqa: E402
     _DAMIAO_MASTER,
 )
 from deft_controls_sdk.vbeta.yam_bench_clear_left import CLEAR_HI, CLEAR_LO  # noqa: E402
+from rs02_channel_bringup import rs02_resolve_start  # noqa: E402
 
 STREAM_HZ = 20.0
 J2 = 1
@@ -85,13 +103,17 @@ RS_KP = 20.0
 RS_KD = 1.0
 DM_BASE_KP = 10.0
 DM_BASE_KD = 0.5
-BASE_AMP = 0.60
-# Constant-rate triangle about live center (RS teleop-style), not a fast sine.
+BASE_AMP = 0.60  # unused in continuous-spin mode (kept for CLI compat)
+# Unidirectional continuous spin (tiny_teleop cruise) — no triangle reverses.
 BASE_RATE = math.pi / 4.0  # rad/s
 RS_P_MIN = -12.57
 RS_P_MAX = 12.57
 RS_MARGIN = 0.35
-BASE_LEAD = 0.55
+BASE_LEAD = 0.45  # max cmd lead over FB (bus lag); never reverses integrator
+# Damiao has no ±12.57 MIT rail — use a soft travel window and bounce so it
+# keeps moving (RS stay unidirectional until the real MIT rail).
+DM_BASE_TRAVEL = 2.0 * math.pi  # ±one turn from seed center
+DM_BASE_MIN_KP = 2.0  # seed floor so MCP enable-latch can fire (kp=0 ⇒ no TX)
 
 # Operator clear (smoke suite), ticks
 DXL_IDS = (NECK_PITCH_DXL_ID, NECK_YAW_DXL_ID)
@@ -141,6 +163,7 @@ def _write_plant(
     arm_kp_scale: float = 1.0,
     arm_kd: float = ARM_KD,
     base_cmd: Optional[Dict[int, float]] = None,
+    base_vel: Optional[Dict[int, float]] = None,
     base_proto: Optional[Dict[int, int]] = None,
     base_gain_scale: float = 1.0,
 ) -> None:
@@ -166,11 +189,18 @@ def _write_plant(
         for slot, pos in base_cmd.items():
             proto = int(base_proto[slot])
             kp, kd = _gains_base(proto)
+            kp_out = float(kp) * bscale
+            kd_out = float(kd) * bscale
+            # MCP Damiao: kp=0 never latches enable (firmware skips TX). Keep a
+            # small floor while seeding so clear/enable + MIT can start.
+            if proto == PROTO_DAMIAO and kp_out < DM_BASE_MIN_KP:
+                kp_out = DM_BASE_MIN_KP
+                kd_out = max(kd_out, DM_BASE_KD * 0.25)
             d[slot] = ActuatorDesire(
                 position=float(pos),
-                velocity=0.0,
-                kp=float(kp) * bscale,
-                kd=float(kd) * bscale,
+                velocity=float((base_vel or {}).get(slot, 0.0)),
+                kp=kp_out,
+                kd=kd_out,
                 torque=0.0,
             )
     session.set_actuators(d, send=False)
@@ -315,32 +345,103 @@ def _read_dxl_fb(session: PcbRobotSession) -> List[Optional[int]]:
     return out
 
 
-def _probe_base(hub) -> Dict[int, float]:
-    found: Dict[int, float] = {}
-    for slot, bus, proto, mid, _master, label in BASE_ROWS:
-        if proto != PROTO_ROBSTRIDE:
-            continue
+def _conn(hub):
+    return hub._connection  # noqa: SLF001
+
+
+def _rs_ids_on_bus(bus: int) -> List[int]:
+    return [
+        mid
+        for _s, b, proto, mid, _m, _lab in BASE_ROWS
+        if b == bus and proto == PROTO_ROBSTRIDE
+    ]
+
+
+def _kick_mcp_buses(hub) -> None:
+    """RS2 SESSION_BEGIN/END on bus 5/6 — wake MCP rings after idle."""
+    hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
+    conn = _conn(hub)
+    for bus in (5, 6):
+        for kind in (SESSION_BEGIN, SESSION_END):
+            try:
+                conn.exchange_raw(
+                    build_rs2_scan_command(0, kind, conn.next_seq(), bus=bus),
+                    parse_probe_pdu,
+                    timeout_s=2.5,
+                    predicate=lambda p, k=kind: p.get("probe_kind") == k,
+                )
+            except Exception as exc:
+                print(f"  kick bus{bus} kind={kind}: {exc}", flush=True)
+
+
+def _rs_reset_id(hub, *, bus: int, motor_id: int) -> None:
+    """Put one RS drive to rest so a daisy-chained sibling can arm."""
+    conn = _conn(hub)
+    timeout_s = 2.0 if is_mcp_bus(bus) else 0.55
+    with lease(conn, hub.telemetry, bus=bus):
+        conn.reader.drain()
+        frame = build_rs2_probe_command(
+            motor_id, PROBE_RESET, conn.next_seq(), bus=bus
+        )
         try:
-            resp = hub.debug.probe_robstride(bus=bus, motor_id=mid)
+            conn.exchange_raw(
+                frame,
+                parse_probe_pdu,
+                timeout_s=timeout_s,
+                predicate=lambda p: p.get("probe_kind") == PROBE_RESET
+                and p.get("probe_id") == (motor_id & 0xFF),
+            )
         except Exception as exc:
-            print(f"  probe {label}: {exc}", flush=True)
-            continue
-        if resp and resp.get("found"):
-            q = float(resp["position"])
-            found[slot] = q
-            print(f"  probe {label} q={q:+.4f}", flush=True)
-        else:
-            print(f"  probe miss {label}", flush=True)
-    try:
-        dm_id = hub.debug.discover_damiao(bus=6, start=1, end=16, listen_ms=80)
-    except Exception as exc:
-        print(f"  CH6 Damiao discover: {exc}", flush=True)
-        dm_id = None
-    if dm_id is not None:
-        print(f"  CH6 Damiao discover id=0x{int(dm_id):02X}", flush=True)
-        mid = int(dm_id)
-        master = (mid + 0x10) & 0xFF
-        with pause_plant_stream(hub):
+            print(f"  reset 0x{motor_id:02X}: {exc}", flush=True)
+
+
+def _probe_base(hub) -> Dict[int, float]:
+    """Kick MCP, rest all RS once, then enable each (multi-motor safe).
+
+    Daisy-chained bus5 (0x70+0x74): a leftover MIT-enabled sibling blocks the
+    peer. Reset *all* RS first, then probe/enable each — do not reset siblings
+    between enables or earlier motors drop out of MIT.
+    """
+    found: Dict[int, float] = {}
+    with pause_plant_stream(hub):
+        _kick_mcp_buses(hub)
+        seen_reset: set = set()
+        for _slot, bus, proto, mid, _master, _label in BASE_ROWS:
+            if proto != PROTO_ROBSTRIDE:
+                continue
+            key = (bus, mid & 0xFF)
+            if key in seen_reset:
+                continue
+            print(f"  rest bus{bus} id=0x{mid:02X}", flush=True)
+            _rs_reset_id(hub, bus=bus, motor_id=mid)
+            seen_reset.add(key)
+            time.sleep(0.05)
+        for slot, bus, proto, mid, _master, label in BASE_ROWS:
+            if proto != PROTO_ROBSTRIDE:
+                continue
+            try:
+                # probe = reset→enable on this id only (siblings stay armed).
+                resp = hub.debug.probe_robstride(bus=bus, motor_id=mid)
+            except Exception as exc:
+                print(f"  probe {label}: {exc}", flush=True)
+                continue
+            if resp and resp.get("found"):
+                q = float(resp["position"])
+                if abs(q) < 1e-6:
+                    q = 1e-6
+                found[slot] = q
+                print(f"  probe {label} q={q:+.4f}", flush=True)
+            else:
+                print(f"  probe miss {label}", flush=True)
+        try:
+            dm_id = hub.debug.discover_damiao(bus=6, start=1, end=16, listen_ms=80)
+        except Exception as exc:
+            print(f"  CH6 Damiao discover: {exc}", flush=True)
+            dm_id = None
+        if dm_id is not None:
+            print(f"  CH6 Damiao discover id=0x{int(dm_id):02X}", flush=True)
+            mid = int(dm_id)
+            master = (mid + 0x10) & 0xFF
             hub.debug.cfg_set_slot(
                 slot=25,
                 bus=6,
@@ -350,11 +451,105 @@ def _probe_base(hub) -> Dict[int, float]:
                 enabled=True,
                 persist=False,
             )
-        if 25 not in found:
-            found[25] = 1e-6
-    else:
-        print("  CH6 Damiao discover miss", flush=True)
+            # Do NOT invent a fake probe pose — Damiao seed must use plant FB
+            # after CFG (discover only proves the ESC is on the bus).
+        else:
+            print("  CH6 Damiao discover miss", flush=True)
+    hub.set_mcu_state(McuState.NORMAL, send=False)
     return found
+
+
+def _plant_gate_line(hub) -> str:
+    """mcu_state / plant_block from latest plant FB (ESTOP respect checks)."""
+    raw = _conn(hub)._latest_fb_raw  # noqa: SLF001
+    if raw is None:
+        try:
+            hub.send_once()
+        except Exception:
+            pass
+        raw = _conn(hub)._latest_fb_raw  # noqa: SLF001
+    if raw is None:
+        return "mcu=? plant_block=?"
+    try:
+        fb = FeedbackImage(raw)
+        mcu = int(fb.mcu_state)
+        pb = int(fb.plant_block)
+        try:
+            pb_name = PlantBlockReason(pb).name
+        except Exception:
+            pb_name = str(pb)
+        mcu_name = {0: "NORMAL", 1: "RECOVERY", 2: "DIAG_ONLY", 3: "ESTOP"}.get(
+            mcu, str(mcu)
+        )
+        return f"mcu={mcu}({mcu_name}) plant_block={pb}({pb_name})"
+    except Exception:
+        return "mcu=? plant_block=?"
+
+
+def _dashboard_soft_kill_requested(hub) -> bool:
+    """True once if debug_dashboard wrote ``soft_kill_request`` (follow mode)."""
+    flag = Path(hub.state_path).parent / "soft_kill_request"
+    if not flag.is_file():
+        return False
+    try:
+        flag.unlink()
+    except Exception:
+        pass
+    return True
+
+
+def _estop_respect_check(
+    session: PcbRobotSession,
+    *,
+    hold_s: float = 2.5,
+) -> Tuple[bool, str]:
+    """Assert host ESTOP and verify MCU latches + base motion freezes."""
+    hub = session.hub
+    before = _read_base(session)
+    print(
+        f"\n== ESTOP respect: host→ESTOP (pre { _plant_gate_line(hub) }) ==",
+        flush=True,
+    )
+    print(f"  base before: {before}", flush=True)
+    hub.set_mcu_state(McuState.ESTOP, send=True)
+    # Keep streaming so FB/plant_block update; desires cleared by set_mcu_state.
+    t_end = time.perf_counter() + hold_s
+    samples: List[Dict[int, float]] = []
+    gate_hits = 0
+    while time.perf_counter() < t_end:
+        try:
+            session.send_once()
+        except Exception:
+            pass
+        time.sleep(0.05)
+        samples.append(_read_base(session))
+        line = _plant_gate_line(hub)
+        if "ESTOP" in line or "plant_block=" in line:
+            # Count samples that show ESTOP on mcu readback.
+            if "mcu=3" in line or "ESTOP" in line:
+                gate_hits += 1
+        if len(samples) % 10 == 0:
+            print(f"  … {line} base={samples[-1]}", flush=True)
+
+    after = samples[-1] if samples else {}
+    gate = _plant_gate_line(hub)
+    # Freeze: each known slot moved < 0.15 rad while ESTOP held.
+    moved = []
+    for s, q0 in before.items():
+        q1 = after.get(s)
+        if q1 is not None:
+            moved.append(abs(float(q1) - float(q0)))
+    max_move = max(moved) if moved else 0.0
+    mcu_ok = gate_hits >= 3 or "mcu=3" in gate or "ESTOP" in gate
+    freeze_ok = max_move < 0.20
+    ok = mcu_ok and freeze_ok
+    msg = (
+        f"{'PASS' if ok else 'FAIL'} {gate} max_base_move={max_move:.3f} "
+        f"estop_samples={gate_hits}/{len(samples)}"
+    )
+    print(f"  {msg}", flush=True)
+    print(f"  base after: {after}", flush=True)
+    return ok, msg
 
 
 def _cleanup(session: PcbRobotSession) -> None:
@@ -401,6 +596,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--dxl-cruise", type=float, default=DXL_CRUISE_TICK_S)
     ap.add_argument("--no-base", action="store_true")
     ap.add_argument("--no-dxl", action="store_true")
+    ap.add_argument(
+        "--record",
+        action="store_true",
+        help="NDJSON feedback recording under .deft_session/recordings/",
+    )
+    ap.add_argument(
+        "--duration",
+        type=float,
+        default=0.0,
+        help="Stop after N seconds of cruise (0=until Ctrl-C)",
+    )
+    ap.add_argument(
+        "--estop-after",
+        type=float,
+        default=0.0,
+        help="After N seconds of cruise, assert host ESTOP and verify MCU latch",
+    )
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     port = args.port or find_cdc_port()
@@ -423,6 +635,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     signal.signal(signal.SIGINT, _sig)
     signal.signal(signal.SIGTERM, _sig)
 
+    record_path: Optional[Path] = None
+    estop_ok: Optional[bool] = None
     with PcbRobotSession.connect(
         port,
         apply_yam_cfg=False,
@@ -433,6 +647,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         hub = session.hub
         hub.set_rx_sim_mask(0)
         print(f"telemetry -> {hub.state_path} (dashboard: do not Connect COM)", flush=True)
+        if args.record:
+            record_path = hub.telemetry.start_recording()
+            print(f"recording -> {record_path}", flush=True)
 
         print("\n== KICK + DISCOVER (need ESC 0x02) ==", flush=True)
         j2_ok = False
@@ -466,15 +683,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         q0 = np.zeros(7, dtype=np.float32)
         armed: set = set()
-        for i in range(7):
-            if stop["flag"]:
-                break
-            armed.add(i)
-            _cfg_arm_slots(hub, armed)
-            hub.set_mcu_state(McuState.NORMAL, send=True)
-            # Idle-anchor at live FB only (kd light) — never dwell Goal=0.
-            t_seed = time.perf_counter() + 0.8
-            while time.perf_counter() < t_seed:
+
+        def _seed_hold(secs: float) -> None:
+            t_end = time.perf_counter() + secs
+            while time.perf_counter() < t_end:
                 fb = _read_arm(session)
                 if fb is not None:
                     for s in armed:
@@ -487,11 +699,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     )
                 session.set_actuators(desires, send=False)
                 time.sleep(0.05)
+
+        def _latch_armed(*, ramp_s: float, hold_s: float) -> bool:
             ok = False
             t0_latch = time.perf_counter()
-            t_latch_end = t0_latch + LATCH_RAMP_S + LATCH_HOLD_S
+            t_latch_end = t0_latch + ramp_s + hold_s
             while time.perf_counter() < t_latch_end:
-                # Keep Goal glued to FB while gains come up (no chase/home).
                 fb = _read_arm(session)
                 if fb is not None:
                     for s in armed:
@@ -501,7 +714,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                 if abs(q0[s]) > 1e-3
                                 else float(fb[s])
                             )
-                u = (time.perf_counter() - t0_latch) / max(LATCH_RAMP_S, 1e-3)
+                u = (time.perf_counter() - t0_latch) / max(ramp_s, 1e-3)
                 s_gain = min(1.0, max(0.0, u))
                 s_gain = s_gain * s_gain * (3.0 - 2.0 * s_gain)
                 desires = _blank()
@@ -515,15 +728,69 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 session.set_actuators(desires, send=False)
                 faults = _arm_faults(session)
                 if (
-                    time.perf_counter() >= t0_latch + LATCH_RAMP_S
+                    time.perf_counter() >= t0_latch + ramp_s
                     and all(faults[s] == 1 for s in armed)
                 ):
                     ok = True
                     break
                 time.sleep(0.05)
-            print(
-                f"  armed={sorted(armed)} faults={_arm_faults(session)} ok={ok}",
-                flush=True,
+            return ok
+
+        def _recover_rearm() -> None:
+            """Blank + hub.recover (disable/reset latches) then re-CFG armed set."""
+            hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
+            session.set_actuators(_blank(), send=False)
+            time.sleep(0.15)
+            try:
+                hub.recover()
+            except Exception as exc:
+                print(f"  recover warn: {exc}", flush=True)
+            time.sleep(0.25)
+            _cfg_arm_slots(hub, armed)
+            hub.set_mcu_state(McuState.NORMAL, send=True)
+            _seed_hold(0.6)
+
+        for i in range(7):
+            if stop["flag"]:
+                break
+            # J4 (index 3) often needs an extra enable latch after siblings are live.
+            attempts = 3 if i == 3 else 2
+            ok = False
+            for attempt in range(attempts):
+                armed.add(i)
+                _cfg_arm_slots(hub, armed)
+                hub.set_mcu_state(McuState.NORMAL, send=True)
+                _seed_hold(0.8)
+                ramp = LATCH_RAMP_S + (0.6 if i == 3 else 0.0)
+                hold = LATCH_HOLD_S + (0.8 if i == 3 else 0.0)
+                ok = _latch_armed(ramp_s=ramp, hold_s=hold)
+                print(
+                    f"  armed={sorted(armed)} faults={_arm_faults(session)} "
+                    f"ok={ok} try={attempt + 1}/{attempts}",
+                    flush=True,
+                )
+                if ok:
+                    break
+                print(f"  J{i + 1} not green — recover + re-arm", flush=True)
+                _recover_rearm()
+            if not ok:
+                print(
+                    f"WARN: J{i + 1} still not MIT-green after {attempts} tries",
+                    flush=True,
+                )
+
+        # Final pass: re-latch any still-dark joints (esp. J4) before continuous.
+        for pass_i in range(2):
+            faults = _arm_faults(session)
+            bad = [s for s in range(7) if faults[s] != 1]
+            if not bad or stop["flag"]:
+                break
+            print(f"  final green pass {pass_i + 1}: retry {bad}", flush=True)
+            armed = set(range(7))
+            _recover_rearm()
+            _latch_armed(
+                ramp_s=LATCH_RAMP_S + 0.8,
+                hold_s=LATCH_HOLD_S + 1.0,
             )
 
         # Final freeze at present — this is the continuous home, not zero.
@@ -605,13 +872,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         base_dirs: Dict[int, float] = {}
         probe_q: Dict[int, float] = {}
         if with_base:
-            print("\n== BASE CFG + SOFT SEED (no hard DIAG snap) ==", flush=True)
+            print("\n== BASE CFG + SOFT SEED (sibling-reset arm) ==", flush=True)
             # Keep arm at soft latch gains; CFG base without yanking mcu_state.
             _write_plant(session, q0, arm_kp_scale=LATCH_KP_SCALE)
             _cfg_base_on(hub)
-            # Brief DIAG only for RS enable/probe (arm desires stay soft-held).
+            # Brief DIAG for MCP kick + RS enable/probe (arm desires soft-held).
             hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
-            time.sleep(0.15)
+            time.sleep(0.10)
             probe_q = _probe_base(hub)
             hub.set_mcu_state(McuState.NORMAL, send=True)
             for slot, q in probe_q.items():
@@ -619,6 +886,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 base_center[slot] = float(q)
                 base_cmd[slot] = float(q)
                 base_dirs[slot] = 1.0 if ((slot - 22) % 2 == 0) else -1.0
+            # Damiao: no RS probe — warm plant FB after CFG before seeding.
+            t_dm = time.perf_counter() + 0.6
+            while time.perf_counter() < t_dm:
+                seed_dm = {
+                    s: (
+                        float(base_center[s])
+                        if s in base_center and abs(base_center[s]) > 1e-6
+                        else 1e-6
+                    )
+                    for s in BASE_SLOTS
+                }
+                # Hold RS idle; give Damiao min kp so enable latch can fire.
+                _write_plant(
+                    session,
+                    q0,
+                    arm_kp_scale=LATCH_KP_SCALE,
+                    base_cmd=seed_dm,
+                    base_proto=base_proto,
+                    base_gain_scale=0.0,
+                )
+                live0 = _read_base(session)
+                if 25 in live0:
+                    qdm = float(live0[25])
+                    if abs(qdm) < 1e-6:
+                        qdm = 1e-6
+                    base_center[25] = qdm
+                    base_cmd[25] = qdm
+                    base_dirs.setdefault(25, 1.0)
+                time.sleep(0.05)
+            if 25 in base_center:
+                print(f"  Damiao plant seed s25={base_center[25]:+.4f}", flush=True)
+            else:
+                print("  WARN: no plant FB for CH6 Damiao yet", flush=True)
             t_base = time.perf_counter() + 2.0
             while time.perf_counter() < t_base:
                 fb = _read_arm(session)
@@ -641,23 +941,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     arm_kp_scale=LATCH_KP_SCALE,
                     base_cmd=seed,
                     base_proto=base_proto,
-                    base_gain_scale=0.0,  # idle-anchored RS until soft-engage
+                    base_gain_scale=0.0,  # RS idle; Damiao gets DM_BASE_MIN_KP floor
                 )
                 if with_dxl and dxl_cmd is not None:
                     _write_dxl(session, dxl_cmd, torque=True)
                 live = _read_base(session)
-                for slot, q in live.items():
-                    pq = probe_q.get(slot)
+                for slot in BASE_SLOTS:
+                    plant = live.get(slot)
+                    proto = base_proto[slot]
+                    if proto == PROTO_DAMIAO:
+                        # Plant FB only — never a fake discover placeholder.
+                        if plant is None:
+                            continue
+                        resolved = float(plant)
+                    else:
+                        resolved = rs02_resolve_start(probe_q.get(slot), plant)
+                    if resolved is None:
+                        continue
+                    if abs(resolved) < 1e-6:
+                        resolved = 1e-6
                     if slot not in base_center:
-                        base_center[slot] = q
                         base_dirs.setdefault(
                             slot, 1.0 if ((slot - 22) % 2 == 0) else -1.0
                         )
-                    elif pq is not None and abs(q - pq) > 0.5 and abs(pq) > 1e-3:
-                        base_center[slot] = float(pq)
-                    else:
-                        base_center[slot] = q
-                    base_cmd[slot] = base_center[slot]
+                    base_center[slot] = float(resolved)
+                    base_cmd[slot] = float(resolved)
                 time.sleep(0.05)
             print(
                 "base centers: "
@@ -714,64 +1022,129 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if fb0 is not None:
             arm_cmd = fb0.copy()
         arm_cmd[J2] = float(np.clip(float(arm_cmd[J2]), j2_lo, j2_hi))
-        # Prefer starting toward the nearer CLEAR end, then bounce.
-        targets = [j2_hi, j2_lo]
-        if abs(arm_cmd[J2] - j2_lo) < abs(arm_cmd[J2] - j2_hi):
-            targets = [j2_lo, j2_hi]
-        tgt_i = 0
+        # Persistent direction bounce (no skip/flip-flop on unreachable CLEAR ends).
+        # aim_lo/hi start at full CLEAR; only shrink when a leg is stuck.
+        j2_dir = -1.0 if abs(float(arm_cmd[J2]) - j2_lo) >= abs(
+            float(arm_cmd[J2]) - j2_hi
+        ) else 1.0
+        aim_lo = float(j2_lo)
+        aim_hi = float(j2_hi)
         last_status = time.perf_counter()
+        last_reverse = 0.0
+        reverse_anchor = float(arm_cmd[J2])
         dt_nom = 1.0 / max(float(args.stream_hz), 1.0)
-        ARRIVE_EPS = 0.08  # rad — turn around near target / when stuck
-        STUCK_S = 2.5
+        ARRIVE_EPS = 0.10  # rad — FB near bound before reverse
+        HYST = 0.15  # rad — min travel before arrive-reverse
+        STUCK_S = 3.5
+        MIN_REVERSE_S = 1.0  # debounce direction flips
+
+        def _bw_pdb_line() -> str:
+            """USB stream health + PDU kill mirror (estop_sense / COMMS_LOSS)."""
+            st = hub.telemetry.snapshot()
+            fb_hz = st.fb_hz
+            tx_hz = st.stream_tx_hz
+            ack = st.stream_ack_lag
+            gap = st.stream_tx_gap_p95_ms
+            parts = [
+                f"fb={fb_hz:.0f}" if fb_hz is not None else "fb=?",
+                f"tx={tx_hz:.0f}" if tx_hz is not None else "tx=?",
+                f"ack={ack}" if ack is not None else "ack=?",
+                f"gap95={gap:.1f}ms" if gap is not None else "gap95=?",
+            ]
+            pdb = hub.pdb_status()
+            if pdb is None:
+                parts.append("pdb=?")
+            else:
+                tag = pdb.kill_state_name
+                if pdb.stale_failsafe:
+                    tag += "/COMMS_LOSS"
+                parts.append(
+                    f"pdb={tag} estop_gpio={pdb.estop_sense} "
+                    f"reason={pdb.kill_reason_name}"
+                )
+            return " ".join(parts)
+
+        base_vel: Dict[int, float] = {}
+        base_integ: Dict[int, float] = {
+            s: float(base_cmd.get(s, base_center.get(s, 0.0))) for s in base_center
+        }
+
+        def _spin_sign_for(slot: int, q: float, proto: int) -> float:
+            """Pick initial sign with more travel room from live FB."""
+            if proto == PROTO_ROBSTRIDE:
+                lo, hi = RS_P_MIN + RS_MARGIN, RS_P_MAX - RS_MARGIN
+            else:
+                c0 = float(base_center.get(slot, q))
+                lo, hi = c0 - DM_BASE_TRAVEL, c0 + DM_BASE_TRAVEL
+            return 1.0 if (hi - q) >= (q - lo) else -1.0
+
+        # Initial signs from room; reverse only when the *integrator* hits a
+        # rail (not FB-lag mid-travel — that was the old triangle flip-flop).
+        for slot in list(base_center):
+            q0b = float(base_integ.get(slot, base_center[slot]))
+            base_dirs[slot] = _spin_sign_for(slot, q0b, base_proto[slot])
 
         def _tick_base_and_dxl() -> Dict[int, float]:
-            """Advance base triangle + DXL; never blank RS (re-seed if lagging)."""
+            """Base spin + DXL. Bounce at RS MIT rails / Damiao ±2π window."""
             live = _read_base(session)
             for slot, q in live.items():
-                if slot not in base_center:
-                    base_center[slot] = q
+                if slot not in base_integ:
+                    base_integ[slot] = q
                     base_cmd[slot] = q
-                    base_dirs[slot] = 1.0 if ((slot - 22) % 2 == 0) else -1.0
-                    print(f"  base slot{slot} live FB={q:+.3f}", flush=True)
-                # Slow center track only when near cmd (avoid dragging center while lagging).
-                if abs(float(base_cmd.get(slot, q)) - q) < BASE_LEAD * 0.8:
-                    base_center[slot] = 0.99 * base_center[slot] + 0.01 * q
+                    base_center[slot] = q
+                    base_dirs[slot] = _spin_sign_for(slot, q, base_proto[slot])
+                    print(f"  base slot{slot} live FB={q:+.3f} (spin dir={base_dirs[slot]:+.0f})", flush=True)
             tick_base: Dict[int, float] = {}
-            for slot, center in base_center.items():
+            for slot, integ in list(base_integ.items()):
                 proto = base_proto[slot]
-                amp = _amp_for_center(center, float(args.base_amp), proto=proto)
-                if amp < 1e-3:
-                    desire = _rail_clip(center, proto=proto)
-                    if abs(desire) < 1e-6:
-                        desire = 1e-6
-                    tick_base[slot] = desire
-                    base_cmd[slot] = desire
-                    continue
-                d = base_dirs.get(slot, 1.0)
-                cmd = float(base_cmd.get(slot, center))
-                cmd = cmd + d * base_rate * dt_nom
-                lo, hi = center - amp, center + amp
-                if cmd >= hi:
-                    cmd = hi
-                    base_dirs[slot] = -1.0
-                elif cmd <= lo:
-                    cmd = lo
-                    base_dirs[slot] = 1.0
-                desire = _rail_clip(cmd, proto=proto)
+                sign = float(base_dirs.get(slot, 1.0))
+                if proto == PROTO_ROBSTRIDE:
+                    lo, hi = RS_P_MIN + RS_MARGIN, RS_P_MAX - RS_MARGIN
+                else:
+                    c0 = float(base_center.get(slot, integ))
+                    lo, hi = c0 - DM_BASE_TRAVEL, c0 + DM_BASE_TRAVEL
+
+                cmd = float(integ) + sign * base_rate * dt_nom
                 fb_q = live.get(slot)
+                at_rail = False
+                if sign > 0 and cmd >= hi:
+                    cmd = hi
+                    at_rail = True
+                elif sign < 0 and cmd <= lo:
+                    cmd = lo
+                    at_rail = True
+
+                # Reverse at rail so RS don't soft-hold forever after first leg.
+                if at_rail:
+                    sign = -sign
+                    base_dirs[slot] = sign
+                    cmd = float(integ) + sign * base_rate * dt_nom
+                    cmd = float(min(hi, max(lo, cmd)))
+                    at_rail = False
+
+                # Integrator always tracks planned cmd (not lead-clamped desire).
+                base_integ[slot] = cmd
+                desire = _rail_clip(cmd, proto=proto) if proto == PROTO_ROBSTRIDE else float(cmd)
+                vel = sign * base_rate
                 if fb_q is not None:
                     err = desire - fb_q
+                    # Cap lead in travel direction only — never pull opposite.
                     if abs(err) > BASE_LEAD:
-                        # Don't accumulate unreachable lead — walk from FB.
-                        desire = fb_q + math.copysign(BASE_LEAD, err)
-                        desire = _rail_clip(desire, proto=proto)
-                        base_cmd[slot] = desire
-                    else:
-                        base_cmd[slot] = desire
-                else:
-                    base_cmd[slot] = desire
+                        if err * sign > 0:
+                            desire = fb_q + sign * BASE_LEAD
+                        else:
+                            desire = fb_q
+                        desire = (
+                            _rail_clip(desire, proto=proto)
+                            if proto == PROTO_ROBSTRIDE
+                            else float(desire)
+                        )
+                    if abs(desire - fb_q) > BASE_LEAD * 0.85:
+                        vel = sign * base_rate * 0.5
                 if abs(desire) < 1e-6:
                     desire = 1e-6
+                base_cmd[slot] = desire
+                base_vel[slot] = vel
                 tick_base[slot] = desire
             if with_dxl and dxl_cmd is not None:
                 for i in range(2):
@@ -794,152 +1167,213 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return tick_base
 
         print(
-            "\n== J2 CLEAR + brace J1/J3-7 + DXL + base (Ctrl-C cleans) ==",
+            "\n== J2 CLEAR + brace J1/J3-7 + DXL + base spin (Ctrl-C cleans) ==",
             flush=True,
         )
+        print(
+            f"  J2 dir={j2_dir:+.0f} start={float(arm_cmd[J2]):+.3f} "
+            f"CLEAR=[{j2_lo:+.3f},{j2_hi:+.3f}] (hysteresis bounce)",
+            flush=True,
+        )
+        print(
+            "  base: continuous spin (reverse at MIT/soft rail only) "
+            + " ".join(
+                f"s{s}={base_dirs.get(s, 0):+.0f}" for s in sorted(base_dirs)
+            ),
+            flush=True,
+        )
+        print(f"  stream/pdb: {_bw_pdb_line()}", flush=True)
+        if float(args.duration) > 0:
+            print(f"  duration={float(args.duration):.1f}s", flush=True)
+        if float(args.estop_after) > 0:
+            print(
+                f"  estop-after={float(args.estop_after):.1f}s "
+                f"(host ESTOP respect check)",
+                flush=True,
+            )
         try:
+            t_leg = time.perf_counter()
+            t_cruise0 = t_leg
+            last_progress = t_leg
+            last_fb_j2 = float(arm_cmd[J2])
             while not stop["flag"]:
-                target = float(targets[tgt_i])
-                # Always start from live FB — never from an unreachable CLEAR end.
+                # Soft-kill is also hooked on plant TX; tick here for observability.
+                if session.service_soft_kill():
+                    print("  SOFT_KILL_REQ → parked ESTOP", flush=True)
+                    stop["flag"] = True
+                    break
+                if _dashboard_soft_kill_requested(hub):
+                    print("  dashboard soft_kill_request → soft_kill_park()", flush=True)
+                    try:
+                        hub.soft_kill_park(send=True)
+                    except Exception as exc:
+                        print(f"  soft_kill_park failed: {exc}", flush=True)
+                        hub.set_mcu_state(McuState.ESTOP, send=True)
+                    stop["flag"] = True
+                    break
+
+                now = time.perf_counter()
+                cruise_s = now - t_cruise0
+                if float(args.estop_after) > 0 and cruise_s >= float(args.estop_after):
+                    ok, _msg = _estop_respect_check(session, hold_s=2.5)
+                    estop_ok = ok
+                    stop["flag"] = True
+                    break
+                if float(args.duration) > 0 and cruise_s >= float(args.duration):
+                    print(f"  duration reached ({cruise_s:.1f}s) — stop", flush=True)
+                    stop["flag"] = True
+                    break
                 fb_arm = _read_arm(session)
+                fb_j2 = float(fb_arm[J2]) if fb_arm is not None else float(arm_cmd[J2])
+
+                # Full CLEAR ends unless a prior stuck shrunk aim_lo/aim_hi.
+                target = aim_lo if j2_dir < 0 else aim_hi
+                cruise = (
+                    float(args.cruise_down) if j2_dir < 0 else float(args.cruise_up)
+                )
+
+                # Rate-limit toward target from cmd, glued near FB.
+                step = math.copysign(
+                    min(abs(cruise) * dt_nom, abs(target - float(arm_cmd[J2]))),
+                    target - float(arm_cmd[J2]),
+                )
+                j2_cmd = float(arm_cmd[J2]) + step
+                j2_cmd = float(np.clip(j2_cmd, j2_lo, j2_hi))
+                j2_cmd = _lead_clamp(j2_cmd, fb_j2)
+                j2_dq = float(step / max(dt_nom, 1e-3))
+
                 if fb_arm is not None:
                     for i in range(7):
-                        if abs(float(fb_arm[i])) > 1e-3:
-                            arm_cmd[i] = float(fb_arm[i])
-                start = float(arm_cmd[J2])
-                delta = target - start
-                cruise = (
-                    float(args.cruise_down) if delta < 0 else float(args.cruise_up)
+                        if i == J2:
+                            continue
+                        arm_cmd[i] = (
+                            0.98 * float(arm_cmd[i]) + 0.02 * float(fb_arm[i])
+                        )
+                arm_cmd[J2] = j2_cmd
+                arm_dq = np.zeros(7, dtype=np.float32)
+                arm_dq[J2] = j2_dq
+
+                tick_base = _tick_base_and_dxl()
+                _write_plant(
+                    session,
+                    arm_cmd,
+                    arm_dq=arm_dq,
+                    arm_kp_scale=1.0,
+                    base_cmd=tick_base if tick_base else None,
+                    base_vel=dict(base_vel) if tick_base else None,
+                    base_proto=base_proto if tick_base else None,
+                    base_gain_scale=1.0,
                 )
-                if abs(delta) < ARRIVE_EPS:
-                    print(
-                        f"  J2 already at {start:+.3f} (~target {target:+.3f}) — skip",
-                        flush=True,
-                    )
-                    tgt_i = 1 - tgt_i
-                    continue
-                print(
-                    f"  J2 {start:+.3f} -> {target:+.3f} @ {cruise:.3f} rad/s "
-                    f"(rate-limit + lead, no end snap) "
-                    f"base={sorted(base_cmd)} dxl={dxl_cmd is not None}",
-                    flush=True,
+
+                # Progress vs last sample (stuck detector). Ignore tiny FB noise.
+                if abs(fb_j2 - last_fb_j2) > 0.025:
+                    last_progress = now
+                    last_fb_j2 = fb_j2
+                traveled = abs(fb_j2 - reverse_anchor)
+                debounced = (now - last_reverse) >= MIN_REVERSE_S or last_reverse == 0.0
+                arrived = abs(fb_j2 - target) <= ARRIVE_EPS
+                stuck = (now - last_progress) >= STUCK_S and abs(
+                    fb_j2 - target
+                ) > ARRIVE_EPS
+                # Arrive needs travel hysteresis; stuck may reverse without it.
+                do_arrive = arrived and debounced and (
+                    traveled >= HYST or last_reverse == 0.0
                 )
-                t_leg = time.perf_counter()
-                last_progress = t_leg
-                last_fb_j2 = start
-                while not stop["flag"]:
-                    now = time.perf_counter()
-                    fb_arm = _read_arm(session)
-                    fb_j2 = float(fb_arm[J2]) if fb_arm is not None else float(arm_cmd[J2])
-                    # Rate-limit toward target from *current cmd*, glued near FB.
-                    step = math.copysign(
-                        min(abs(cruise) * dt_nom, abs(target - float(arm_cmd[J2]))),
-                        target - float(arm_cmd[J2]),
-                    )
-                    j2_cmd = float(arm_cmd[J2]) + step
-                    j2_cmd = float(np.clip(j2_cmd, j2_lo, j2_hi))
-                    j2_cmd = _lead_clamp(j2_cmd, fb_j2)
-                    j2_dq = float(step / max(dt_nom, 1e-3))
-
-                    if fb_arm is not None:
-                        for i in range(7):
-                            if i == J2:
-                                continue
-                            arm_cmd[i] = (
-                                0.98 * float(arm_cmd[i]) + 0.02 * float(fb_arm[i])
-                            )
-                    arm_cmd[J2] = j2_cmd
-                    arm_dq = np.zeros(7, dtype=np.float32)
-                    arm_dq[J2] = j2_dq
-
-                    tick_base = _tick_base_and_dxl()
-                    _write_plant(
-                        session,
-                        arm_cmd,
-                        arm_dq=arm_dq,
-                        arm_kp_scale=1.0,
-                        base_cmd=tick_base if tick_base else None,
-                        base_proto=base_proto if tick_base else None,
-                        base_gain_scale=1.0,
-                    )
-
-                    # Arrive on FB near target, or turn around if stuck (no snap).
-                    if abs(fb_j2 - target) <= ARRIVE_EPS:
+                do_stuck = stuck and debounced
+                if do_arrive or do_stuck:
+                    if do_stuck:
+                        if j2_dir < 0:
+                            aim_lo = max(j2_lo, min(fb_j2, aim_hi - 0.25))
+                        else:
+                            aim_hi = min(j2_hi, max(fb_j2, aim_lo + 0.25))
                         print(
-                            f"  J2 arrived fb={fb_j2:+.3f} target={target:+.3f}",
+                            f"  J2 reverse stuck fb={fb_j2:+.3f} "
+                            f"(wanted {target:+.3f}) aim=[{aim_lo:+.3f},{aim_hi:+.3f}]",
                             flush=True,
                         )
-                        break
-                    if abs(fb_j2 - last_fb_j2) > 0.01:
-                        last_progress = now
-                        last_fb_j2 = fb_j2
-                    elif (now - last_progress) >= STUCK_S:
+                    else:
                         print(
-                            f"  J2 stuck fb={fb_j2:+.3f} (wanted {target:+.3f}) — reverse",
+                            f"  J2 reverse arrived fb={fb_j2:+.3f} target={target:+.3f}",
                             flush=True,
                         )
-                        break
-                    # Safety cap on leg duration
-                    if (now - t_leg) > max(25.0, abs(delta) / max(cruise, 1e-3) * 2.5):
-                        print(f"  J2 leg timeout fb={fb_j2:+.3f} — reverse", flush=True)
-                        break
-
-                    if (now - last_status) >= float(args.status_s):
-                        r = _read_arm_detail(session, J2)
-                        faults = _arm_faults(session)
-                        live = _read_base(session)
-                        btxt = " ".join(
-                            f"s{s}={tick_base.get(s, float('nan')):+.2f}/"
-                            f"{live.get(s, float('nan')):+.2f}"
-                            for s in BASE_SLOTS
-                            if s in tick_base or s in live
+                    j2_dir = -j2_dir
+                    last_reverse = now
+                    last_progress = now
+                    reverse_anchor = fb_j2
+                    last_fb_j2 = fb_j2
+                    # Brief soft dwell at live pose (keep base/DXL moving).
+                    dwell_end = now + 0.35
+                    while time.perf_counter() < dwell_end and not stop["flag"]:
+                        session.service_soft_kill()
+                        fb_arm = _read_arm(session)
+                        if fb_arm is not None:
+                            for i in range(7):
+                                arm_cmd[i] = (
+                                    0.9 * float(arm_cmd[i]) + 0.1 * float(fb_arm[i])
+                                )
+                        tick_base = _tick_base_and_dxl()
+                        _write_plant(
+                            session,
+                            arm_cmd,
+                            arm_kp_scale=1.0,
+                            base_cmd=tick_base if tick_base else None,
+                            base_vel=dict(base_vel) if tick_base else None,
+                            base_proto=base_proto if tick_base else None,
                         )
-                        dtxt = ""
-                        if with_dxl and dxl_cmd is not None:
-                            dfb = _read_dxl_fb(session)
-                            dtxt = (
-                                f" dxl={int(dxl_cmd[0])}/{dfb[0]}|"
-                                f"{int(dxl_cmd[1])}/{dfb[1]}"
-                            )
-                        if r:
-                            print(
-                                f"  J2 cmd/fb={arm_cmd[J2]:+.3f}/{r[0]:+.3f} "
-                                f"tau={r[2]:+.2f} faults={faults} | {btxt}{dtxt}",
-                                flush=True,
-                            )
-                            if (r[3] & 0xF) >= 8:
-                                print("FAIL J2 hard fault — stop", flush=True)
-                                stop["flag"] = True
-                                break
-                        last_status = now
-                    time.sleep(dt_nom)
+                        time.sleep(dt_nom)
+                    last_fb_j2 = float(arm_cmd[J2])
 
-                # Soft dwell at *live* pose — never force CLEAR endpoint.
-                fb_arm = _read_arm(session)
-                if fb_arm is not None:
-                    arm_cmd = fb_arm.copy()
-                dwell_end = time.perf_counter() + 0.5
-                while time.perf_counter() < dwell_end and not stop["flag"]:
-                    fb_arm = _read_arm(session)
-                    if fb_arm is not None:
-                        for i in range(7):
-                            arm_cmd[i] = (
-                                0.9 * float(arm_cmd[i]) + 0.1 * float(fb_arm[i])
-                            )
-                    tick_base = _tick_base_and_dxl()
-                    _write_plant(
-                        session,
-                        arm_cmd,
-                        arm_kp_scale=1.0,
-                        base_cmd=tick_base if tick_base else None,
-                        base_proto=base_proto if tick_base else None,
+                if (now - last_status) >= float(args.status_s):
+                    r = _read_arm_detail(session, J2)
+                    faults = _arm_faults(session)
+                    live = _read_base(session)
+                    btxt = " ".join(
+                        f"s{s}={tick_base.get(s, float('nan')):+.2f}/"
+                        f"{live.get(s, float('nan')):+.2f}"
+                        f"@{base_vel.get(s, 0):+.2f}"
+                        for s in BASE_SLOTS
+                        if s in tick_base or s in live
                     )
-                    time.sleep(dt_nom)
-                tgt_i = 1 - tgt_i
+                    dtxt = ""
+                    if with_dxl and dxl_cmd is not None:
+                        dfb = _read_dxl_fb(session)
+                        dtxt = (
+                            f" dxl={int(dxl_cmd[0])}/{dfb[0]}|"
+                            f"{int(dxl_cmd[1])}/{dfb[1]}"
+                        )
+                    bw = _bw_pdb_line()
+                    if r:
+                        print(
+                            f"  J2 dir={j2_dir:+.0f} cmd/fb={arm_cmd[J2]:+.3f}/"
+                            f"{r[0]:+.3f} tau={r[2]:+.2f} faults={faults} | "
+                            f"{btxt}{dtxt} | {bw}",
+                            flush=True,
+                        )
+                        if (r[3] & 0xF) >= 8:
+                            print("FAIL J2 hard fault — stop", flush=True)
+                            stop["flag"] = True
+                            break
+                    else:
+                        print(f"  status | {bw}", flush=True)
+                    if args.record:
+                        try:
+                            hub.log_feedback()
+                        except Exception:
+                            pass
+                    last_status = now
+                time.sleep(dt_nom)
         finally:
+            if args.record:
+                try:
+                    hub.telemetry.stop_recording()
+                    print(f"recording stopped: {record_path}", flush=True)
+                except Exception as exc:
+                    print(f"recording stop warning: {exc}", flush=True)
             _cleanup(session)
 
     print("done", flush=True)
+    if estop_ok is False:
+        return 2
     return 0
 
 

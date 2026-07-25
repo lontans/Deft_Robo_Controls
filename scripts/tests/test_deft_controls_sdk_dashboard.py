@@ -143,11 +143,18 @@ def test_state_exposes_pdb_status_from_telemetry(server) -> None:
     assert data["mcu_state"] == 3  # dashboard derives "host requested ESTOP" from this
 
 
-def test_soft_kill_park_without_connection_fails_cleanly(server) -> None:
-    _state, base = server
+def test_soft_kill_park_without_connection_writes_peer_request(server) -> None:
+    """Follow mode: Soft-kill Park signals the CDC owner via a flag file."""
+    state, base = server
+    flag = state.soft_kill_request_path()
+    if flag.is_file():
+        flag.unlink()
     status, data = _post(base, "/api/pdb/soft_kill_park")
-    assert status == 400
-    assert "not connected" in data["error"]
+    assert status == 200
+    assert data.get("ok") is True
+    assert data.get("mode") == "peer_request"
+    assert flag.is_file()
+    flag.unlink(missing_ok=True)
 
 
 def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
@@ -176,7 +183,9 @@ def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
     state, base = server
     state.connect("COM5")
     status, data = _post(base, "/api/pdb/soft_kill_park")
-    assert status == 200 and data == {"ok": True}
+    assert status == 200
+    assert data.get("ok") is True
+    assert data.get("mode") == "direct"
     assert fake.parked is True
 
 

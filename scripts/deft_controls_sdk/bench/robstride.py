@@ -168,11 +168,14 @@ def probe(
     mcp = is_mcp_bus(bus)
     # MCP: firmware enable listen ~420 ms + blocking SPI TX; keep ≥2 s like discover.
     enable_timeout_s = _mcp_discover_timeout(timeout_s) if mcp else timeout_s
+    reset_timeout_s = _mcp_discover_timeout(0.45) if mcp else 0.45
     with lease(connection, telemetry, bus=bus):
         if telemetry is not None:
             telemetry.set_connected(True, mode="discover")
-        if not mcp:
-            _send_diag(connection, motor_id, PROBE_RESET, 0.45, bus=bus)
+        # Always reset→enable. Skipping reset on MCP left a daisy-chained sibling
+        # (e.g. 0x70) in MIT-enabled state so 0x74 never actually armed.
+        _send_diag(connection, motor_id, PROBE_RESET, reset_timeout_s, bus=bus)
+        time.sleep(0.05)
         resp = _send_diag(connection, motor_id, PROBE_ENABLE_ONLY, enable_timeout_s, bus=bus)
         if resp is None:
             print(f"MISS  id=0x{motor_id:02X}")

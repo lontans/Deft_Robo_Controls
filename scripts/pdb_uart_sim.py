@@ -510,10 +510,12 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--port", required=True, help="Jetson-side UART device (NOT Controls' COM5)")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--hz", type=float, default=20.0, help="PDBF feedback TX rate")
-    ap.add_argument("--pack-v", nargs=4, type=int, default=[4800, 4800, 0, 0], metavar=("V0", "V1", "V2", "V3"))
+    ap.add_argument("--pack-v", nargs=4, type=int, default=[4800, 4800, 4800, 4800], metavar=("V0", "V1", "V2", "V3"))
     ap.add_argument("--rail-v", nargs=4, type=int, default=[4800, 1900, 1200, 500], metavar=("V0", "V1", "V2", "V3"))
-    ap.add_argument("--pack-i", nargs=4, type=int, default=[0, 0, 0, 0], metavar=("I0", "I1", "I2", "I3"))
-    ap.add_argument("--rail-i", nargs=4, type=int, default=[0, 0, 0, 0], metavar=("I0", "I1", "I2", "I3"))
+    # Staged non-zero currents (10 mA/count): pack A/B loaded, C/D unused;
+    # rails 48/19/12/5 V each draw a plausible idle amp.
+    ap.add_argument("--pack-i", nargs=4, type=int, default=[180, 140, 160, 120], metavar=("I0", "I1", "I2", "I3"))
+    ap.add_argument("--rail-i", nargs=4, type=int, default=[90, 70, 40, 25], metavar=("I0", "I1", "I2", "I3"))
     ap.add_argument("--contactor-state", type=lambda s: int(s, 0), default=0x0F, help="bitmask when NORMAL/SOFT_KILL_REQ; forced 0 while SOFT_KILL_READY (simulated open)")
     ap.add_argument("--estop-sense", type=int, default=1, choices=(0, 1), help="fixed hard-ESTOP wire readback, used when --gpio-estop is not given")
     ap.add_argument("--gpio-estop", type=int, default=None, metavar="BOARD_PIN", help="live-read ESTOP sense off this Jetson header pin (BOARD numbering, e.g. 16 for GPIO08) instead of --estop-sense; needs Jetson.GPIO, Jetson-only")
@@ -540,10 +542,16 @@ def main(argv: Optional[list] = None) -> int:
         help="kill_reason when --force-kill-state is set (default 7=OTHER)",
     )
     ap.add_argument("--random", action="store_true", help="continuous randomized telemetry (within --*-jitter-pct of the given centers) + repeated random fault-cycling (see --fault-interval-s/--fault-hold-s), instead of fixed values / a single scripted kill")
-    ap.add_argument("--seed", type=int, default=None, help="seed the RNG for reproducible --random runs")
-    ap.add_argument("--voltage-jitter-pct", type=float, default=2.0, help="--random: +/- pct wander around --pack-v/--rail-v centers")
-    ap.add_argument("--current-jitter-pct", type=float, default=40.0, help="--random: +/- pct wander around --pack-i/--rail-i centers (wider than voltage -- real load current swings more)")
-    ap.add_argument("--current-floor", type=int, default=20, help="--random: minimum current center (counts, 10 mA/count) so a 0 default still wanders to something nonzero")
+    ap.add_argument(
+        "--wander",
+        action="store_true",
+        help="bobble pack/rail V/I around centers (TelemetryJitter) without "
+        "random fault-cycling — use for live dashboard prove under NORMAL",
+    )
+    ap.add_argument("--seed", type=int, default=None, help="seed the RNG for reproducible --random/--wander runs")
+    ap.add_argument("--voltage-jitter-pct", type=float, default=2.0, help="--random/--wander: +/- pct wander around --pack-v/--rail-v centers")
+    ap.add_argument("--current-jitter-pct", type=float, default=40.0, help="--random/--wander: +/- pct wander around --pack-i/--rail-i centers (wider than voltage -- real load current swings more)")
+    ap.add_argument("--current-floor", type=int, default=20, help="--random/--wander: minimum current center (counts, 10 mA/count) so a 0 override still wanders nonzero")
     ap.add_argument("--fault-interval-s", nargs=2, type=float, default=[20.0, 60.0], metavar=("MIN", "MAX"), help="--random: seconds between auto-recovering and the next random fault trigger")
     ap.add_argument("--fault-hold-s", nargs=2, type=float, default=[3.0, 10.0], metavar=("MIN", "MAX"), help="--random: seconds to hold SOFT_KILL_READY (contactors open) before auto-recovering to NORMAL")
     ap.add_argument("--quiet", action="store_true", help="suppress the periodic status line")
@@ -636,7 +644,7 @@ def main(argv: Optional[list] = None) -> int:
             current_jitter_pct=args.current_jitter_pct,
             current_floor=args.current_floor,
         )
-        if args.random
+        if (args.random or args.wander)
         else None
     )
     tx_seq = 0
@@ -662,7 +670,12 @@ def main(argv: Optional[list] = None) -> int:
         control_httpd = serve_control(live, status, host=args.control_host, port=args.control_port)
         print(f"[pdb-sim] control panel: http://{args.control_host}:{args.control_port}")
 
-    mode_desc = "random telemetry+fault-cycling" if args.random else "fixed values"
+    if args.random:
+        mode_desc = "random telemetry+fault-cycling"
+    elif args.wander:
+        mode_desc = "wandering V/I (no fault cycle)"
+    else:
+        mode_desc = "fixed values"
     estop_desc = f"GPIO board pin {args.gpio_estop}" if args.gpio_estop is not None else f"fixed={args.estop_sense}"
     pace_desc = f"tx_pace={pace_us}us/byte" if pace_us > 0 else "tx_pace=bulk"
     print(

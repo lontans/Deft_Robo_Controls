@@ -1,0 +1,104 @@
+continuous exited
+---LOG_TAIL---
+Damiao discover on CH1 (PB8/9 FDCAN1)  IDs 1..7
+FOUND  probe=0x01  esc_id=0x01  master_rx=0x11  mode=id_sweep  pos=+0.0000  err=0x0
+Damiao discover summary: 1 motor(s) — 0x01
+Damiao discover on CH1 (PB8/9 FDCAN1)  IDs 2..2
+FOUND  probe=0x02  esc_id=0x02  master_rx=0x12  mode=id_sweep  pos=+0.0000  err=0x0
+Damiao discover summary: 1 motor(s) — 0x02
+  attempt 1 sweep=[1] j2_probe=[2]
+
+== PROGRESSIVE ARM LATCH (soft Goal=FB) ==
+Applying YAM left-arm-only CFG (RAM)
+  CH1: 7 slots -> [0, 1, 2, 3, 4, 5, 6]
+  CH2: 0 slots -> []
+  CH3: 0 slots -> []
+  CH4: 0 slots -> []
+  CH5: 0 slots -> []
+  CH6: 0 slots -> []
+  armed=[0] faults=[1, 0, 0, 0, 0, 0, 0] ok=True try=1/2
+  armed=[0, 1] faults=[1, 1, 0, 0, 0, 0, 0] ok=True try=1/2
+  armed=[0, 1, 2] faults=[1, 1, 1, 0, 0, 0, 0] ok=True try=1/2
+  armed=[0, 1, 2, 3] faults=[1, 1, 1, 1, 0, 0, 0] ok=True try=1/3
+  armed=[0, 1, 2, 3, 4] faults=[1, 1, 1, 1, 1, 0, 0] ok=True try=1/2
+  armed=[0, 1, 2, 3, 4, 5] faults=[1, 1, 1, 1, 1, 1, 0] ok=True try=1/2
+  armed=[0, 1, 2, 3, 4, 5, 6] faults=[1, 1, 1, 1, 1, 1, 1] ok=True try=1/2
+arm home(FB)=[-0.075, -2.605, 1.689, 0.247, -0.068, -1.409, 2.642] faults=[1, 1, 1, 1, 1, 1, 1]
+
+== DXL PRESENT ==
+DXL present pitch=2582 yaw=1750
+
+== BASE CFG + SOFT SEED (sibling-reset arm) ==
+  CFG base slot22 CH5 RS02 bus=5 id=0x70
+  CFG base slot23 CH5 RS01 bus=5 id=0x74
+  CFG base slot24 CH6 RS01 bus=6 id=0x75
+  CFG base slot25 CH6 Damiao bus=6 id=0x06
+  rest bus5 id=0x70
+  rest bus5 id=0x74
+  rest bus6 id=0x75
+OK  probe_id=0x70  kind=12  found=1  comm=2  pos=-12.2416  raw=1
+  probe CH5 RS02 q=-12.2416
+OK  probe_id=0x74  kind=12  found=1  comm=2  pos=-12.2213  raw=1
+  probe CH5 RS01 q=-12.2213
+OK  probe_id=0x75  kind=12  found=1  comm=2  pos=-12.2232  raw=1
+  probe CH6 RS01 q=-12.2232
+Damiao discover on CH6 (PA4 MCP SPI-CAN)  IDs 1..16
+FOUND  probe=0x06  esc_id=0x06  master_rx=0x16  mode=id_sweep  pos=+0.0000  err=0x0
+Damiao discover summary: 1 motor(s) — 0x06
+  CH6 Damiao discover id=0x06
+  Damiao plant seed s25=-3.6124
+base centers: s22=-12.242 s23=-12.222 s24=-12.224 s25=-3.620
+soft-engage arm+base 2.4s (arm 0.35->1.0, base 0->1)...
+ready faults=[1, 1, 1, 1, 1, 1, 1] (1=MIT green)
+
+== J2 CLEAR + brace J1/J3-7 + DXL + base spin (Ctrl-C cleans) ==
+  J2 dir=-1 start=-2.683 CLEAR=[-4.593,-2.683] (hysteresis bounce)
+  base: continuous spin (reverse at MIT/soft rail only) s22=+1 s23=+1 s24=+1 s25=+1
+  stream/pdb: fb=435 tx=20 ack=0 gap95=51.0ms pdb=normal estop_gpio=0 reason=other
+  duration=50.0s
+  J2 dir=-1 cmd/fb=-2.917/-2.737 tau=-10.13 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-10.71/-10.77@+0.79 s23=-10.69/-10.74@+0.79 s24=-10.69/-10.73@+0.79 s25=-2.09/-2.16@+0.79 dxl=2920/2676|1204/1190 | fb=433 tx=20 ack=0 gap95=50.6ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.145/-2.914 tau=-13.11 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-9.22/-9.27@+0.79 s23=-9.20/-9.25@+0.79 s24=-9.20/-9.23@+0.79 s25=-0.60/-0.67@+0.79 dxl=2388/2666|1149/828 | fb=418 tx=20 ack=0 gap95=50.9ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.373/-3.136 tau=-13.91 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-7.73/-7.77@+0.79 s23=-7.71/-7.75@+0.79 s24=-7.71/-7.73@+0.79 s25=+0.90/+0.84@+0.79 dxl=2529/2437|1681/1158 | fb=456 tx=20 ack=0 gap95=50.0ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.601/-3.341 tau=-15.24 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-6.23/-6.28@+0.79 s23=-6.21/-6.25@+0.79 s24=-6.22/-6.24@+0.79 s25=+2.39/+2.34@+0.79 dxl=2976/2813|2213/2138 | fb=457 tx=20 ack=0 gap95=50.2ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.829/-3.556 tau=-16.16 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-4.74/-4.79@+0.79 s23=-4.72/-4.76@+0.79 s24=-4.72/-4.74@+0.79 s25=+1.37/+1.41@-0.79 dxl=2444/2723|2428/2564 | fb=421 tx=20 ack=0 gap95=50.4ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.057/-3.784 tau=-15.68 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-3.25/-3.33@+0.79 s23=-3.23/-3.31@+0.79 s24=-3.23/-3.28@+0.79 s25=-0.12/-0.06@-0.79 dxl=2473/2485|1896/2251 | fb=420 tx=20 ack=0 gap95=50.7ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.285/-4.016 tau=-15.41 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-1.76/-1.84@+0.79 s23=-1.74/-1.81@+0.79 s24=-1.74/-1.78@+0.79 s25=-1.62/-1.54@-0.79 dxl=3005/2544|1364/1368 | fb=460 tx=20 ack=0 gap95=50.9ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.513/-4.290 tau=-12.66 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-0.26/-0.34@+0.79 s23=-0.24/-0.31@+0.79 s24=-0.25/-0.28@+0.79 s25=-3.11/-3.04@-0.79 dxl=2500/2688|981/845 | fb=465 tx=20 ack=0 gap95=50.1ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.593/-4.410 tau=-11.03 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+1.23/+1.15@+0.79 s23=+1.25/+1.18@+0.79 s24=+1.25/+1.21@+0.79 s25=-4.60/-4.54@-0.79 dxl=2417/2649|1513/1137 | fb=416 tx=20 ack=0 gap95=50.2ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.593/-4.410 tau=-11.03 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+2.72/+2.65@+0.79 s23=+2.74/+2.68@+0.79 s24=+2.74/+2.71@+0.79 s25=-6.09/-6.05@-0.79 dxl=2949/2438|2045/1849 | fb=456 tx=20 ack=0 gap95=50.3ms pdb=normal estop_gpio=0 reason=other
+  J2 reverse stuck fb=-4.410 (wanted -4.593) aim=[-4.410,-2.683]
+  J2 dir=+1 cmd/fb=-4.271/-4.126 tau=-9.10 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+4.21/+4.15@+0.79 s23=+4.23/+4.17@+0.79 s24=+4.23/+4.21@+0.79 s25=-7.59/-7.54@-0.79 dxl=2556/2637|2577/2545 | fb=458 tx=20 ack=0 gap95=50.2ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=+1 cmd/fb=-3.929/-3.786 tau=-9.01 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+5.70/+5.63@+0.79 s23=+5.72/+5.66@+0.79 s24=+5.72/+5.71@+0.79 s25=-9.08/-9.04@-0.79 dxl=2361/2364|2064/2566 | fb=443 tx=20 ack=0 gap95=51.5ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=+1 cmd/fb=-3.587/-3.449 tau=-9.21 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+7.20/+7.10@+0.79 s23=+7.22/+7.12@+0.79 s24=+7.21/+7.17@+0.79 s25=-9.16/-9.23@+0.79 dxl=2893/2486|1532/1591 | fb=425 tx=20 ack=0 gap95=50.0ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=+1 cmd/fb=-3.245/-3.142 tau=-7.20 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+8.69/+8.58@+0.79 s23=+8.71/+8.61@+0.79 s24=+8.71/+8.67@+0.79 s25=-7.66/-7.74@+0.79 dxl=2612/2635|1000/1014 | fb=456 tx=20 ack=0 gap95=50.7ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=+1 cmd/fb=-2.894/-2.833 tau=-4.70 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+10.22/+10.12@+0.79 s23=+10.24/+10.14@+0.79 s24=+10.24/+10.19@+0.79 s25=-6.13/-6.21@+0.79 dxl=2319/2447|1359/998 | fb=464 tx=20 ack=0 gap95=50.1ms pdb=normal estop_gpio=0 reason=other
+  J2 reverse arrived fb=-2.780 target=-2.683
+  J2 dir=-1 cmd/fb=-2.971/-2.830 tau=-7.90 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+11.75/+11.67@+0.79 s23=+11.77/+11.69@+0.79 s24=+11.77/+11.72@+0.79 s25=-4.60/-4.67@+0.79 dxl=2865/2449|1905/1533 | fb=420 tx=20 ack=0 gap95=50.8ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.205/-3.032 tau=-10.22 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+11.08/+11.17@-0.79 s23=+11.10/+11.18@-0.79 s24=+11.10/+11.11@-0.79 s25=-3.07/-3.11@+0.79 dxl=2626/2707|2451/2398 | fb=449 tx=20 ack=0 gap95=50.2ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.439/-3.236 tau=-11.90 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+9.55/+9.63@-0.79 s23=+9.57/+9.65@-0.79 s24=+9.57/+9.58@-0.79 s25=-1.54/-1.58@+0.79 dxl=2305/2312|2176/2466 | fb=444 tx=20 ack=0 gap95=51.1ms pdb=normal estop_gpio=0 reason=other
+  dashboard soft_kill_request → soft_kill_park()
+recording stopped: /home/deft-robotics/controls_pcb/scripts/.deft_session/recordings/record_20260724T211740.ndjson
+cleanup: blank arm/base + clear DXL + DIAG...
+done
+---GREP---
+  Damiao plant seed s25=-3.6124
+  base: continuous spin (reverse at MIT/soft rail only) s22=+1 s23=+1 s24=+1 s25=+1
+  J2 dir=-1 cmd/fb=-2.917/-2.737 tau=-10.13 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-10.71/-10.77@+0.79 s23=-10.69/-10.74@+0.79 s24=-10.69/-10.73@+0.79 s25=-2.09/-2.16@+0.79 dxl=2920/2676|1204/1190 | fb=433 tx=20 ack=0 gap95=50.6ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.145/-2.914 tau=-13.11 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-9.22/-9.27@+0.79 s23=-9.20/-9.25@+0.79 s24=-9.20/-9.23@+0.79 s25=-0.60/-0.67@+0.79 dxl=2388/2666|1149/828 | fb=418 tx=20 ack=0 gap95=50.9ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.373/-3.136 tau=-13.91 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-7.73/-7.77@+0.79 s23=-7.71/-7.75@+0.79 s24=-7.71/-7.73@+0.79 s25=+0.90/+0.84@+0.79 dxl=2529/2437|1681/1158 | fb=456 tx=20 ack=0 gap95=50.0ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.601/-3.341 tau=-15.24 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-6.23/-6.28@+0.79 s23=-6.21/-6.25@+0.79 s24=-6.22/-6.24@+0.79 s25=+2.39/+2.34@+0.79 dxl=2976/2813|2213/2138 | fb=457 tx=20 ack=0 gap95=50.2ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.829/-3.556 tau=-16.16 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-4.74/-4.79@+0.79 s23=-4.72/-4.76@+0.79 s24=-4.72/-4.74@+0.79 s25=+1.37/+1.41@-0.79 dxl=2444/2723|2428/2564 | fb=421 tx=20 ack=0 gap95=50.4ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.057/-3.784 tau=-15.68 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-3.25/-3.33@+0.79 s23=-3.23/-3.31@+0.79 s24=-3.23/-3.28@+0.79 s25=-0.12/-0.06@-0.79 dxl=2473/2485|1896/2251 | fb=420 tx=20 ack=0 gap95=50.7ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.285/-4.016 tau=-15.41 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-1.76/-1.84@+0.79 s23=-1.74/-1.81@+0.79 s24=-1.74/-1.78@+0.79 s25=-1.62/-1.54@-0.79 dxl=3005/2544|1364/1368 | fb=460 tx=20 ack=0 gap95=50.9ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.513/-4.290 tau=-12.66 faults=[1, 1, 1, 1, 1, 1, 1] | s22=-0.26/-0.34@+0.79 s23=-0.24/-0.31@+0.79 s24=-0.25/-0.28@+0.79 s25=-3.11/-3.04@-0.79 dxl=2500/2688|981/845 | fb=465 tx=20 ack=0 gap95=50.1ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.593/-4.410 tau=-11.03 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+1.23/+1.15@+0.79 s23=+1.25/+1.18@+0.79 s24=+1.25/+1.21@+0.79 s25=-4.60/-4.54@-0.79 dxl=2417/2649|1513/1137 | fb=416 tx=20 ack=0 gap95=50.2ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-4.593/-4.410 tau=-11.03 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+2.72/+2.65@+0.79 s23=+2.74/+2.68@+0.79 s24=+2.74/+2.71@+0.79 s25=-6.09/-6.05@-0.79 dxl=2949/2438|2045/1849 | fb=456 tx=20 ack=0 gap95=50.3ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=+1 cmd/fb=-4.271/-4.126 tau=-9.10 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+4.21/+4.15@+0.79 s23=+4.23/+4.17@+0.79 s24=+4.23/+4.21@+0.79 s25=-7.59/-7.54@-0.79 dxl=2556/2637|2577/2545 | fb=458 tx=20 ack=0 gap95=50.2ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=+1 cmd/fb=-3.929/-3.786 tau=-9.01 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+5.70/+5.63@+0.79 s23=+5.72/+5.66@+0.79 s24=+5.72/+5.71@+0.79 s25=-9.08/-9.04@-0.79 dxl=2361/2364|2064/2566 | fb=443 tx=20 ack=0 gap95=51.5ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=+1 cmd/fb=-3.587/-3.449 tau=-9.21 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+7.20/+7.10@+0.79 s23=+7.22/+7.12@+0.79 s24=+7.21/+7.17@+0.79 s25=-9.16/-9.23@+0.79 dxl=2893/2486|1532/1591 | fb=425 tx=20 ack=0 gap95=50.0ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=+1 cmd/fb=-3.245/-3.142 tau=-7.20 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+8.69/+8.58@+0.79 s23=+8.71/+8.61@+0.79 s24=+8.71/+8.67@+0.79 s25=-7.66/-7.74@+0.79 dxl=2612/2635|1000/1014 | fb=456 tx=20 ack=0 gap95=50.7ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=+1 cmd/fb=-2.894/-2.833 tau=-4.70 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+10.22/+10.12@+0.79 s23=+10.24/+10.14@+0.79 s24=+10.24/+10.19@+0.79 s25=-6.13/-6.21@+0.79 dxl=2319/2447|1359/998 | fb=464 tx=20 ack=0 gap95=50.1ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-2.971/-2.830 tau=-7.90 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+11.75/+11.67@+0.79 s23=+11.77/+11.69@+0.79 s24=+11.77/+11.72@+0.79 s25=-4.60/-4.67@+0.79 dxl=2865/2449|1905/1533 | fb=420 tx=20 ack=0 gap95=50.8ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.205/-3.032 tau=-10.22 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+11.08/+11.17@-0.79 s23=+11.10/+11.18@-0.79 s24=+11.10/+11.11@-0.79 s25=-3.07/-3.11@+0.79 dxl=2626/2707|2451/2398 | fb=449 tx=20 ack=0 gap95=50.2ms pdb=normal estop_gpio=0 reason=other
+  J2 dir=-1 cmd/fb=-3.439/-3.236 tau=-11.90 faults=[1, 1, 1, 1, 1, 1, 1] | s22=+9.55/+9.63@-0.79 s23=+9.57/+9.65@-0.79 s24=+9.57/+9.58@-0.79 s25=-1.54/-1.58@+0.79 dxl=2305/2312|2176/2466 | fb=444 tx=20 ack=0 gap95=51.1ms pdb=normal estop_gpio=0 reason=other
+  dashboard soft_kill_request → soft_kill_park()

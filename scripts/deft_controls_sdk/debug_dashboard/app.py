@@ -23,12 +23,17 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
 from deft_controls_sdk import ActuatorDesire, ControlsPcbHub, McuState
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD, list_ports_info
 from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
+
+# Peer (e.g. yam_continuous_all) owns CDC while dashboard follows state.json —
+# Soft-kill Park writes this flag; the peer parks and deletes it.
+SOFT_KILL_REQUEST_NAME = "soft_kill_request"
 
 _ACTIVE_EPS = 0.01
 """Matches firmware's actuator_any_non_idle_live() threshold — see
@@ -120,12 +125,23 @@ class AppState:
     def recover(self) -> None:
         self._require_hub().recover()
 
-    def soft_kill_park(self) -> None:
-        """Product soft-kill park (see ControlsPcbHub.soft_kill_park): clear
-        desires/servos and latch McuState.ESTOP so firmware can ack
-        SOFT_KILL_READY on the PDB UART once the peer requests SOFT_KILL_REQ.
-        Reuses the existing MCU ESTOP wire path — not a second protocol."""
-        self._require_hub().soft_kill_park()
+    def soft_kill_request_path(self) -> Path:
+        return self.telemetry.session_dir / SOFT_KILL_REQUEST_NAME
+
+    def soft_kill_park(self) -> dict:
+        """Product soft-kill park (see ControlsPcbHub.soft_kill_park).
+
+        When this process owns COM: clear desires and latch McuState.ESTOP.
+        When following a peer's state.json (continuous owns CDC): write a
+        request flag the peer polls — Connect COM is not required.
+        """
+        if self.hub is not None:
+            self.hub.soft_kill_park()
+            return {"mode": "direct", "parked": True}
+        flag = self.soft_kill_request_path()
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text(f"{time.time():.3f}\n", encoding="utf-8")
+        return {"mode": "peer_request", "path": str(flag)}
 
     def held_snapshot(self) -> dict:
         """Currently-commanded plant control state — distinct from measured
@@ -473,15 +489,21 @@ async function tick() {
       kv("pack_i (A) x4", fmtVec(pdb.pack_i_A)),
       kv("rail_i (A) x4", fmtVec(pdb.rail_i_A)),
     ].join("") : `<div class="kv"><span class="k">status</span><div class="v">no PDB frame yet</div></div>`;
-    document.getElementById("softKillBtn").disabled = !s.connected;
+    // Soft-kill Park stays clickable while following continuous state.json
+    // (peer owns CDC) — POST writes a request flag the peer honors.
+    const canSoftKill = !!(s.connected || s.following_state_file || s.peer_connected);
+    document.getElementById("softKillBtn").disabled = !canSoftKill;
     const pdbMeta = document.getElementById("pdbMeta");
-    pdbMeta.textContent = pdb
-      ? (pdb.kill_state_name === "soft_kill_req"
-          ? "peer requesting soft-kill — Park to ack SOFT_KILL_READY"
-          : pdb.kill_state_name === "soft_kill_ready"
-            ? "parked — SOFT_KILL_READY acked"
-            : "")
-      : "";
+    let pdbHint = "";
+    if (pdb) {
+      if (pdb.kill_state_name === "soft_kill_req")
+        pdbHint = "peer requesting soft-kill — Park to ack SOFT_KILL_READY";
+      else if (pdb.kill_state_name === "soft_kill_ready")
+        pdbHint = "parked — SOFT_KILL_READY acked";
+    }
+    if (!s.connected && canSoftKill && !pdbHint)
+      pdbHint = "follow mode — Park signals continuous via soft_kill_request";
+    pdbMeta.textContent = pdbHint;
 
     // Connection card
     document.getElementById("connectBtn").disabled = !!s.connected;
@@ -671,7 +693,9 @@ def make_handler(state: AppState):
                 elif path == "/api/recover":
                     state.recover()
                 elif path == "/api/pdb/soft_kill_park":
-                    state.soft_kill_park()
+                    result = state.soft_kill_park()
+                    self._send_json({"ok": True, **result})
+                    return
                 elif path == "/api/mcu_state":
                     state.set_mcu_state(int(body["state"]))
                 elif path == "/api/actuator/idle_all":

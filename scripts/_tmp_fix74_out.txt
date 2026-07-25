@@ -1,0 +1,121 @@
+EXIT:0
+
+======== FIX 0x74: cali + arm + 360° ========
+CFG quieted 4 slot(s); enabling [23]
+  slot22 CH5 RS02 bus=5 id=0x70 off
+  slot23 CH5 RS01 bus=5 id=0x74 ON
+  slot24 CH6 RS01 bus=6 id=0x75 off
+  slot25 CH6 Damiao bus=6 id=0x06 off
+  reset sibling 0x70 before cali
+  calibrating slot23 / 0x74 (shaft must spin freely ~28s)…
+RS2 encoder cal on CH5 (PB1 MCP SPI-CAN)  id=0x74
+Sequence: reset -> iq_test -> 0x05 cali -> 0x06 zero -> 0x16 save.
+Supply: 24–60 V. Shaft free, no load on output.
+
+--- prep: reset comm 0x04 ---
+  reset  probe_id=0x74  kind=11  found=1  comm=2  pos=+11.0309  raw=1
+
+--- iq_test parawrite 0x702D=1 ---
+  iq_test  probe_id=0x74  kind=19  found=1  comm=2  pos=+11.0313  raw=1
+
+  WARNING: VBUS=23.8 V outside 24–60 V
+
+--- motor_cali 0x05 (28s passive listen — shaft must spin) ---
+  ... cali listen  mms=cali *  vel=+0.00 rad/s  raw=0  data=7cbf80037fff0146
+  cali  probe_id=0x74  kind=16  found=1  comm=2  pos=-0.3194  raw=0
+
+  proceeding to zero/save (1s settle) — mms=cali was seen.
+--- motor_zero 0x06 ---
+  zero  probe_id=0x74  kind=17  found=1  comm=2  pos=-0.0002  raw=0
+
+--- data_save 0x16 ---
+  save  probe_id=0x74  kind=18  found=0  comm=0  pos=+0.0000  raw=1
+
+--- pararead verify ---
+  mechPos (0x7019): 0x11 pararead  echo=0x7019  float=+0.0000
+  VBUS (0x701C): 0x11 pararead  echo=0x701C  float=+23.7750
+  run_mode (0x7005): 0x11 pararead  echo=0x7005  float=+0.0000
+
+Result: cal sequence OK — mechPos near zero.
+  cali=OK
+CFG quieted 1 slot(s); enabling [23]
+  slot22 CH5 RS02 bus=5 id=0x70 off
+  slot23 CH5 RS01 bus=5 id=0x74 ON
+  slot24 CH6 RS01 bus=6 id=0x75 off
+  slot25 CH6 Damiao bus=6 id=0x06 off
+
+== teleop CH5 RS01 slot23  +360.0 deg (+6.283 rad) @ 0.500 rad/s ==
+CFG quieted 1 slot(s); enabling [23]
+  slot22 CH5 RS02 bus=5 id=0x70 off
+  slot23 CH5 RS01 bus=5 id=0x74 ON
+  slot24 CH6 RS01 bus=6 id=0x75 off
+  slot25 CH6 Damiao bus=6 id=0x06 off
+  arm CH5 RS01 bus5 id=0x74 for MIT…
+  reset sibling id=0x70
+OK  probe_id=0x74  kind=12  found=1  comm=2  pos=-0.0006  raw=1
+  enable ok pos=-0.0006
+OK  probe_id=0x74  kind=12  found=1  comm=2  pos=-0.0006  raw=1
+  re-enable ok pos=-0.0006
+  armed hold fb=-0.0006
+  note: plant +11.0309 vs armed -0.0006 — using armed
+  start=-0.0006 → delta=+6.2832 (+360.0 deg) solo-CFG
+  plant TX: stream=ON tx_hz=40.1 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+0.012 fb=-0.001 tgt=+6.283 err_pk=0.013 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+0.262 fb=+0.250 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=39.8 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+0.499 fb=+0.498 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+0.749 fb=+0.736 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+0.999 fb=+0.989 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=39.8 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+1.249 fb=+1.247 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.1 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+1.499 fb=+1.487 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+1.749 fb=+1.738 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+1.999 fb=+2.000 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+2.249 fb=+2.237 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+2.499 fb=+2.491 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+2.749 fb=+2.738 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+2.999 fb=+2.987 tgt=+6.283 err_pk=0.014 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+3.249 fb=+3.273 tgt=+6.283 err_pk=0.024 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+3.499 fb=+3.490 tgt=+6.283 err_pk=0.028 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+3.749 fb=+3.737 tgt=+6.283 err_pk=0.028 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+3.987 fb=+3.985 tgt=+6.283 err_pk=0.028 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+4.237 fb=+4.225 tgt=+6.283 err_pk=0.028 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+4.487 fb=+4.475 tgt=+6.283 err_pk=0.028 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+4.737 fb=+4.737 tgt=+6.283 err_pk=0.028 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+4.987 fb=+4.974 tgt=+6.283 err_pk=0.028 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+5.237 fb=+5.272 tgt=+6.283 err_pk=0.040 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+5.487 fb=+5.478 tgt=+6.283 err_pk=0.040 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+5.737 fb=+5.725 tgt=+6.283 err_pk=0.040 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+5.987 fb=+6.029 tgt=+6.283 err_pk=0.043 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+  slew cmd=+6.237 fb=+6.229 tgt=+6.283 err_pk=0.049 | stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=1/4
+OK  probe_id=0x74  kind=12  found=1  comm=2  pos=+6.2826  raw=1
+  PASS moved=+6.283 (wanted +6.283) peak_err=0.049
+CFG quieted 1 slot(s); enabling [22, 23, 24, 25]
+  slot22 CH5 RS02 bus=5 id=0x70 ON
+  slot23 CH5 RS01 bus=5 id=0x74 ON
+  slot24 CH6 RS01 bus=6 id=0x75 ON
+  slot25 CH6 Damiao bus=6 id=0x06 ON
+OK  probe_id=0x70  kind=12  found=1  comm=2  pos=+5.5365  raw=1
+  seed s22 CH5 RS02: probe=5.536476135253906 plant=5.536476135253906 -> hold=+5.5365
+OK  probe_id=0x74  kind=12  found=1  comm=2  pos=+6.2818  raw=1
+  seed s23 CH5 RS01: probe=6.281835556030273 plant=6.281835556030273 -> hold=+6.2818
+OK  probe_id=0x75  kind=12  found=1  comm=2  pos=+10.4041  raw=1
+  seed s24 CH6 RS01: probe=10.40412712097168 plant=10.40412712097168 -> hold=+10.4041
+  seed s25 CH6 Damiao: probe=None plant=6.052299499511719 -> hold=+6.0523
+  plant TX: stream=ON tx_hz=40.1 mcu=0 plant_block=NONE nonblank_base=4/4
+holds: s22=+5.536 s23=+6.282 s24=+10.404 s25=+6.052
+
+======== FIX 0x74 RESULT: PASS — PASS moved=+6.283 (wanted +6.283) peak_err=0.049 ========
+CFG quieted 4 slot(s); enabling [22, 23, 24, 25]
+  slot22 CH5 RS02 bus=5 id=0x70 ON
+  slot23 CH5 RS01 bus=5 id=0x74 ON
+  slot24 CH6 RS01 bus=6 id=0x75 ON
+  slot25 CH6 Damiao bus=6 id=0x06 ON
+OK  probe_id=0x70  kind=12  found=1  comm=2  pos=+5.5365  raw=1
+  seed s22 CH5 RS02: probe=5.536476135253906 plant=5.536476135253906 -> hold=+5.5365
+OK  probe_id=0x74  kind=12  found=1  comm=2  pos=+6.2815  raw=1
+  seed s23 CH5 RS01: probe=6.281452178955078 plant=6.281452178955078 -> hold=+6.2815
+OK  probe_id=0x75  kind=12  found=1  comm=2  pos=+10.4037  raw=1
+  seed s24 CH6 RS01: probe=10.403743743896484 plant=10.403743743896484 -> hold=+10.4037
+  seed s25 CH6 Damiao: probe=None plant=6.051918029785156 -> hold=+6.0519
+  plant TX: stream=ON tx_hz=40.0 mcu=0 plant_block=NONE nonblank_base=4/4
+holds: s22=+5.536 s23=+6.281 s24=+10.404 s25=+6.052
+blank + DIAG (CAN TX off — expected)
