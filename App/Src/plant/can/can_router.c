@@ -538,9 +538,29 @@ static void fdcan_poll_rx_one(can_bus_id_t bus)
 	can_bus_unlock(bus);
 }
 
+static void fdcan_recover_if_bus_off(can_bus_id_t bus)
+{
+	FDCAN_HandleTypeDef *h;
+	uint32_t psr;
+
+	if (bus >= CAN_FDCAN_COUNT)
+		return;
+
+	h = bus_handle[bus];
+	if (h == NULL || h->Instance == NULL)
+		return;
+
+	/* PSR.BO latches after ACK-less TX (unpowered arm daisy). Further
+	 * AddMessageToTxFifoQ fails → silent no-wire-TX until restart. */
+	psr = h->Instance->PSR;
+	if ((psr & FDCAN_PSR_BO) != 0u)
+		can_router_restart_fdcan(bus);
+}
+
 static void fdcan_poll_one(can_bus_id_t bus)
 {
 	fdcan_poll_rx_one(bus);
+	fdcan_recover_if_bus_off(bus);
 
 	/* Hold the bus lock across the whole SW TX drain. Per-frame
 	 * can_tx_flush lock/unlock was a fixed all×25 tax (8+8+3 MIT/tick). */

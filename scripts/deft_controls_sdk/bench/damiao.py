@@ -13,7 +13,7 @@ local to this module since nothing else needs a bare "DM lease" today.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Sequence
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 from deft_controls_sdk.link.exchange import (
     DM_MASTER_ANY,
@@ -26,6 +26,7 @@ from deft_controls_sdk.link.exchange import (
     build_dm_probe_command,
     can_bus_label,
     dm_fault_found,
+    is_mcp_bus,
     parse_dm_from_actuator,
     parse_dm_probe_pdu,
     probe_kind_matches,
@@ -108,10 +109,9 @@ def _send_probe(
 
 
 def _discover_id_order(start: int, end: int, known_ids: Sequence[int]) -> list[int]:
-    """Configured Damiao IDs on this bus first — probing wrong IDs first floods
-    the bus (docs/known-issues.md). Caller passes known_ids (e.g. from its own
-    actuator table); this module has no config table of its own."""
-    head = [mid & 0xFF for mid in known_ids if start <= mid <= end]
+    """Optional hint order only — ID_SWEEP runs first. Do not invent known_ids;
+    a wrong head list just burns REG_SCAN airtime before the real ESC."""
+    head = [mid & 0xFF for mid in known_ids if start <= (mid & 0xFF) <= end]
     full = list(range(start, end + 1))
     seen = set(head)
     return head + [mid for mid in full if mid not in seen]
@@ -128,6 +128,112 @@ def _format_hit(resp: dict, motor_id: int) -> str:
     )
 
 
+def _hit_esc_id(resp: dict, fallback: int) -> int:
+    hit = int(resp.get("discovered_id", resp.get("param_value", 0))) & 0xFF
+    if hit == 0:
+        hit = int(resp.get("probe_id", fallback)) & 0xFF
+    return hit
+
+
+def discover_all(
+    connection: "Connection",
+    telemetry: Optional["TelemetryCache"],
+    *,
+    bus: int = 1,
+    start: int = 1,
+    end: int = 16,
+    listen_ms: int = 40,
+    known_ids: Sequence[int] = (),
+) -> List[int]:
+    """ID_SWEEP first (collect), then REG_SCAN for any remaining IDs in range.
+
+    ``known_ids`` is an optional scan-order hint for the REG_SCAN fallback only —
+    leave empty unless you already know configured ESC IDs on this bus.
+    """
+    if end < start:
+        start, end = end, start
+    mcp = is_mcp_bus(bus)
+    print(f"Damiao discover on {can_bus_label(bus)}  IDs {start}..{end}")
+    if telemetry is not None:
+        telemetry.set_connected(True, mode="discover")
+    span = max(1, end - start + 1)
+    # Same listen budget as YAM arm; MCP FW does one TX burst then RX-only.
+    sweep_listen = _clamp_listen_ms(listen_ms, minimum=40)
+    found: List[int] = []
+    seen = set()
+    try:
+        begin = _dm_session_begin(connection, bus)
+        if begin is None:
+            print("  WARN: DM SESSION_BEGIN missed — probes may fail")
+        sweep_timeout = _probe_timeout_s(DM_PROBE_ID_SWEEP, sweep_listen, span)
+        if mcp:
+            # One TX + listen_ms per ID — no SPI retransmit tax.
+            sweep_timeout = max(sweep_timeout, span * (sweep_listen / 1000.0) + 2.0)
+        resp = _send_probe(
+            connection,
+            start,
+            DM_PROBE_ID_SWEEP,
+            bus=bus,
+            listen_ms=sweep_listen,
+            end_id=end,
+            timeout_s=sweep_timeout,
+        )
+        if resp is not None and (resp.get("found") or dm_fault_found(resp.get("err", 0))):
+            hit = _hit_esc_id(resp, start)
+            print(_format_hit(resp, hit))
+            if hit not in seen:
+                seen.add(hit)
+                found.append(hit)
+        elif resp is not None:
+            print(
+                f"  ID_SWEEP no-hit  found={resp.get('found')} "
+                f"raw={resp.get('raw_frames_seen', resp.get('raw_frames', 0))} "
+                f"tx={resp.get('tx_frames_sent', '?')}"
+            )
+
+        # REG_SCAN: only explicit known_ids not already found, OR full-range
+        # fallback when sweep missed entirely (avoid 1→N flood after a hit).
+        per_listen = _clamp_listen_ms(listen_ms, minimum=20)
+        per_timeout = _probe_timeout_s(DM_PROBE_REG_SCAN, per_listen)
+        if found and known_ids:
+            scan_ids = [
+                mid & 0xFF
+                for mid in known_ids
+                if start <= (mid & 0xFF) <= end and (mid & 0xFF) not in seen
+            ]
+        elif found:
+            scan_ids = []
+        else:
+            scan_ids = _discover_id_order(start, end, known_ids)
+        for motor_id in scan_ids:
+            resp = _send_probe(
+                connection,
+                motor_id,
+                DM_PROBE_REG_SCAN,
+                bus=bus,
+                listen_ms=per_listen,
+                timeout_s=per_timeout,
+            )
+            if resp is not None and (resp.get("found") or dm_fault_found(resp.get("err", 0))):
+                hit = _hit_esc_id(resp, motor_id)
+                print(_format_hit(resp, hit))
+                if hit not in seen:
+                    seen.add(hit)
+                    found.append(hit)
+        if not found:
+            print("No Damiao motor found in range.")
+        else:
+            ids_s = ", ".join(f"0x{i:02X}" for i in found)
+            print(f"Damiao discover summary: {len(found)} motor(s) — {ids_s}")
+        return found
+    finally:
+        _dm_session_end(connection, bus)
+        if telemetry is not None:
+            telemetry.set_connected(
+                True, mode="plant_stream" if connection.is_streaming else "idle"
+            )
+
+
 def discover(
     connection: "Connection",
     telemetry: Optional["TelemetryCache"],
@@ -138,36 +244,18 @@ def discover(
     listen_ms: int = 40,
     known_ids: Sequence[int] = (),
 ) -> Optional[int]:
-    """ID_SWEEP first, then per-ID REG_SCAN fallback (known_ids first). Mirrors
-    legacy damiao.discover() exactly, minus the actuator-config-table lookup —
-    pass known_ids explicitly (e.g. [0x01..0x07] for one YAM arm's daisy chain)."""
-    print(f"Damiao discover on {can_bus_label(bus)}  IDs {start}..{end}")
-    if telemetry is not None:
-        telemetry.set_connected(True, mode="discover")
-    span = max(1, end - start + 1)
-    sweep_listen = _clamp_listen_ms(listen_ms, minimum=40)
-    try:
-        _dm_session_begin(connection, bus)
-        sweep_timeout = _probe_timeout_s(DM_PROBE_ID_SWEEP, sweep_listen, span)
-        resp = _send_probe(
-            connection, start, DM_PROBE_ID_SWEEP, bus=bus, listen_ms=sweep_listen, end_id=end, timeout_s=sweep_timeout
-        )
-        if resp is not None and (resp.get("found") or dm_fault_found(resp.get("err", 0))):
-            hit = int(resp.get("discovered_id", resp.get("param_value", 0))) & 0xFF
-            if hit == 0:
-                hit = int(resp.get("probe_id", start)) & 0xFF
-            print(_format_hit(resp, hit))
-            return hit
+    """ID_SWEEP first, then REG_SCAN fallback. Returns first hit or None.
 
-        per_timeout = _probe_timeout_s(DM_PROBE_REG_SCAN, listen_ms)
-        for motor_id in _discover_id_order(start, end, known_ids):
-            resp = _send_probe(connection, motor_id, DM_PROBE_REG_SCAN, bus=bus, listen_ms=listen_ms, timeout_s=per_timeout)
-            if resp is not None and (resp.get("found") or dm_fault_found(resp.get("err", 0))):
-                print(_format_hit(resp, motor_id))
-                return motor_id
-        print("No Damiao motor found in range.")
-        return None
-    finally:
-        _dm_session_end(connection, bus)
-        if telemetry is not None:
-            telemetry.set_connected(True, mode="plant_stream" if connection.is_streaming else "idle")
+    Prefer :func:`discover_all` when more than one Damiao may share the bus.
+    Leave ``known_ids`` empty unless you already know configured ESC IDs.
+    """
+    hits = discover_all(
+        connection,
+        telemetry,
+        bus=bus,
+        start=start,
+        end=end,
+        listen_ms=listen_ms,
+        known_ids=known_ids,
+    )
+    return hits[0] if hits else None

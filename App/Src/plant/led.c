@@ -291,8 +291,10 @@ void led_service(void)
 	__enable_irq();
 
 #if UART4_MODE == UART4_MODE_PDB
-	/* PDU kill/estop owns the strip; host LedDesire stays staged for recovery. */
-	mode = led_mode_from_pdb();
+	/* Host non-OFF LedDesire wins (bench override). PDB traffic-light only
+	 * when host leaves mode OFF — otherwise stale/HARD UART paints permanent red. */
+	if (mode == LED_MODE_OFF)
+		mode = led_mode_from_pdb();
 	if (brightness == 0u)
 		brightness = 12u;
 #endif

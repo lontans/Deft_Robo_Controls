@@ -1,12 +1,24 @@
 #include "plant/plugins/damiao.h"
 #include "plant/plugin_schema/plugin.h"
 #include "plant/can/can_router.h"
+#include "plant/can/mcp2518fd.h"
+#include "plant/can/spi_can_router.h"
 #include "plant/plant_diag.h"
 #include "plant/actuator.h"
+#include "plant/control_loop.h"
 #include "main.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+/* Once ERR=1, MIT at plant_rate/DIV (~125 Hz @ 500 Hz), staggered by slot.
+ * Full-rate MIT on all 7 YAM CH1 Damiao oversubscribes the TX queue so J6/J7
+ * starve and TIMEOUT (ERR=0xD). */
+#define DM_MIT_APPLY_DIV 4u
+
+/* I2RT-style: enable once (retry slowly), then MIT only. Every-tick
+ * clear+enable on unlatched YAM-7 slots floods CH1 and keeps wrists red. */
+#define DM_ENABLE_RETRY_MS 100u
 
 static int float_to_uint(float x, float x_min, float x_max, unsigned bits)
 {
@@ -35,13 +47,26 @@ static void damiao_limits(const actuator_config_t *cfg,
                           float *v_min, float *v_max,
                           float *t_min, float *t_max)
 {
-	(void)cfg;
-	*p_min = DM4310_P_MIN;
-	*p_max = DM4310_P_MAX;
-	*v_min = DM4310_V_MIN;
-	*v_max = DM4310_V_MAX;
-	*t_min = DM4310_T_MIN;
-	*t_max = DM4310_T_MAX;
+	/* YAM: ESC 0x01..0x03 = 4340 (proximal), 0x04..0x07 = 4310 (wrist).
+	 * Packing all as 4310 T_MAX=10 clipped J1–J3 (~9.5 Nm seen) under load. */
+	const bool is_4340 = (cfg != NULL && cfg->motor_id >= 0x01u &&
+	                      cfg->motor_id <= 0x03u);
+
+	if (is_4340) {
+		*p_min = DM4340_P_MIN;
+		*p_max = DM4340_P_MAX;
+		*v_min = DM4340_V_MIN;
+		*v_max = DM4340_V_MAX;
+		*t_min = DM4340_T_MIN;
+		*t_max = DM4340_T_MAX;
+	} else {
+		*p_min = DM4310_P_MIN;
+		*p_max = DM4310_P_MAX;
+		*v_min = DM4310_V_MIN;
+		*v_max = DM4310_V_MAX;
+		*t_min = DM4310_T_MIN;
+		*t_max = DM4310_T_MAX;
+	}
 }
 
 uint32_t damiao_master_id_resolve(const actuator_config_t *cfg)
@@ -95,13 +120,20 @@ static void damiao_probe_copy_rx(const can_frame_t *frame, damiao_probe_result_t
 }
 
 static void damiao_decode_feedback_payload(const uint8_t *data,
+                                           uint8_t motor_id,
                                            float *position,
                                            float *velocity,
                                            float *torque,
                                            float *temperature)
 {
 	float p_min, p_max, v_min, v_max, t_min, t_max;
-	damiao_limits(NULL, &p_min, &p_max, &v_min, &v_max, &t_min, &t_max);
+	actuator_config_t lim_cfg = {
+		.motor_id = motor_id,
+		.protocol = PROTO_DAMIAO,
+		.enabled = true,
+	};
+
+	damiao_limits(&lim_cfg, &p_min, &p_max, &v_min, &v_max, &t_min, &t_max);
 
 	unsigned p_raw = ((unsigned)data[1] << 8) | data[2];
 	unsigned v_raw = ((unsigned)data[3] << 4) | (data[4] >> 4);
@@ -262,7 +294,8 @@ static plugin_status_t damiao_parse_rx(const actuator_config_t *cfg,
 	{
 		float pos, vel, torq, temp;
 
-		damiao_decode_feedback_payload(frame_in->data, &pos, &vel, &torq, &temp);
+		damiao_decode_feedback_payload(frame_in->data, expect_id,
+		                               &pos, &vel, &torq, &temp);
 		state_out->position    = pos;
 		state_out->velocity    = vel;
 		state_out->torque      = torq;
@@ -307,6 +340,7 @@ static bool damiao_try_parse_feedback(const can_frame_t *frame,
 	out->err = (frame->data[0] >> 4) & 0x0Fu;
 	memcpy(out->data, frame->data, 8u);
 	damiao_decode_feedback_payload(frame->data,
+	                               out->discovered_id,
 	                               &out->position,
 	                               &out->velocity,
 	                               &out->torque,
@@ -406,11 +440,14 @@ static uint8_t damiao_actuator_slot(const actuator_config_t *cfg)
 }
 
 static bool damiao_enable_latched[ACTUATOR_COUNT];
+static uint32_t damiao_last_enable_ms[ACTUATOR_COUNT];
 
 void damiao_reset_enable_latch(uint8_t slot)
 {
-	if (slot < ACTUATOR_COUNT)
+	if (slot < ACTUATOR_COUNT) {
 		damiao_enable_latched[slot] = false;
+		damiao_last_enable_ms[slot] = 0u;
+	}
 }
 
 void damiao_post_rx_dispatch(uint8_t slot, bool had_rx)
@@ -418,9 +455,29 @@ void damiao_post_rx_dispatch(uint8_t slot, bool had_rx)
 	if (!had_rx || slot >= ACTUATOR_COUNT)
 		return;
 
+	/* Ignore bench DM PDU mirror (0xDAxxxxxx) — not a motor ERR nibble. */
+	if ((actuator_state_live[slot].fault & 0xFF000000u) == 0xDA000000u)
+		return;
+
 	uint8_t err = (uint8_t)(actuator_state_live[slot].fault & 0x0Fu);
 
-	damiao_enable_latched[slot] = (err == 1u);
+	/* Latch sticky: SET on enabled (ERR=1), CLEAR only on real fault (ERR≥8).
+	 * Old assign-every-frame cleared latch on status 0 / gaps → enable flood. */
+	if (err == 1u)
+		damiao_enable_latched[slot] = true;
+	else if (err >= 8u)
+		damiao_enable_latched[slot] = false;
+}
+
+static bool damiao_desire_is_commanding(const actuator_desire_t *desire)
+{
+	if (desire->kp > 0.01f || desire->kd > 0.01f)
+		return true;
+	if (desire->velocity > 0.01f || desire->velocity < -0.01f)
+		return true;
+	if (desire->torque > 0.01f || desire->torque < -0.01f)
+		return true;
+	return false;
 }
 
 void damiao_apply_cycle(const actuator_config_t *cfg,
@@ -430,6 +487,8 @@ void damiao_apply_cycle(const actuator_config_t *cfg,
 	can_frame_t frame;
 	can_bus_id_t bus;
 	uint8_t slot;
+	bool commanding;
+	bool latched;
 
 	if (cfg == NULL || desire == NULL || !cfg->enabled ||
 	    cfg->protocol != PROTO_DAMIAO)
@@ -442,22 +501,41 @@ void damiao_apply_cycle(const actuator_config_t *cfg,
 		slot = 0u;
 
 	bus = cfg->bus;
+	commanding = damiao_desire_is_commanding(desire);
+	latched = damiao_enable_latched[slot];
 
-	/* Plant teleop: one clear-fault + enable per session; MIT stream keeps ERR=1. */
-	if (!damiao_enable_latched[slot]) {
-		if (damiao_send_clear_fault(cfg, &frame) == PLUGIN_OK)
-			(void)can_tx_enqueue(bus, &frame);
-		if (damiao_send_enable(cfg, &frame) == PLUGIN_OK)
-			(void)can_tx_enqueue(bus, &frame);
+	/* Idle blank desire + not latched: no TX (do not spam enable). */
+	if (!commanding && !latched)
+		return;
+
+	bool sent_enable = false;
+
+	/* Enable only while host is commanding MIT gains — rate-limited.
+	 * Matches i2rt: enable with motion, then sustained MIT (not enable flood). */
+	if (!latched && commanding) {
+		uint32_t now = HAL_GetTick();
+
+		if (damiao_last_enable_ms[slot] == 0u ||
+		    (now - damiao_last_enable_ms[slot]) >= DM_ENABLE_RETRY_MS) {
+			damiao_last_enable_ms[slot] = now;
+			if (damiao_send_clear_fault(cfg, &frame) == PLUGIN_OK)
+				(void)can_tx_enqueue(bus, &frame);
+			if (damiao_send_enable(cfg, &frame) == PLUGIN_OK)
+				(void)can_tx_enqueue(bus, &frame);
+			sent_enable = true;
+		}
 	}
 
-	/* One MIT frame per slot per tick. The old 3x redundant send (added 2026-07-06 for
-	 * single/dual-motor reliability) triples CH1 load; with 6-7 Damiao slots enabled at
-	 * once (YAM daisy) that oversubscribes 1 Mbps (up to 21 frames/tick @ 500 Hz vs
-	 * ~7.7-9.3k frames/sec bus capacity), and since actuator_apply_desire() enqueues by
-	 * slot index in order, the TX queue backs up and the highest-index slots (J6/J7)
-	 * consistently lose the enqueue race — they stop tracking MIT commands entirely
-	 * while earlier slots keep working. */
+	/* Stagger MIT once green; while latching, MIT only with enable retry. */
+	if (latched) {
+		if (DM_MIT_APPLY_DIV > 1u &&
+		    (((uint32_t)g_control_tick_count + (uint32_t)slot) %
+		     DM_MIT_APPLY_DIV) != 0u)
+			return;
+	} else if (!sent_enable) {
+		return;
+	}
+
 	if (damiao_pack_tx(cfg, desire, &frame) == PLUGIN_OK)
 		(void)can_tx_enqueue(bus, &frame);
 }
@@ -572,6 +650,58 @@ static bool damiao_probe_send_mit_zero(can_bus_id_t bus,
 	return damiao_pack_tx(&local, &desire_zero, tx_out) == PLUGIN_OK;
 }
 
+static bool damiao_probe_tx_now(can_bus_id_t bus, const can_frame_t *frame)
+{
+	if (frame == NULL)
+		return false;
+
+	/* MCP probe/cali: blocking send_now (same as RobStride). Queued TX +
+	 * poll from the USB diag context was timing out with no DM PDU reply. */
+	if (bus >= CAN_BUS_CH4) {
+		mcp2518_prepare_tx(bus);
+		if (spi_can_router_send_now(bus, frame))
+			return true;
+		mcp2518_prepare_tx(bus);
+		return spi_can_router_send_now(bus, frame);
+	}
+
+	if (can_tx_enqueue(bus, frame) != CAN_OK)
+		return false;
+	can_router_poll_bus(bus);
+	return true;
+}
+
+static bool damiao_probe_listen_consume(can_bus_id_t bus,
+                                        uint8_t motor_id,
+                                        uint8_t active_kind,
+                                        uint8_t master_id_filter,
+                                        uint8_t param_rid,
+                                        bool promiscuous,
+                                        bool param_sweep,
+                                        damiao_probe_result_t *out)
+{
+	can_frame_t rx;
+
+	while (can_rx_pop(bus, &rx) == CAN_OK) {
+		if (out->raw_frames_seen < 255u)
+			out->raw_frames_seen++;
+		damiao_probe_copy_rx(&rx, out);
+
+		if (damiao_probe_is_param_kind(active_kind)) {
+			if (damiao_try_parse_param_read(&rx, motor_id, param_rid,
+			                                param_sweep, out))
+				return true;
+		}
+		if (damiao_try_parse_feedback(&rx, motor_id, master_id_filter,
+		                              promiscuous, out)) {
+			if (active_kind == DM_PROBE_ENABLE && out->err != 1u)
+				continue;
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool damiao_probe_listen_window(can_bus_id_t bus,
                                        const can_frame_t *tx,
                                        uint8_t tx_burst,
@@ -586,11 +716,48 @@ static bool damiao_probe_listen_window(can_bus_id_t bus,
 {
 	can_frame_t mit_tx;
 	bool mit_ready = false;
+	bool mcp = (bus >= CAN_BUS_CH4);
+
+	/*
+	 * MCP: one short TX burst then RX-only listen. Retransmitting send_now
+	 * every few ms from the USB diag task starved CDC (host saw SESSION_BEGIN
+	 * but every probe timed out) and wedged the 1-deep TXQ. FDCAN keeps the
+	 * historical retransmit cadence — same as YAM arm discover.
+	 */
+	if (mcp) {
+		uint8_t bursts = tx_burst ? tx_burst : 1u;
+
+		if (bursts > 2u)
+			bursts = 2u;
+		for (uint8_t b = 0; b < bursts; b++) {
+			if (damiao_probe_tx_now(bus, tx)) {
+				if (out->tx_frames_sent < 255u)
+					out->tx_frames_sent++;
+			}
+		}
+		if (active_kind == DM_PROBE_ENABLE &&
+		    damiao_probe_send_mit_zero(bus, motor_id, &mit_tx)) {
+			if (damiao_probe_tx_now(bus, &mit_tx)) {
+				if (out->tx_frames_sent < 255u)
+					out->tx_frames_sent++;
+			}
+		}
+		for (uint16_t attempt = 0; attempt < listen_ms; attempt++) {
+			can_router_poll_bus(bus);
+			if (damiao_probe_listen_consume(bus, motor_id, active_kind,
+			                                master_id_filter, param_rid,
+			                                promiscuous, param_sweep, out))
+				return true;
+			plant_diag_yield_usb();
+			HAL_Delay(1);
+		}
+		return false;
+	}
 
 	for (uint16_t attempt = 0; attempt < listen_ms; attempt++) {
 		if (damiao_probe_is_one_shot_tx_kind(active_kind)) {
 			if (attempt == 0u) {
-				if (can_tx_enqueue(bus, tx) == CAN_OK) {
+				if (damiao_probe_tx_now(bus, tx)) {
 					if (out->tx_frames_sent < 255u)
 						out->tx_frames_sent++;
 				}
@@ -601,7 +768,7 @@ static bool damiao_probe_listen_window(can_bus_id_t bus,
 				    damiao_probe_send_mit_zero(bus, motor_id, &mit_tx))
 					mit_ready = true;
 				if (mit_ready) {
-					if (can_tx_enqueue(bus, &mit_tx) == CAN_OK) {
+					if (damiao_probe_tx_now(bus, &mit_tx)) {
 						if (out->tx_frames_sent < 255u)
 							out->tx_frames_sent++;
 					}
@@ -610,7 +777,7 @@ static bool damiao_probe_listen_window(can_bus_id_t bus,
 			}
 		} else if (attempt == 0u || (attempt % 4u) == 0u) {
 			for (uint8_t b = 0; b < tx_burst; b++) {
-				if (can_tx_enqueue(bus, tx) == CAN_OK) {
+				if (damiao_probe_tx_now(bus, tx)) {
 					if (out->tx_frames_sent < 255u)
 						out->tx_frames_sent++;
 				}
@@ -618,24 +785,10 @@ static bool damiao_probe_listen_window(can_bus_id_t bus,
 			can_router_poll_bus(bus);
 		}
 
-		can_frame_t rx;
-		while (can_rx_pop(bus, &rx) == CAN_OK) {
-			if (out->raw_frames_seen < 255u)
-				out->raw_frames_seen++;
-			damiao_probe_copy_rx(&rx, out);
-
-			if (damiao_probe_is_param_kind(active_kind)) {
-				if (damiao_try_parse_param_read(&rx, motor_id, param_rid,
-				                                param_sweep, out))
-					return true;
-			}
-			if (damiao_try_parse_feedback(&rx, motor_id, master_id_filter,
-			                              promiscuous, out)) {
-				if (active_kind == DM_PROBE_ENABLE && out->err != 1u)
-					continue;
-				return true;
-			}
-		}
+		if (damiao_probe_listen_consume(bus, motor_id, active_kind,
+		                                master_id_filter, param_rid,
+		                                promiscuous, param_sweep, out))
+			return true;
 
 		plant_diag_yield_usb();
 		HAL_Delay(1);
@@ -664,10 +817,13 @@ bool damiao_probe_id(can_bus_id_t bus,
 	bool discover_request = (probe_kind == DM_PROBE_DISCOVER);
 	uint8_t host_probe_kind = probe_kind;
 
-	if (out == NULL || bus >= CAN_BUS_CH4)
+	if (out == NULL)
 		return false;
 	if (listen_ms == 0u)
 		listen_ms = 15u;
+	/* MCP SPI-CAN: longer listen — same class of budget as RS2 MCP probes. */
+	if (bus >= CAN_BUS_CH4 && listen_ms < 40u)
+		listen_ms = 40u;
 
 	memset(out, 0, sizeof(*out));
 	out->motor_id = motor_id;
@@ -682,7 +838,7 @@ bool damiao_probe_id(can_bus_id_t bus,
 	if (damiao_probe_is_param_kind(probe_kind))
 		master_id_filter = DM_MASTER_ID_ANY;
 
-if (probe_kind == DM_PROBE_ENABLE && listen_ms < 40u)
+	if (probe_kind == DM_PROBE_ENABLE && listen_ms < 40u)
 		listen_ms = 40u;
 
 	if (probe_kind == DM_PROBE_REG_SCAN) {
@@ -822,10 +978,13 @@ bool damiao_probe_id_range(can_bus_id_t bus,
 	uint16_t lo = start_id;
 	uint16_t hi = end_id;
 
-	if (out == NULL || bus >= CAN_BUS_CH4)
+	if (out == NULL)
 		return false;
 	if (listen_ms_per_id == 0u)
 		listen_ms_per_id = 3u;
+	/* MCP: ID_SWEEP per-id window was tuned for FDCAN; SPI-CAN needs more airtime. */
+	if (bus >= CAN_BUS_CH4 && listen_ms_per_id < 20u)
+		listen_ms_per_id = 20u;
 	if (param_rid == 0u)
 		param_rid = DM_REG_ESC_ID;
 	if (hi < lo) {

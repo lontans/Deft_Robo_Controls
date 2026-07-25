@@ -123,27 +123,33 @@ def main(argv: Optional[List[str]] = None) -> int:
         # --- discover / verify ---
         if motor_id is None:
             print(f"\n--- discover on CH{bus} ---")
-            motor_id = hub.debug.discover_damiao(
+            hits = hub.debug.discover_damiao_all(
                 bus=bus,
                 start=args.id_start,
                 end=args.id_end,
                 listen_ms=args.listen_ms,
-                known_ids=known_ids,
+                known_ids=known_ids,  # optional; empty by default
             )
-            if motor_id is None:
+            if not hits:
                 print("FAIL: no Damiao motor found -- check cable/power/id range")
                 return 1
+            if len(hits) > 1:
+                ids_s = ", ".join(f"0x{i:02X}" for i in hits)
+                print(
+                    f"FAIL: {len(hits)} Damiao on CH{bus} ({ids_s}). "
+                    "Re-run with --motor-id <id>."
+                )
+                return 1
+            motor_id = hits[0]
         else:
-            # No single-id probe exists for Damiao; a 1-wide discover sweep
-            # against the known id serves the same purpose without duplicating
-            # protocol logic.
+            # 1-wide REG_SCAN via discover (no invented known_ids list).
             print(f"\n--- verify id=0x{motor_id:02X} on CH{bus} ---")
             hit = hub.debug.discover_damiao(
                 bus=bus,
                 start=motor_id,
                 end=motor_id,
                 listen_ms=args.listen_ms,
-                known_ids=[motor_id],
+                known_ids=(),
             )
             if hit is None:
                 print("FAIL: motor did not respond -- check bus/id")

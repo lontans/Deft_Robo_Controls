@@ -70,7 +70,14 @@ def main(argv: list[str] | None = None) -> int:
         state.connect(args.port)
         print(f"Connected. Streaming plant frames.")
     else:
-        print("Not connected — open the UI, pick a port, and click Connect.")
+        sp = state.telemetry.state_path
+        print(
+            "Not connected to COM — UI follows state.json when present:\n"
+            f"  {sp}\n"
+            "If yam_continuous_all is writing that file, leave Connect alone.\n"
+            "Only click Connect when nothing else owns the CDC port.",
+            flush=True,
+        )
 
     httpd = serve(state, http_port=args.http_port)
     print(f"UI: {url}")
@@ -83,8 +90,32 @@ def main(argv: list[str] | None = None) -> int:
     try:
         while True:
             time.sleep(1.0)
-            snap = state.telemetry.snapshot()
-            print(_status_block(snap), flush=True)
+            if state.connected:
+                snap = state.telemetry.snapshot()
+                print(_status_block(snap), flush=True)
+            else:
+                # Mirror /api/state follow path so the terminal isn't stuck on
+                # an empty in-memory cache while a peer writes state.json.
+                try:
+                    import json
+                    from pathlib import Path
+
+                    sp = Path(state.telemetry.state_path)
+                    if sp.is_file():
+                        d = json.loads(sp.read_text(encoding="utf-8"))
+                        print(
+                            f"FOLLOW  {d.get('grade', '?')}  "
+                            f"fb_hz={d.get('fb_hz') or 0:.1f}  "
+                            f"age={d.get('age_s') or 0:.2f}s  "
+                            f"tick={d.get('tick')}  "
+                            f"block={d.get('plant_block_name')}\n"
+                            f"  file   {sp}\n",
+                            flush=True,
+                        )
+                    else:
+                        print(f"FOLLOW  waiting for {sp}\n", flush=True)
+                except Exception as exc:
+                    print(f"FOLLOW  read error: {exc}\n", flush=True)
     except KeyboardInterrupt:
         print("\nStopping…")
     finally:

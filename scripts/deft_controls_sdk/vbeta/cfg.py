@@ -1,7 +1,8 @@
 """Apply / verify YAM product actuator CFG (RAM)."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Sequence, Tuple
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Dict, Iterator, List, Sequence, Tuple
 
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT
 from deft_controls_sdk.vbeta.slots import yam_left_arm_rows, yam_product_rows
@@ -49,34 +50,57 @@ def table_matches_yam_left(table: Sequence) -> bool:
     return _table_matches(table, yam_left_arm_rows())
 
 
+@contextmanager
+def pause_plant_stream(hub: "ControlsPcbHub") -> Iterator[None]:
+    """Pause plant TX/FB drain around CFG / DEBUG exchange_raw calls.
+
+    The plant stream thread shares ``Connection.reader`` with bench probes.
+    While it runs, CFG/Damiao replies are often stolen → ``TimeoutError``.
+    """
+    was = bool(hub.is_streaming)
+    hz = 40.0
+    try:
+        hz = float(getattr(hub._connection, "_stream_hz", 40.0) or 40.0)  # noqa: SLF001
+    except Exception:
+        pass
+    if was:
+        hub.stop_streaming()
+    try:
+        yield
+    finally:
+        if was:
+            hub.start_streaming(hz=hz)
+
+
 def _apply_rows(
     hub: "ControlsPcbHub",
     expect: Sequence[Tuple[int, bool, int, int, int]],
     *,
     label: str,
-    matches: bool,
     force: bool,
     persist: bool,
     quiet: bool,
 ) -> Dict[int, List[int]]:
-    table = hub.debug.cfg_get_table()
-    if matches and not force:
-        if not quiet:
-            print(f"CFG already matches {label} ({ACTUATOR_COUNT} slots)")
-    else:
-        if not quiet:
-            print(f"Applying {label} (RAM)" + (" + persist" if persist else ""))
-        for slot, (bus, enabled, proto, mid, master) in enumerate(expect):
-            hub.debug.cfg_set_slot(
-                slot=slot,
-                bus=bus,
-                protocol=proto,
-                motor_id=mid,
-                master_id=master,
-                enabled=enabled,
-                persist=persist,
-            )
+    with pause_plant_stream(hub):
         table = hub.debug.cfg_get_table()
+        matches = _table_matches(table, expect)
+        if matches and not force:
+            if not quiet:
+                print(f"CFG already matches {label} ({ACTUATOR_COUNT} slots)")
+        else:
+            if not quiet:
+                print(f"Applying {label} (RAM)" + (" + persist" if persist else ""))
+            for slot, (bus, enabled, proto, mid, master) in enumerate(expect):
+                hub.debug.cfg_set_slot(
+                    slot=slot,
+                    bus=bus,
+                    protocol=proto,
+                    motor_id=mid,
+                    master_id=master,
+                    enabled=enabled,
+                    persist=persist,
+                )
+            table = hub.debug.cfg_get_table()
 
     by_bus: Dict[int, List[int]] = {b: [] for b in range(1, 7)}
     for slot, row in enumerate(table[:ACTUATOR_COUNT]):
@@ -97,12 +121,10 @@ def ensure_yam_product_cfg(
     quiet: bool = False,
 ) -> Dict[int, List[int]]:
     """RAM-apply full YAM product CFG if needed. Slot 20 (lift) stays disabled."""
-    expect = yam_product_rows()
     return _apply_rows(
         hub,
-        expect,
+        yam_product_rows(),
         label="YAM product CFG",
-        matches=table_matches_yam(hub.debug.cfg_get_table()),
         force=force,
         persist=persist,
         quiet=quiet,
@@ -117,12 +139,10 @@ def ensure_yam_left_arm_cfg(
     quiet: bool = False,
 ) -> Dict[int, List[int]]:
     """RAM-apply left-arm-only CFG (CH1 slots 0–6); disable CH2+ for bench work."""
-    expect = yam_left_arm_rows()
     return _apply_rows(
         hub,
-        expect,
+        yam_left_arm_rows(),
         label="YAM left-arm-only CFG",
-        matches=table_matches_yam_left(hub.debug.cfg_get_table()),
         force=force,
         persist=persist,
         quiet=quiet,

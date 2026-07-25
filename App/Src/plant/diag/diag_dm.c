@@ -2,6 +2,7 @@
 #include "plant/diag/diag_internal.h"
 #include "plant/actuator.h"
 #include "plant/can/can_router.h"
+#include "plant/can/mcp2518fd.h"
 #include "plant/plugins/damiao.h"
 #include "host/host_link.h"
 #include "main.h"
@@ -93,8 +94,15 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 		g_dm_session_active = true;
 		g_dm_can_bus = bus;
 		can_router_discard_pending_tx();
+		/* Mirror RS2 SESSION_BEGIN: FDCAN bus-off / wedged TXQ after a no-ACK
+		 * arm leave leaves ID_SWEEP with zero wire TX. Restart before drain. */
 		if (bus < CAN_BUS_CH4)
-			can_rx_drain(bus);
+			can_router_restart_fdcan(bus);
+		else
+			(void)mcp2518_reinit_rail(bus);
+		/* Drain both FDCAN and MCP rings — mixed std/ext on CH4–6 needs a
+		 * clean RX before Damiao ID_SWEEP (same as FDCAN arm discover). */
+		can_rx_drain(bus);
 		actuator_desire_clear();
 		diag_dm_clear_actuator_mirror();
 		memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
@@ -164,14 +172,17 @@ void plant_diag_on_dm_command(const host_command_image_t *cmd)
 		g_last_dm_probe.found = false;
 	g_probe_in_progress = false;
 
-	if (g_dm_pending_bus < CAN_BUS_CH4)
-		can_rx_drain(g_dm_pending_bus);
+	can_rx_drain(g_dm_pending_bus);
 
-	diag_dm_publish_actuator_state();
+	/*
+	 * Keep g_last_dm_probe + TTL so USB DM PDUs survive until the host
+	 * matches (clearing them immediately after flush raced CDC).
+	 * Do NOT leave PLANT_DM_FB_MAGIC in actuator_state_live[] — that
+	 * sticky 0xDAxxxxxx fault poisoned CH1 arm slots after MCP/bench
+	 * probes and made plant FB look "faulted" with frozen positions.
+	 */
 	g_dm_feedback_active = true;
-	g_dm_feedback_ttl = 4u;
+	g_dm_feedback_ttl = 12u;
 	diag_flush_usb();
-	memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
-	g_dm_feedback_active = false;
-	g_dm_feedback_ttl = 0u;
+	diag_dm_clear_actuator_mirror();
 }

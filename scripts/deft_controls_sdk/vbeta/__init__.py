@@ -12,6 +12,7 @@ from deft_controls_sdk.vbeta.arm import (
 from deft_controls_sdk.vbeta.cfg import (
     ensure_yam_left_arm_cfg,
     ensure_yam_product_cfg,
+    pause_plant_stream,
     table_matches_yam,
     table_matches_yam_left,
 )
@@ -120,6 +121,7 @@ __all__ = [
     "deg_to_steps",
     "ensure_yam_left_arm_cfg",
     "ensure_yam_product_cfg",
+    "pause_plant_stream",
     "led_caution",
     "led_fault",
     "led_flash",

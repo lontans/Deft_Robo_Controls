@@ -844,14 +844,24 @@ static void mcp_config_rx_fifo(mcp2518_dev_t *d)
 
 static void mcp_config_filters_accept_all(mcp2518_dev_t *d)
 {
-	/* Mask=0 → all bits "don't care" → accept any ID into RX FIFO0. */
+	/* Dual accept-all filters — same mixed-bus idea as FDCAN std+ext:
+	 * Damiao = 11-bit std, RobStride = 29-bit ext. One mask=0 filter with
+	 * MIDE=0 also works on paper, but explicit MIDE=1 pairs match the
+	 * FDCAN bring-up and avoid EXIDE/MIDE edge cases on MCP2518FD. */
 	for (uint8_t f = 0u; f < 32u; f++)
 		(void)mcp_write_byte(d, (uint16_t)(REG_C1FLTCON0 + f), 0x00u);
 
-	mcp_write32(d, REG_C1FLTOBJ0, 0u);
-	mcp_write32(d, REG_C1MASK0, 0u);
+	/* Filter 0: all standard IDs → RX FIFO1 */
+	mcp_write32(d, REG_C1FLTOBJ0, 0u); /* EXIDE=0 */
+	mcp_write32(d, REG_C1MASK0, MASK_MIDE); /* MIDE=1; ID bits don't-care */
+	/* Filter 1: all extended IDs → RX FIFO1 */
+	mcp_write32(d, (uint16_t)(REG_C1FLTOBJ0 + 8u), FLTOBJ_EXIDE);
+	mcp_write32(d, (uint16_t)(REG_C1MASK0 + 8u), MASK_MIDE);
+
 	(void)mcp_write_byte(d, REG_C1FLTCON0,
 	                     (uint8_t)(0x80u | MCP_RX_FILTER_BP)); /* FLTEN0 → FIFO1 */
+	(void)mcp_write_byte(d, (uint16_t)(REG_C1FLTCON0 + 1u),
+	                     (uint8_t)(0x80u | MCP_RX_FILTER_BP)); /* FLTEN1 → FIFO1 */
 }
 
 static void mcp_enable_rx_irq(mcp2518_dev_t *d)

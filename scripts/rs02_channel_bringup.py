@@ -135,12 +135,18 @@ def assign_single_slot(
     slot: int,
     motor_id: int,
     persist: bool,
+    quiet_others: bool = False,
 ) -> None:
-    """Enable only ``slot`` on ``bus``; disable every other enabled slot."""
+    """Enable ``slot`` for this motor. Sibling slots on the same bus are left
+    alone (daisy-chain / dual RS on MCP). Pass ``quiet_others=True`` only when
+    you intentionally want a single-slot bus."""
     print(f"CFG: enable slot {slot} on CH{bus} id=0x{motor_id:02X} (persist={persist})")
-    quieted = quiet_all_slots(hub)
-    if quieted:
-        print(f"  quieted {quieted} other enabled slot(s)")
+    if quiet_others:
+        quieted = quiet_all_slots(hub)
+        if quieted:
+            print(f"  quieted {quieted} other enabled slot(s)")
+    else:
+        print("  add-only (sibling CFG slots untouched)")
     hub.debug.cfg_set_slot(
         slot=slot,
         bus=bus,
@@ -457,6 +463,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--skip-cali", action="store_true", help="Skip encoder calibrate")
     ap.add_argument("--persist", action="store_true", help="CFG flash SAVE for the test slot")
     ap.add_argument(
+        "--quiet-all",
+        action="store_true",
+        help="Disable every other CFG slot before assign (default: add-only)",
+    )
+    ap.add_argument(
         "--angle",
         type=float,
         default=DEFAULT_TELEOP_ANGLE_RAD,
@@ -487,10 +498,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"Opening port={args.port or 'auto'}  bus=CH{bus}  slot={slot}")
     with ControlsPcbHub.connect(args.port) as hub:
         hub.recover()
-        # Stop ghost MIT (factory CFG enables many slots at desire p=0 → jerk).
-        n_quiet = quiet_all_slots(hub)
-        if n_quiet:
-            print(f"Quieted {n_quiet} enabled CFG slot(s) before probe")
+        # Blank desires stop ghost MIT without ripping sibling CFG off a shared bus.
+        if args.quiet_all:
+            n_quiet = quiet_all_slots(hub)
+            if n_quiet:
+                print(f"Quieted {n_quiet} enabled CFG slot(s) before probe")
         _conn(hub).set_actuators(
             {s: ActuatorDesire() for s in range(ACTUATOR_COUNT)}, send=True
         )
@@ -499,10 +511,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         probe_pos: Optional[float] = None
         if motor_id is None:
             print(f"\n--- discover on CH{bus} ---")
-            motor_id = hub.debug.discover_robstride(bus=bus, start=0x70)
-            if motor_id is None:
-                print("FAIL: no RS02 found — check cable/power/ID range")
+            # Full sweep — daisy-chained RS01/RS02 on one rail must all show up.
+            hits = hub.debug.discover_robstride_all(bus=bus, start=0x70, end=0x7F)
+            if not hits:
+                print("FAIL: no RS02/RS01 found — check cable/power/ID range")
                 return 1
+            if len(hits) > 1:
+                ids_s = ", ".join(f"0x{i:02X}" for i in hits)
+                print(
+                    f"FAIL: {len(hits)} motors on CH{bus} ({ids_s}). "
+                    "Re-run with --motor-id <id> (and --slot) for the one to bring up."
+                )
+                return 1
+            motor_id = hits[0]
         else:
             print(f"\n--- probe id=0x{motor_id:02X} on CH{bus} ---")
             resp = hub.debug.probe_robstride(bus=bus, motor_id=motor_id)
@@ -515,7 +536,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         # --- CFG ---
         print("\n--- CFG single slot ---")
         assign_single_slot(
-            hub, bus=bus, slot=slot, motor_id=motor_id, persist=bool(args.persist)
+            hub,
+            bus=bus,
+            slot=slot,
+            motor_id=motor_id,
+            persist=bool(args.persist),
+            quiet_others=bool(args.quiet_all),
         )
         # Seed + refresh plant HBHF before any metrics read — DEBUG probe/CFG
         # does not fill actuator_state; blank MCP idle leaves pose at 0.

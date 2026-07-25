@@ -23,7 +23,21 @@ from .recorder import FaultRecorder
 
 
 def default_session_dir() -> Path:
-    return Path.cwd() / ".deft_session"
+    """Stable session dir shared by continuous + debug_dashboard.
+
+    Prefer ``DEFT_SESSION_DIR``; else ``scripts/.deft_session`` (package-adjacent),
+    not ``Path.cwd()`` — cwd differs when the dashboard is launched from home /
+    IDE vs when ``yam_continuous_all`` runs from ``scripts/``, which made
+    localhost UI look empty while state.json was updating elsewhere.
+    """
+    import os
+
+    env = os.environ.get("DEFT_SESSION_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
+    # cache.py → telemetry → deft_controls_sdk → scripts
+    scripts_root = Path(__file__).resolve().parents[2]
+    return scripts_root / ".deft_session"
 
 
 @dataclass

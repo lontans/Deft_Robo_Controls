@@ -13,11 +13,22 @@ Thumbs.db
 Desktop.ini
 docs/damiao-bringup.md
 
-# Python
+# Python bytecode / caches (never commit; untrack if already staged:
+#   git rm -r --cached '**/__pycache__' 2>/dev/null; git rm -r --cached '*.pyc' 2>/dev/null)
+__pycache__/
 **/__pycache__/
-**/*.py[cod]
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
 .pytest_cache/
 scripts/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
 
 # deft_controls_sdk live telemetry mirror
 .deft_session/

@@ -38,7 +38,10 @@ actuator plugin ──► tx_queues[bus] ──► FDCAN HW TX FIFO/Queue ──
 
 **Important:** There is **not** a separate HW FIFO for standard vs extended. Both frame types share RX FIFO0. Separation is carried in each element’s `IdType` field when the HAL pops the message.
 
-MCP CH4–6 are a different backend (`spi_can_router` + MCP2518 RX FIFO1) and are **not** mixed-std/ext in this bring-up.
+MCP CH4–6 are a different backend (`spi_can_router` + MCP2518 RX FIFO1). They
+install **dual accept-all filters** (std + ext, MIDE=1) so Damiao (11-bit) and
+RobStride (29-bit) can share a rail — same demux rules as FDCAN (`id_type` +
+plugin `parse_rx`).
 
 ### 0.3 How the peripheral decides std vs ext (filters + bitmasks)
 

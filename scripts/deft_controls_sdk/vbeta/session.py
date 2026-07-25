@@ -6,6 +6,7 @@ from typing import Mapping, Optional
 
 from deft_controls_sdk import ControlsPcbHub, LedDesire, McuState
 from deft_controls_sdk.link import ActuatorDesire, FeedbackImage, ServoDesire
+from deft_controls_sdk.link.api_types import LED_MODE_IDLE_CORNFLOWER
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD
 from deft_controls_sdk.vbeta.cfg import ensure_yam_product_cfg
 
@@ -29,11 +30,26 @@ class PcbRobotSession:
         stream_hz: float = 40.0,
         apply_yam_cfg: bool = False,
         force_cfg: bool = False,
+        idle_first: bool = False,
+        persist_telemetry: bool = False,
     ) -> "PcbRobotSession":
-        hub = ControlsPcbHub.connect(port, serial=serial, baud=baud, persist_telemetry=False)
+        hub = ControlsPcbHub.connect(
+            port, serial=serial, baud=baud, persist_telemetry=persist_telemetry
+        )
         session = cls(hub, owns_hub=True)
         session._stream_hz = float(stream_hz)
-        hub.recover()
+        if idle_first:
+            # Gate plant CAN + blank desires + cornflower before CFG/MIT.
+            blank = {s: ActuatorDesire() for s in range(ACTUATOR_COUNT)}
+            hub.set_mcu_state(McuState.DIAG_ONLY, send=False)
+            session.set_actuators(blank, send=False)
+            hub.set_led(
+                LedDesire(mode=LED_MODE_IDLE_CORNFLOWER, master_brightness=8),
+                send=False,
+            )
+            hub.send_once()
+        else:
+            hub.recover()
         if apply_yam_cfg:
             ensure_yam_product_cfg(hub, force=force_cfg)
         hub.start_streaming(hz=session._stream_hz)
@@ -57,11 +73,20 @@ class PcbRobotSession:
             return
         self._closed = True
         try:
+            # Leave plant gated + cornflower idle (not NORMAL/LED-off — strip
+            # would fall back to PDB red on UART4).
             blank = {s: ActuatorDesire() for s in range(ACTUATOR_COUNT)}
             self.set_actuators(blank, send=False)
-            self.set_led(LedDesire(mode=0), send=False)
-            self._hub.set_mcu_state(McuState.NORMAL, send=False)
+            self._hub.set_mcu_state(McuState.DIAG_ONLY, send=False)
+            self._hub.set_led(
+                LedDesire(mode=LED_MODE_IDLE_CORNFLOWER, master_brightness=8),
+                send=False,
+            )
             self._hub.send_once()
+            # Brief stream so the idle image is applied, then stop; g_cmd_live holds.
+            if not self._hub.is_streaming:
+                self._hub.start_streaming(hz=5.0)
+            time.sleep(0.25)
             self._hub.stop_streaming()
         finally:
             if self._owns_hub:

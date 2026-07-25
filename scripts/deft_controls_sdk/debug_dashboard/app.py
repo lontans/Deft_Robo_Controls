@@ -487,7 +487,11 @@ async function tick() {
     document.getElementById("connectBtn").disabled = !!s.connected;
     document.getElementById("disconnectBtn").disabled = !s.connected;
     document.getElementById("portSelect").disabled = !!s.connected;
-    document.getElementById("connMeta").textContent = s.connected ? `connected: ${s.port}` : "not connected";
+    document.getElementById("connMeta").textContent = s.connected
+      ? `connected: ${s.port}`
+      : (s.following_state_file
+          ? `following ${s.state_path || "state.json"}${s.peer_connected ? " (peer live)" : ""}`
+          : "not connected — Connect COM, or run continuous with persist_telemetry");
 
     // Plant control gating — never disable ESTOP so a stuck link doesn't hide the kill switch
     for (const id of ["mcuNormal", "mcuRecovery", "mcuDiag", "recoverBtn"]) {
@@ -604,6 +608,39 @@ def make_handler(state: AppState):
                     if cached is not None and (now - state_cache["t"]) < state_cache_ttl_s:
                         self._send_json(cached)
                         return
+                # Not connected: serve peer state.json (e.g. yam_continuous_all
+                # with persist_telemetry) so the UI can watch FB without owning COM.
+                if not state.connected:
+                    try:
+                        sp = state.telemetry.state_path
+                        if sp.is_file():
+                            payload = json.loads(sp.read_text(encoding="utf-8"))
+                            # Peer may have connected=true (it owns COM). Keep
+                            # telemetry, but mark follow mode so UI does not
+                            # enable Apply/MCU controls against a missing hub.
+                            peer_connected = bool(payload.get("connected"))
+                            payload["following_state_file"] = True
+                            payload["state_path"] = str(sp)
+                            payload["peer_connected"] = peer_connected
+                            payload["connected"] = False
+                            payload["streaming"] = bool(
+                                payload.get("streaming") or peer_connected
+                            )
+                            if peer_connected and payload.get("fb_hz") is not None:
+                                hz = float(payload["fb_hz"] or 0.0)
+                                payload["summary"] = (
+                                    f"following state.json · fb_hz={hz:.0f} · "
+                                    f"peer={payload.get('port') or '?'}"
+                                )
+                                if hz >= 20.0 and payload.get("grade") == "red":
+                                    payload["grade"] = "green"
+                            with state_cache_lock:
+                                state_cache["t"] = now
+                                state_cache["payload"] = payload
+                            self._send_json(payload)
+                            return
+                    except Exception:
+                        pass
                 payload = state.telemetry.snapshot_dict()
                 payload.update(state.held_snapshot())
                 with state_cache_lock:

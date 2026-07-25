@@ -59,6 +59,8 @@ Full debug timeline + ranked bugs: [ch4-mcp2518-bringup-postmortem.md](ch4-mcp25
 - Bit time must be ~**1.0 µs** on scope (TSEG1=15 / 18 TQ). “1 Mbps” at TSEG1=17 measured ~1.15 µs → recessive ACK, TEC+8.
 - Never treat TXQEIF (queue empty) as TX complete on one-deep TXQ.
 - RX: first RX FIFO = channel 1; **FnBP=1**. Wrong FnBP/SFR → scope sees reply, firmware `rx=0`.
+- **Mixed std+ext:** dual accept-all filters (std filter0 + ext filter1, MIDE=1). Damiao = std, RobStride = ext — same demux as FDCAN.
+- Damiao DEBUG probes on MCP use `send_now` (queued TX from USB diag timed out).
 - FRESET TXQ only in Config; careful UINC/TXREQ in Normal.
 - Ammeter ground truth: ~0.02 A rest / ~0.07 A enabled often beats misleading `mms` alone.
 

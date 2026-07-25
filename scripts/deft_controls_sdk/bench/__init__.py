@@ -58,9 +58,21 @@ class DebugAPI:
     # -- RobStride (RS2) -----------------------------------------------------------
 
     def discover_robstride(self, *, bus: int, start: int = 0x40, end: int = 0x80) -> Optional[int]:
-        """Sweep start..end on bus for a responding RS02 motor. Manages its own
-        lease — do not also wrap this call in `with hub.debug.lease():`."""
+        """Sweep start..end; return the first responding RS02/RS01 id.
+
+        Full range is always scanned (see :meth:`discover_robstride_all`). Manages
+        its own lease — do not also wrap this call in `with hub.debug.lease():`.
+        """
         return _robstride.discover(self._connection, self._telemetry, bus=bus, start=start, end=end)
+
+    def discover_robstride_all(
+        self, *, bus: int, start: int = 0x40, end: int = 0x80
+    ) -> List[int]:
+        """Sweep start..end; return every unique responding RobStride id in
+        discovery order. Light enable+promisc only — no deep wake spam."""
+        return _robstride.discover_all(
+            self._connection, self._telemetry, bus=bus, start=start, end=end
+        )
 
     def probe_robstride(self, *, bus: int, motor_id: int, timeout_s: float = 0.55) -> Optional[dict]:
         return _robstride.probe(self._connection, self._telemetry, bus=bus, motor_id=motor_id, timeout_s=timeout_s)
@@ -100,10 +112,29 @@ class DebugAPI:
         listen_ms: int = 40,
         known_ids: Sequence[int] = (),
     ) -> Optional[int]:
-        """ID_SWEEP then per-ID REG_SCAN fallback. Pass known_ids (e.g. this
-        bus's configured slot IDs) first — scanning unconfigured IDs first can
-        flood the bus and stop the drive from replying (docs/lessons.md)."""
+        """ID_SWEEP then REG_SCAN fallback. Leave known_ids empty unless you
+        already know ESC IDs on this bus (wrong hints just waste REG_SCAN)."""
         return _damiao.discover(
+            self._connection,
+            self._telemetry,
+            bus=bus,
+            start=start,
+            end=end,
+            listen_ms=listen_ms,
+            known_ids=known_ids,
+        )
+
+    def discover_damiao_all(
+        self,
+        *,
+        bus: int = 1,
+        start: int = 1,
+        end: int = 16,
+        listen_ms: int = 40,
+        known_ids: Sequence[int] = (),
+    ) -> List[int]:
+        """Like discover_damiao but returns every unique hit (discovery order)."""
+        return _damiao.discover_all(
             self._connection,
             self._telemetry,
             bus=bus,

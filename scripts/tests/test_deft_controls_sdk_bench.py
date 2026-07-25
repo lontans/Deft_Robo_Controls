@@ -189,6 +189,7 @@ def test_discover_robstride_finds_target_id() -> None:
         rpdu[25] = kind
         if motor_id == target and kind == PROBE_ENABLE_ONLY:
             rpdu[2] = 1
+            rpdu[24] = target  # discovered_id
         resp[PDU_OFF : PDU_OFF + 32] = bytes(rpdu)
         return bytes(resp)
 
@@ -196,6 +197,30 @@ def test_discover_robstride_finds_target_id() -> None:
     debug = DebugAPI(conn, None)
     hit = debug.discover_robstride(bus=2, start=0x70, end=0x75)
     assert hit == target
+
+
+def test_discover_robstride_all_finds_multiple_ids() -> None:
+    """Daisy-chained motors on one bus — must not stop at the first hit."""
+    targets = {0x70, 0x74}
+
+    def responder(frame: bytes):
+        pdu_in = frame[PDU_OFF : PDU_OFF + 32]
+        motor_id, kind = pdu_in[3], pdu_in[4]
+        resp = _blank_feedback()
+        rpdu = bytearray(32)
+        rpdu[0] = RS2_RESP_TAG
+        rpdu[1] = motor_id
+        rpdu[25] = kind
+        if motor_id in targets and kind == PROBE_ENABLE_ONLY:
+            rpdu[2] = 1
+            rpdu[24] = motor_id
+        resp[PDU_OFF : PDU_OFF + 32] = bytes(rpdu)
+        return bytes(resp)
+
+    conn = _fake_connection(responder)
+    debug = DebugAPI(conn, None)
+    hits = debug.discover_robstride_all(bus=5, start=0x70, end=0x75)
+    assert hits == [0x70, 0x74]
 
 
 def test_discover_damiao_prefers_known_ids_order() -> None:

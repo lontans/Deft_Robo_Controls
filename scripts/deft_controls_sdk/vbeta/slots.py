@@ -31,7 +31,9 @@ NECK_YAW_DXL_ID = 2
 # Damiao master IDs (bringup nominal)
 _DAMIAO_MASTER = (0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17)
 
-# Default MIT gains for YAM Damiao (bringup.md)
+# Dual-YAM teleop baseline — must match scripts/legacy/control_hub/teleop/defaults.py
+# `_ARM_KP` / `DM_KD`. J2=160 was a mistaken "gravity" bump; it vibrates under
+# multi-joint CLEAR motion (use 60 like proven plant teleop).
 DEFAULT_ARM_KP: Tuple[float, ...] = (40.0, 60.0, 90.0, 60.0, 25.0, 25.0, 20.0)
 DEFAULT_ARM_KD: float = 1.0
 

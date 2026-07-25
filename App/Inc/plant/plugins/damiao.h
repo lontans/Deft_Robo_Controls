@@ -24,6 +24,20 @@
 
 #define DM4310_T_MAX  ( 10.0f)
 
+/* DM-J4340P MIT map (must match motor assistant TMAX/VMAX — typically 28 / 10). */
+
+#define DM4340_P_MIN  (-12.5f)
+
+#define DM4340_P_MAX  ( 12.5f)
+
+#define DM4340_V_MIN  (-10.0f)
+
+#define DM4340_V_MAX  ( 10.0f)
+
+#define DM4340_T_MIN  (-28.0f)
+
+#define DM4340_T_MAX  ( 28.0f)
+
 
 
 #define DM_KP_MIN     (0.0f)

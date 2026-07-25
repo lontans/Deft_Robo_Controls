@@ -163,16 +163,23 @@ class PcbArmDriver:
             "joint_torque": tau[:6].astype(np.float32),
         }
 
-    def _desires_for(self, q: np.ndarray) -> dict[int, ActuatorDesire]:
+    def _desires_for(
+        self, q: np.ndarray, dq: Optional[np.ndarray] = None
+    ) -> dict[int, ActuatorDesire]:
         out: dict[int, ActuatorDesire] = {}
         if self._zero_torque:
             for slot in self.slots:
                 out[slot] = ActuatorDesire()
             return out
+        vel = (
+            np.asarray(dq, dtype=np.float32).reshape(7)
+            if dq is not None
+            else np.zeros(7, dtype=np.float32)
+        )
         for i, slot in enumerate(self.slots):
             out[slot] = ActuatorDesire(
                 position=float(q[i]),
-                velocity=0.0,
+                velocity=float(vel[i]),
                 kp=float(self.kp[i]),
                 kd=self.kd,
                 torque=0.0,
@@ -185,6 +192,16 @@ class PcbArmDriver:
             q = clamp_q7(q, self.side, margin=self.soft_margin)
         self._setpoint = q.copy()
         self._session.set_actuators(self._desires_for(q), send=send)
+
+    def _command_joint_pos_vel(
+        self, values: np.ndarray, velocities: np.ndarray, *, send: bool
+    ) -> None:
+        q = np.asarray(values, dtype=np.float32).reshape(7)
+        dq = np.asarray(velocities, dtype=np.float32).reshape(7)
+        if self.clamp_goals:
+            q = clamp_q7(q, self.side, margin=self.soft_margin)
+        self._setpoint = q.copy()
+        self._session.set_actuators(self._desires_for(q, dq), send=send)
 
     def write(
         self,
@@ -203,19 +220,35 @@ class PcbArmDriver:
         print(f"Data name: {data_name} value: {values} is not supported for writing.")
 
     def go_to(self, position: np.ndarray, time_interval: float = 2.0) -> None:
+        """I2RT ``move_joints``: smoothstep ramp from current *setpoint* (not FB).
+
+        Linear FB→target snaps when encoder noise / lag disagrees with the held
+        MIT command and feels jolty; velocity feedforward matches the ramp.
+        """
         self._require()
         target = np.asarray(position, dtype=np.float32).reshape(7)
-        start = self.read("Position_Rad")
+        if self.clamp_goals:
+            target = clamp_q7(target, self.side, margin=self.soft_margin)
+        start = self._setpoint.copy()
+        # If never commanded, seed once from FB then ramp from there.
+        if float(np.max(np.abs(start))) < 1e-6:
+            start = np.asarray(self.read("Position_Rad"), dtype=np.float32).reshape(7)
+            self._setpoint = start.copy()
         dt = max(float(time_interval), 1e-3)
+        delta = target - start
         t0 = time.perf_counter()
         while True:
             u = (time.perf_counter() - t0) / dt
             if u >= 1.0:
                 break
-            q = start + (target - start) * u
-            self._command_joint_pos(q, send=False)
+            # Smoothstep + derivative for MIT velocity ff (rad/s).
+            s = u * u * (3.0 - 2.0 * u)
+            ds_du = 6.0 * u * (1.0 - u)
+            q = start + delta * np.float32(s)
+            dq = (delta / np.float32(dt)) * np.float32(ds_du)
+            self._command_joint_pos_vel(q, dq, send=False)
             time.sleep(0.01)
-        self._command_joint_pos(target, send=False)
+        self._command_joint_pos_vel(target, np.zeros(7, dtype=np.float32), send=False)
 
     def disconnect(self) -> None:
         self._require()

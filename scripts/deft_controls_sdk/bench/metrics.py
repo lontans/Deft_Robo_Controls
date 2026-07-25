@@ -51,8 +51,8 @@ def measure_hold(
     """Hold desires at ``hz`` for ``seconds``; collect FB health stats.
 
     Pass gates (also returned as ok_lag / ok_fb / ok_plant_tag):
-      ack_lag max <= 2, fb_hz >= 20, plant ``pdu`` tag stays 0x00
-      (plain plant stream — not DEBUG/bench mailbox tags).
+      ack_lag max <= 2, fb_hz >= 20, plant ``pdu`` tag is plain plant
+      (0x00 or live PDBF ``P…``) — not DEBUG/bench mailbox tags.
     """
     blank = {slot: ActuatorDesire() for slot in range(ACTUATOR_COUNT)}
     blank.update(desires)
@@ -127,8 +127,10 @@ def measure_hold(
 
     ok_lag = (not ack_lags) or (max(ack_lags) <= 2)
     ok_fb = raw_fb_hz is not None and raw_fb_hz >= 20.0
-    non_zero_tags = {k: v for k, v in pdu_tags.items() if k not in ("0x00", "0", "?")}
-    ok_plant_tag = len(non_zero_tags) == 0
+    # Plant mailbox may be zeros (legacy) or live PDBF ('P' from magic PDBF).
+    # Fail only when DEBUG/bench tags appear on the plant stream.
+    _plant_ok_tags = {"0x00", "0", "?", "P"}
+    ok_plant_tag = all(k in _plant_ok_tags for k in pdu_tags)
     lap_window_max = max(lap_ms) if lap_ms else None
     lap_sticky_max = max(lap_max_sticky) if lap_max_sticky else None
     periph_window_max = max(periph_lap_ms) if periph_lap_ms else None
