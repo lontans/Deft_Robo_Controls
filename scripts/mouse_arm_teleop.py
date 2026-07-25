@@ -67,24 +67,22 @@ LATCH_HOLD_S = 0.35
 SEED_S = 0.28
 ENGAGE_S = 1.0
 ENGAGE_KP = 0.85
-# J2 lift boost — only while J2 is actively driven. Always-on ×1.4 (~84 kp)
-# with residual lead buzzes late in a session (deep CLEAR + gravity load).
-J2_KP_SCALE = 1.40  # ~84 kp while raising/lowering J2
-J2_HOLD_KP_SCALE = 1.00  # ~60 kp when bracing / enable-up
+# J2 fights gravity — keep boost on drive *and* hold/enable-up (dropping
+# hold kp caused sag; tight lead made lifts feel short of CLEAR).
+J2_KP_SCALE = 1.40  # ~84 kp
 STREAM_HZ = 60.0
 
 J1, J2, J3, J4, J5, J7 = 0, 1, 2, 3, 4, 6
 # Full-stick rates (rad/s)
-# ~+30% vs prior teleop rates
-RATE_J1 = 0.36
-RATE_J2 = 0.34
-RATE_J3 = 0.29
-RATE_J4 = 0.39
-RATE_J5 = 0.31
-RATE_J7 = 0.45  # open/close slew
+RATE_J1 = 0.42
+RATE_J2 = 0.44
+RATE_J3 = 0.36
+RATE_J4 = 0.46
+RATE_J5 = 0.36
+RATE_J7 = 0.50  # open/close slew
 JOG_INSET = 0.06
 MAX_LEAD = 0.25
-J2_MAX_LEAD = 0.18  # tighter than MAX_LEAD — large lead + high kp buzzes
+J2_MAX_LEAD = 0.32  # allow chase under gravity (0.18 felt like early stop)
 J2_HARDSTOP_HI = -2.55
 STICK_RADIUS_PX = 15.0
 STICK_DEADZONE = 0.05
@@ -181,14 +179,14 @@ def _write_arm(
     *,
     kp_scale: float,
     dq: Optional[np.ndarray] = None,
-    j2_boost: bool = False,
+    j2_boost: bool = True,
 ) -> None:
     d = _blank()
     vel = np.zeros(7, dtype=np.float32) if dq is None else np.asarray(dq, dtype=np.float32)
     for i, slot in enumerate(LEFT_ARM_SLOTS):
         scale = float(kp_scale)
-        if i == J2:
-            scale = max(scale, J2_KP_SCALE if j2_boost else J2_HOLD_KP_SCALE)
+        if j2_boost and i == J2:
+            scale = max(scale, J2_KP_SCALE)
         d[slot] = ActuatorDesire(
             position=float(q[i]),
             velocity=float(vel[i]),
@@ -628,13 +626,7 @@ def main(argv: list[str] | None = None) -> int:
                         return 6
 
                     rt.step(state, fb=fb, dt=dt)
-                    _write_arm(
-                        session,
-                        rt.cmd,
-                        kp_scale=ENGAGE_KP,
-                        dq=rt.dq,
-                        j2_boost=(J2 in rt.active),
-                    )
+                    _write_arm(session, rt.cmd, kp_scale=ENGAGE_KP, dq=rt.dq)
 
                     n += 1
                     now = time.time()

@@ -731,7 +731,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             from mouse_arm_teleop import (  # noqa: WPS433
                 ENGAGE_KP,
-                J2_HOLD_KP_SCALE,
                 J2_KP_SCALE,
                 STICK_DEADZONE,
                 STICK_RADIUS_PX,
@@ -1391,19 +1390,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         break
                     rt.step(mstate, fb=fb_arm, dt=dt_nom)
                     tick_base = _tick_base_and_dxl()
-                    # Boost J2 kp only while driving it — always-on ×1.4 with
-                    # residual lead buzzes once the arm is deep in CLEAR.
-                    j2_scale = (
-                        float(J2_KP_SCALE)
-                        if J2 in rt.active
-                        else float(J2_HOLD_KP_SCALE)
-                    )
                     _write_plant(
                         session,
                         rt.cmd,
                         arm_dq=rt.dq,
                         arm_kp_scale=float(ENGAGE_KP),
-                        j2_kp_scale=j2_scale,
+                        j2_kp_scale=float(J2_KP_SCALE),
                         gravity_comp=gravity_comp,
                         base_cmd=tick_base if tick_base else None,
                         base_vel=dict(base_vel) if tick_base else None,
@@ -1420,7 +1412,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             f"  mouse en={int(rt.deadman)} vert={rt.vert_mode} "
                             f"stick=({sx:+.2f},{sy:+.2f}) "
                             f"J2_hold/fb={rt.hold[J2]:+.3f}/{qshow[J2]:+.3f} "
-                            f"J2_err={j2_err:+.3f} j2_kp×{j2_scale:.2f} "
+                            f"J2_err={j2_err:+.3f} "
                             f"faults={faults} | {_status_base_dxl(tick_base)}",
                             flush=True,
                         )
