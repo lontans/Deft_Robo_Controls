@@ -1,4 +1,5 @@
 #include "host/pdb_link.h"
+#include "host/pdb_vi_limits.h"
 #include "host/uart4_mode.h"
 #include "usart.h"
 #include "main.h"
@@ -547,14 +548,104 @@ static uint8_t pdb_link_fresh_byte(uint32_t offset, uint8_t stale_value)
 	return (synced && (HAL_GetTick() - last_ms) <= PDB_STALE_MS) ? value : stale_value;
 }
 
+/* V/I acceptability on a validated fresh PDBF payload.
+ * Returns PDB_KILL_REASON_NONE if OK, else UNDERVOLTAGE or OVERCURRENT.
+ * OC wins when both would trip. Unused pack slots (v==0) are skipped.
+ * Only rail_v[0] (central 48 V) has a voltage window; other rails are
+ * current-checked when active (contactor bit or non-zero voltage). */
+static uint8_t pdb_vi_reject_reason(const uint8_t *fb)
+{
+	uint8_t contactor = fb[PDB_FB_OFF_CONTACTOR];
+	uint8_t reason = (uint8_t)PDB_KILL_REASON_NONE;
+	uint8_t i;
+
+	for (i = 0u; i < 4u; i++) {
+		uint16_t pv = pdb_rd_u16(fb, PDB_FB_OFF_PACK_V + (uint32_t)i * 2u);
+		uint16_t pi = pdb_rd_u16(fb, PDB_FB_OFF_PACK_I + (uint32_t)i * 2u);
+		uint16_t rv = pdb_rd_u16(fb, PDB_FB_OFF_RAIL_V + (uint32_t)i * 2u);
+		uint16_t ri = pdb_rd_u16(fb, PDB_FB_OFF_RAIL_I + (uint32_t)i * 2u);
+		bool pack_on = (pv != 0u);
+		bool rail_on = ((contactor & (uint8_t)(1u << i)) != 0u) || (rv != 0u);
+
+		if (pack_on && pi > PDB_VI_I_ABS_MAX_COUNTS)
+			return (uint8_t)PDB_KILL_REASON_OVERCURRENT;
+		if (rail_on && ri > PDB_VI_I_ABS_MAX_COUNTS)
+			return (uint8_t)PDB_KILL_REASON_OVERCURRENT;
+
+		if (pack_on &&
+		    (pv < PDB_VI_PACK_V_MIN_COUNTS || pv > PDB_VI_PACK_V_MAX_COUNTS))
+			reason = (uint8_t)PDB_KILL_REASON_UNDERVOLTAGE;
+
+		if (i == 0u && rail_on &&
+		    (rv < PDB_VI_RAIL48_V_MIN_COUNTS || rv > PDB_VI_RAIL48_V_MAX_COUNTS))
+			reason = (uint8_t)PDB_KILL_REASON_UNDERVOLTAGE;
+	}
+
+	return reason;
+}
+
+/* Freshness + peer kill + V/I overlay in one snapshot so USB system.kill_state
+ * and kill_reason always agree. Stale still → HARD + COMMS_LOSS. Overlay only
+ * when peer reports NORMAL (do not demote HARD / SOFT_READY / peer SOFT_REQ). */
+static void pdb_link_eval_kill(uint8_t *state_out, uint8_t *reason_out)
+{
+	uint8_t fb[PDB_FRAME_BYTES];
+	bool synced;
+	uint32_t last_ms;
+	uint8_t peer_state;
+	uint8_t peer_reason;
+	uint8_t vi_reason;
+
+	plant_crit_enter();
+	synced = s_ever_synced;
+	last_ms = s_last_rx_ms;
+	memcpy(fb, s_last_valid_fb, PDB_FRAME_BYTES);
+	plant_crit_exit();
+
+	if (!synced || (HAL_GetTick() - last_ms) > PDB_STALE_MS) {
+		*state_out = (uint8_t)PDB_KILL_HARD_ESTOP;
+		*reason_out = (uint8_t)PDB_KILL_REASON_COMMS_LOSS;
+		return;
+	}
+
+	peer_state = fb[PDB_FB_OFF_KILL_STATE];
+	peer_reason = fb[PDB_FB_OFF_KILL_REASON];
+
+	if (peer_state != (uint8_t)PDB_KILL_NORMAL) {
+		*state_out = peer_state;
+		*reason_out = peer_reason;
+		return;
+	}
+
+	vi_reason = pdb_vi_reject_reason(fb);
+	if (vi_reason != (uint8_t)PDB_KILL_REASON_NONE) {
+		*state_out = (uint8_t)PDB_KILL_SOFT_REQ;
+		*reason_out = vi_reason;
+		return;
+	}
+
+	*state_out = peer_state;
+	*reason_out = peer_reason;
+}
+
 uint8_t pdb_link_kill_state(void)
 {
-	return pdb_link_fresh_byte(PDB_FB_OFF_KILL_STATE, (uint8_t)PDB_KILL_HARD_ESTOP);
+	uint8_t state;
+	uint8_t reason;
+
+	pdb_link_eval_kill(&state, &reason);
+	(void)reason;
+	return state;
 }
 
 uint8_t pdb_link_kill_reason(void)
 {
-	return pdb_link_fresh_byte(PDB_FB_OFF_KILL_REASON, (uint8_t)PDB_KILL_REASON_COMMS_LOSS);
+	uint8_t state;
+	uint8_t reason;
+
+	pdb_link_eval_kill(&state, &reason);
+	(void)state;
+	return reason;
 }
 
 uint8_t pdb_link_estop_sense(void)

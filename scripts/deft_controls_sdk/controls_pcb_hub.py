@@ -23,6 +23,7 @@ from deft_controls_sdk.bench import DebugAPI, find_cdc_port
 from deft_controls_sdk.link import ActuatorDesire, Connection, FeedbackImage, LedDesire, McuState, ServoDesire
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD
 from deft_controls_sdk.pdb import KILL_SOFT_REQ, PdbStatus, pdb_status_from_frame
+from deft_controls_sdk.pdb import limits as pdb_limits
 from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
 
 
@@ -86,19 +87,42 @@ class ControlsPcbHub:
     def state_path(self) -> Path:
         return self.telemetry.state_path
 
-    def start_streaming(self, hz: float = 40.0, *, telemetry_hz: float = 10.0) -> None:
+    def set_auto_soft_kill(self, enabled: bool) -> None:
+        """Enable/disable plant-TX soft-kill park hooks (PDU SOFT_KILL_REQ + V/I).
+
+        Product teleop leaves this on. The debug dashboard observe mode turns
+        it off so Connect does not latch ESTOP from a residual PDU soft-kill
+        or host V/I check before the operator opts into plant control.
+        """
+        if enabled:
+
+            def _pre_plant_send() -> None:
+                self.soft_kill_park_if_requested(send=False)
+                self.soft_kill_park_if_bad_vi(send=False)
+
+            self._connection.set_pre_plant_send(_pre_plant_send)
+        else:
+            self._connection.set_pre_plant_send(None)
+
+    def start_streaming(
+        self,
+        hz: float = 40.0,
+        *,
+        telemetry_hz: float = 10.0,
+        auto_soft_kill: bool = True,
+    ) -> None:
         """Background plant stream — keeps HOST_STALE clear and feeds telemetry.
 
         Plant TX runs at ``hz`` on its own thread (send→sleep, legacy-shaped).
         TelemetryCache / UI publish runs on a *side* thread at ``telemetry_hz``
         so dashboard disk/json cannot stretch plant TX gaps.
 
-        Auto-parks via :meth:`soft_kill_park_if_requested` when USB kill is
-        ``SOFT_KILL_REQ`` (staged; next plant TX carries ESTOP).
+        When ``auto_soft_kill`` is True (default, product path): auto-parks via
+        :meth:`soft_kill_park_if_requested` when USB kill is ``SOFT_KILL_REQ``,
+        and via :meth:`soft_kill_park_if_bad_vi` against ``pdb.limits``.
+        Pass ``auto_soft_kill=False`` for read-only observe streams (dashboard).
         """
-        self._connection.set_pre_plant_send(
-            lambda: self.soft_kill_park_if_requested(send=False)
-        )
+        self.set_auto_soft_kill(auto_soft_kill)
         self._connection.start_streaming(hz=hz, telemetry_hz=telemetry_hz)
 
     def log_feedback(self, raw: Optional[bytes] = None, *, include_raw: bool = True) -> None:
@@ -247,6 +271,26 @@ class ControlsPcbHub:
         """
         status = self.pdb_status()
         if status is None or status.kill_state != KILL_SOFT_REQ:
+            return False
+        self.soft_kill_park(send=send)
+        return True
+
+    def soft_kill_park_if_bad_vi(self, *, send: bool = True) -> bool:
+        """Host-side belt-and-suspenders: independently re-check PDU V/I
+        against the shared thresholds (:mod:`deft_controls_sdk.pdb.limits`,
+        mirrored from firmware ``App/Inc/host/pdb_vi_limits.h``) and park
+        even on firmware that doesn't yet overlay ``SOFT_KILL_REQ`` itself.
+
+        Only acts when the peer reports ``NORMAL`` — stale (fails safe to
+        ``HARD_ESTOP``/``COMMS_LOSS`` already), ``SOFT_KILL_REQ``/``READY``,
+        and ``HARD_ESTOP`` are all already handled by the existing kill-state
+        paths. Returns True when a park was performed.
+        """
+        status = self.pdb_status()
+        if status is None or not status.normal:
+            return False
+        check = pdb_limits.check_status(status)
+        if check is None or not check.violated:
             return False
         self.soft_kill_park(send=send)
         return True

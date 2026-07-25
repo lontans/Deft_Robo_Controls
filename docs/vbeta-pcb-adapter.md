@@ -16,6 +16,27 @@ submodule's own `.git`, per the existing bloat-avoidance call in
 Read-only reference for contract-matching; never edit files under it from
 this repo.
 
+## Live prove (2026-07-24, product CFG)
+
+`PcbArmDriver` (left, CH1) + `PcbPlatformClient` (base) were run against the **live** Jetson board
+under the actual `yam_product_rows()` CFG (not the bench-spare map) via
+[`scripts/vbeta_product_prove.py`](../scripts/vbeta_product_prove.py) — full results, the base
+ID-remap gap below, and `deft_vbeta/`'s current blocker in
+[`bench-vbeta-product-cfg-2026-07-24.md`](bench-vbeta-product-cfg-2026-07-24.md). Left arm: live,
+MIT-armed, `Goal_Position` tracking confirmed. Right arm (CH2): CFG'd, not physically present this
+session. Base (CH4–6, product IDs `0x01`/`0x02`): **not found** — see remap gap.
+
+### Base ID remap gap (product `0x01`/`0x02` vs. bench `0x70`/`0x74`/`0x75`/`0x06`)
+
+The physically-wired base RobStride/Damiao drives on this bench answer to bench-spare IDs
+(`docs/peripherals/base-robstride-mcp.md`, `docs/peripherals/base-damiao-ch6.md`), not the product
+map's `0x01` (steer) / `0x02` (drive) per CH4–6 rail. `PcbPlatformClient` is CFG- and protocol-correct
+against the product map as specified — this is a hardware/CFG mismatch on the current bench, not an
+adapter bug. **Do not** silently point `PcbPlatformClient`/`yam_product_rows()` at the bench-spare
+IDs to paper over this — track it as its own ADR if/when the base needs to actually drive under the
+product stack (see the three-agent plan's backlog: "Base product `0x01`/`0x02` vs bench `0x70`/`0x74`
+ADR").
+
 ## Parity status (vs `docs/deft_vbeta_ref/deft_vbeta` @ `6cd886f`)
 
 Checked method-for-method against the reference `I2RTArmDriver`,
@@ -149,6 +170,14 @@ PCB-only, no I2RT/Feather equivalent to match.
 |Neck|deg → DXL native steps|
 
 ## YAMAIMobile integration sketch (patch in deft_vbeta, not this repo)
+
+**Landed as real code**: `deft_vbeta/src/deft_amr/amr/amr/pcb_bridge.py`
+(`install_pcb_backend(robot)`) in the repo-root `deft_vbeta/` working checkout (gitignored fresh
+clone, not the read-only `docs/deft_vbeta_ref/deft_vbeta` reference). Not yet exercised through a
+live `YAMAIMobile` instance — the Jetson's Python env has neither `torch` nor `mujoco`, both
+required at `YAMAIMobile.__init__` import time. See
+[`bench-vbeta-product-cfg-2026-07-24.md`](bench-vbeta-product-cfg-2026-07-24.md) for the direct
+(non-`YAMAIMobile`) adapter prove that doesn't depend on that environment.
 
 Live call sites construct `YAMAIMobile` directly; arms come from
 `make_motors_buses_from_configs` (`i2rt_driver`); platform from

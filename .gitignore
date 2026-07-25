@@ -49,3 +49,7 @@ docs/handoff-*.md
 
 # Vendor GUI apps (not documentation) — keep PDFs/source samples only
 External_Documentation/RobStride/motor_toolV14L/
+
+# Working checkout of gitlab deft_vbeta (Claudacious) — 27 MB+ own .git,
+# not this repo's source. Read-only reference stays at docs/deft_vbeta_ref/.
+/deft_vbeta/

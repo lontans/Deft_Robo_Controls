@@ -12,6 +12,10 @@
  * Hard-ESTOP wire (PB7) is driven by the PDU, not this MCU. This module
  * configures PB7 as a high-Z input and reports the sensed level; it does
  * not drive the net. Soft-kill / freshness still gate kill_state over UART.
+ *
+ * USB kill mirror (pdb_link_kill_state/reason): stale → HARD + COMMS_LOSS;
+ * on fresh PDBF with peer NORMAL, out-of-range pack/rail V·I overlays
+ * SOFT_KILL_REQ + UV/OC (see pdb_vi_limits.h). pdb[64] mirror stays verbatim.
  */
 
 #define PDB_FRAME_BYTES 64u

@@ -17,25 +17,38 @@ Remove-Item -Recurse -Force scripts\.deft_session -ErrorAction SilentlyContinue
 Remove-Item -Force scripts\_tmp_*.log -ErrorAction SilentlyContinue
 ```
 
-## `scripts/_tmp_*` — current (2026-07-24)
+## `scripts/_tmp_*` — current (2026-07-25)
 
-| File | Keep? | Why |
-|------|-------|-----|
-| `yam_continuous_all.py` | **Yes** (not `_tmp_`) | Continuous multi-peripheral driver — Claude 2 / live ops core |
-| `pdb_uart_sim.py` | **Yes** (not `_tmp_`) | PDU UART simulator used by every live prove path |
-| `soft_dfu_flash.py` | **Yes** — Cursor owns | Soft-DFU entrypoint; do not gut/edit outside Cursor's Soft-DFU work |
-| `_tmp_stop_can.py` | **Yes** | One-shot blank-actuators + DIAG recovery after a killed session |
-| `_tmp_launch_continuous.py` | **Yes** | Launches `yam_continuous_all.py` with the standard bench flags |
-| `_tmp_base_bus56_lab.py` | **Yes** | Base RS bus5/6 lab — `--prove-360` / `--tx-smoke` / `--fix-74` harness |
-| `_tmp_pdb_led_live_prove.py` | **Yes** (PDB prove trio) | Live PDU/LED prove |
-| `_tmp_pdb_plant_integ_test.py` | **Yes** (PDB prove trio) | Plant + PDU integration prove |
-| `_tmp_pdb_softkill_handshake_prove.py` | **Yes** (PDB prove trio) | Soft-kill handshake prove |
-| `_tmp_dxl_one.py` | **Yes — load-bearing, not a one-off** | Single-DXL range check; `sample_servo_fb()` is imported by both `_tmp_pdb_plant_integ_test.py` and `_tmp_pdb_softkill_handshake_prove.py` (the kept PDB prove trio). An earlier pass in this doc called it a delete candidate — deleting it would break those two keepers, so it stays until `sample_servo_fb` is promoted into the SDK and both callers are repointed. |
-| `_tmp_jetson_start_paced_sim.py` | Keep for now | Starts a paced `pdb_uart_sim` on the Jetson over SSH for Track B hygiene/prove; small, single-purpose, not folded into the runners below |
+The `_tmp_` prefix originally meant "scratch, may vanish." Most of what's left
+no longer fits that description — it's load-bearing infra for the live
+continuous / PDB-prove pipeline that just never got promoted out of the
+prefix. **"Deprecated" and "still needed" are not opposites here**: a file
+can be both (should be renamed/promoted) without being a candidate for
+`legacy/` (which is for retired code, not misnamed active code).
 
-**Do not** delete the PDB prove trio or `_tmp_dxl_one.py` while Claude 2's live-prove work depends on them.
+| File | Verdict | Why |
+|------|---------|-----|
+| `yam_continuous_all.py` | **Stay** (not `_tmp_`) | Continuous multi-peripheral driver — live ops core |
+| `pdb_uart_sim.py` | **Stay** (not `_tmp_`) | PDU UART simulator used by every live prove path |
+| `soft_dfu_flash.py` | **Stay** — Cursor owns | Soft-DFU entrypoint; do not gut/edit outside Cursor's Soft-DFU work |
+| `_tmp_stop_can.py` | **Stay, should be promoted** | One-shot blank-actuators + DIAG recovery after a killed session; named in `docs/peripherals/*.md` cleanup steps |
+| `_tmp_launch_continuous.py` | **Stay, should be promoted** | The **documented, "proven, reproducible" one-shot remote launcher** for continuous — `docs/peripherals/continuous-ops.md` names this exact filename in its AI quickstart. Renaming it now is a real fix but touches active live-ops docs/SSH muscle memory — do only when nobody has a session depending on the current name (see note below) |
+| `_tmp_base_bus56_lab.py` | **Stay** | Base RS bus5/6 lab — `--prove-360` / `--tx-smoke` / `--fix-74` harness. No other script imports it (its former callers, the SSH runner wrappers, are already archived below) but it's a standalone CLI tool named directly in `docs/peripherals/base-robstride-mcp.md`'s evidence table — "no importers" doesn't mean dead for an entrypoint script, unlike the library-import case below |
+| `_tmp_pdb_led_live_prove.py` | **Stay** (PDB prove trio) | Live PDU/LED prove |
+| `_tmp_pdb_plant_integ_test.py` | **Stay** (PDB prove trio) | Plant + PDU integration prove |
+| `_tmp_pdb_softkill_handshake_prove.py` | **Stay** (PDB prove trio) | Soft-kill handshake prove |
+| `_tmp_dxl_one.py` | **Stay — load-bearing, not a one-off** | Single-DXL range check; `sample_servo_fb()` is imported by both `_tmp_pdb_plant_integ_test.py` and `_tmp_pdb_softkill_handshake_prove.py` (the kept PDB prove trio). An earlier pass in this doc called it a delete candidate — deleting it would break those two keepers, so it stays until `sample_servo_fb` is promoted into the SDK and both callers are repointed |
+| `_tmp_cursonier_*.py` (8 files: `flash_retry`, `jetson_flash`, `jetson_ps`, `recover_poll`, `run_vi_prove`, `softdfu_once`, `swd_recover`, `usb_diag`, `vi_prove`) | **Not evaluated this pass** | Cursor's active Soft-DFU / FW V/I prove tooling, in use against the live board right now. Out of scope while that session is live — revisit once Cursor confirms these are done, not before |
 
-### Archived this pass → `scripts/legacy/`
+**Do not** delete the PDB prove trio, `_tmp_dxl_one.py`, `_tmp_launch_continuous.py`, `_tmp_stop_can.py`, or `_tmp_base_bus56_lab.py` — all are active dependencies of the live continuous/PDB-prove pipeline as of this pass.
+
+**On "promotion"**: `_tmp_launch_continuous.py` and `_tmp_stop_can.py` are good candidates to rename out of the `_tmp_` prefix (e.g. `launch_continuous.py`, `stop_can.py`) since they're permanent tools, not scratch. Holding off on doing that renamesweep in this pass because live-ops docs and muscle-memory SSH commands reference the exact current filenames, and a concurrent Claudacious session may have those names cached/synced to the Jetson right now — a rename plus doc/reference update is mechanical but should happen when nobody's mid-session, not silently under an active run.
+
+### Archived this pass (2026-07-25) → `scripts/legacy/`
+
+- `_tmp_jetson_start_paced_sim.py` — "start a paced `pdb_uart_sim` on the Jetson over SSH" one-shot. Zero importers, zero references outside this doc's own now-removed table row, and its job (restart `pdb_uart_sim` with controllable values for PDU V/I prove) is superseded by Cursor's more capable `_tmp_cursonier_vi_prove.py` / `_tmp_cursonier_run_vi_prove.py` pair. Safe: nothing currently depends on it.
+
+### Archived previous pass → `scripts/legacy/`
 
 - `_tmp_bus6_real_hw.py` — real-HW ×25 rx_sim + RS02 + DXL + LED load harness. Zero importers left in `scripts/`, and its own top-level `from _tmp_mcp_timing_probe import ensure_product_cfg` already points at a file that no longer exists — it was dead (import-broken) before this pass. Kept as reference, not deleted.
 

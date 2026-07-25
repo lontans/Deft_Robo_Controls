@@ -3,19 +3,18 @@
 Run:
 
     python -m deft_controls_sdk.debug_dashboard
-    # browser: http://127.0.0.1:8765  -> pick a port, click Connect
+    # browser: http://127.0.0.1:8766  -> pick a port, click Connect (observe)
 
     python -m deft_controls_sdk.debug_dashboard --port COM5
-    # same UI, auto-connects at launch (old one-shot workflow still works)
+    # same UI, auto-connects in observe mode at launch
 
-This process is the one COM owner while connected — AppState opens/closes a
-ControlsPcbHub in response to browser actions (Connect/Disconnect), and the
-same TelemetryCache instance survives across reconnects so fault history
-isn't lost on a board reset. Tier 1: read-only health + black box (as
-before) plus plant control (per-slot position/kp/kd hold, mcu_state,
-recover) — raw MIT-hold commanding only, no ramping/homing/teleop policy,
-same boundary the rest of the SDK draws. DEBUG-mode ops (discover/cfg) are
-not exposed here yet.
+Connect defaults to **observe**: plant stream clears HOST_STALE, MCU stays
+DIAG_ONLY, and soft-kill auto-park hooks are off — so opening the dashboard
+does not latch ESTOP / yellow-red PDU LEDs from a residual soft-kill or V/I
+check. Opt into plant control explicitly (Enable control → NORMAL + hooks).
+
+HTTP defaults to **8766** so it does not collide with ``pdb_uart_sim.py
+--control-port 8765``.
 """
 from __future__ import annotations
 
@@ -24,7 +23,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlparse
 
 from deft_controls_sdk import ActuatorDesire, ControlsPcbHub, McuState
@@ -34,6 +33,9 @@ from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
 # Peer (e.g. yam_continuous_all) owns CDC while dashboard follows state.json —
 # Soft-kill Park writes this flag; the peer parks and deletes it.
 SOFT_KILL_REQUEST_NAME = "soft_kill_request"
+
+ControlMode = Literal["observe", "control"]
+DEFAULT_HTTP_PORT = 8766
 
 _ACTIVE_EPS = 0.01
 """Matches firmware's actuator_any_non_idle_live() threshold — see
@@ -65,24 +67,80 @@ class AppState:
             session_dir=session_dir or default_session_dir(), persist=persist_telemetry
         )
         self.hub: Optional[ControlsPcbHub] = None
+        self.control_mode: ControlMode = "observe"
 
     @property
     def connected(self) -> bool:
         return self.hub is not None
 
-    def connect(self, port: str, *, baud: int = DEFAULT_BAUD) -> None:
+    def connect(
+        self,
+        port: str,
+        *,
+        baud: int = DEFAULT_BAUD,
+        mode: ControlMode = "observe",
+    ) -> None:
+        """Open CDC and start the plant stream.
+
+        Default ``mode="observe"``: DIAG_ONLY + no auto soft-kill park — safe
+        telemetry without faulting the board on Connect. Pass ``mode="control"``
+        only when the operator wants NORMAL plant apply + park hooks.
+        """
+        if mode not in ("observe", "control"):
+            raise ValueError("mode must be 'observe' or 'control'")
         with self._lock:
             if self.hub is not None:
                 raise RuntimeError(f"already connected to {self.hub.port} — disconnect first")
             hub = ControlsPcbHub.connect(port, baud=baud, telemetry=self.telemetry)
-            hub.start_streaming(hz=self._stream_hz, telemetry_hz=self._telemetry_hz)
+            # Observe first: clear HOST_STALE without latching ESTOP from PDU.
+            hub.start_streaming(
+                hz=self._stream_hz,
+                telemetry_hz=self._telemetry_hz,
+                auto_soft_kill=False,
+            )
+            hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
             self.hub = hub
+            self.control_mode = "observe"
+            if mode == "control":
+                self._enter_control_locked()
+
+    def set_control_mode(self, mode: ControlMode) -> None:
+        if mode not in ("observe", "control"):
+            raise ValueError("mode must be 'observe' or 'control'")
+        with self._lock:
+            hub = self.hub
+            if hub is None:
+                raise RuntimeError("not connected")
+            if mode == "control":
+                self._enter_control_locked()
+            else:
+                hub.set_auto_soft_kill(False)
+                for slot in range(ACTUATOR_COUNT):
+                    hub.set_actuator(slot, ActuatorDesire(), send=False)
+                hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
+                self.control_mode = "observe"
+
+    def _enter_control_locked(self) -> None:
+        hub = self.hub
+        assert hub is not None
+        hub.set_auto_soft_kill(True)
+        hub.set_mcu_state(McuState.NORMAL, send=True)
+        self.control_mode = "control"
 
     def disconnect(self) -> None:
         with self._lock:
             if self.hub is not None:
+                # Leave MCU in DIAG_ONLY so disconnect does not freeze an ESTOP
+                # latch from a soft-kill park that happened while connected.
+                try:
+                    self.hub.set_auto_soft_kill(False)
+                    self.hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
+                    time.sleep(0.05)
+                except Exception:
+                    pass
                 self.hub.close()
                 self.hub = None
+            self.control_mode = "observe"
 
     def _require_hub(self) -> ControlsPcbHub:
         hub = self.hub
@@ -213,6 +271,21 @@ _HTML = """<!DOCTYPE html>
   .grade.green { background: color-mix(in srgb, var(--green) 25%, transparent); color: var(--green); }
   .grade.yellow { background: color-mix(in srgb, var(--yellow) 25%, transparent); color: var(--yellow); }
   .grade.red { background: color-mix(in srgb, var(--red) 25%, transparent); color: var(--red); }
+  .grade.idle { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
+  .banner {
+    margin: 0.55rem 0 0; padding: 0.45rem 0.65rem; border-radius: 6px;
+    background: color-mix(in srgb, var(--yellow) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--yellow) 35%, var(--line));
+    color: var(--text); font-size: 0.8rem; line-height: 1.35;
+  }
+  .banner.ok {
+    background: color-mix(in srgb, var(--green) 10%, transparent);
+    border-color: color-mix(in srgb, var(--green) 30%, var(--line));
+  }
+  .banner.warn {
+    background: color-mix(in srgb, var(--red) 12%, transparent);
+    border-color: color-mix(in srgb, var(--red) 35%, var(--line));
+  }
   main { padding: 1.25rem; display: grid; gap: 1rem; max-width: 1200px; }
   .card {
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
@@ -252,18 +325,21 @@ _HTML = """<!DOCTYPE html>
 <body>
 <header>
   <h1>Deft controls telemetry</h1>
-  <span id="grade" class="grade red">red</span>
-  <span class="meta" id="meta">connecting…</span>
+  <span id="grade" class="grade idle">idle</span>
+  <span class="meta" id="meta">not connected</span>
 </header>
 <main>
   <section class="card">
     <h2>Connection</h2>
     <div class="row">
       <select id="portSelect"></select>
-      <button id="connectBtn" onclick="connect()">Connect</button>
+      <button id="connectBtn" onclick="connect()">Connect (observe)</button>
+      <button id="enableCtrlBtn" onclick="enableControl()" disabled title="Switch MCU to NORMAL and arm soft-kill auto-park">Enable control</button>
+      <button id="observeBtn" onclick="toObserve()" disabled title="Blank desires, DIAG_ONLY, no auto-park">Back to observe</button>
       <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
       <span class="meta" id="connMeta">not connected</span>
     </div>
+    <p class="banner ok" id="modeBanner">Idle — not owning COM. Connect opens observe mode (DIAG_ONLY); plant motors stay gated until Enable control.</p>
     <p class="err" id="connError"></p>
   </section>
   <section class="card">
@@ -379,12 +455,15 @@ function connect() {
   const port = document.getElementById("portSelect").value;
   if (!port) { setConnError("choose a port first"); return; }
   document.getElementById("connectBtn").disabled = true;
-  postAction("/api/connect", { port }, setConnError);
+  // Always observe first — never latches ESTOP / plant apply on Connect.
+  postAction("/api/connect", { port, mode: "observe" }, setConnError);
 }
 function disconnect() {
   document.getElementById("disconnectBtn").disabled = true;
   postAction("/api/disconnect", {}, setConnError);
 }
+function enableControl() { postAction("/api/control_mode", { mode: "control" }, setConnError); }
+function toObserve() { postAction("/api/control_mode", { mode: "observe" }, setConnError); }
 function setMcuState(n) { postAction("/api/mcu_state", { state: n }, setCtrlError); }
 function recover() { postAction("/api/recover", {}, setCtrlError); }
 function softKillPark() { postAction("/api/pdb/soft_kill_park", {}, setPdbError); }
@@ -406,6 +485,10 @@ function buildActuatorRows(count) {
       <td>${slot}</td>
       <td id="fbpos${slot}">—</td><td id="fbvel${slot}">—</td><td id="fbtau${slot}">—</td>
       <td id="fbtemp${slot}">—</td><td id="fbfault${slot}">—</td>
+      <td id="heldstate${slot}">—</td>
+      <td id="heldpos${slot}" class="held">—</td>
+      <td id="heldkp${slot}" class="held">—</td>
+      <td id="heldkd${slot}" class="held">—</td>
       <td><input type="number" step="0.01" id="pos${slot}" placeholder="0.0"></td>
       <td><input type="number" step="0.1" id="kp${slot}" placeholder="0.0"></td>
       <td><input type="number" step="0.01" id="kd${slot}" placeholder="0.0"></td>
@@ -424,11 +507,14 @@ async function tick() {
     const r = await fetch("/api/state");
     const s = await r.json();
     const g = document.getElementById("grade");
-    g.textContent = s.grade || "red";
-    g.className = "grade " + (s.grade || "red");
+    const grade = s.grade || "idle";
+    g.textContent = grade;
+    g.className = "grade " + grade;
     document.getElementById("summary").textContent = s.summary || "—";
-    document.getElementById("meta").textContent =
-      `${s.port || "?"} · ${s.mode || "?"} · poll 200ms`;
+    const modeLabel = s.control_mode || (s.connected ? "observe" : "idle");
+    document.getElementById("meta").textContent = s.connected
+      ? `${s.port || "?"} · ${modeLabel} · poll 200ms`
+      : (s.following_state_file ? `follow · poll 200ms` : `idle · poll 200ms`);
     const ctx = document.getElementById("context");
     ctx.innerHTML = (s.context || []).map(c => `<li>${c}</li>`).join("");
 
@@ -506,20 +592,38 @@ async function tick() {
     pdbMeta.textContent = pdbHint;
 
     // Connection card
+    const inControl = !!s.connected && s.control_mode === "control";
+    const inObserve = !!s.connected && s.control_mode !== "control";
     document.getElementById("connectBtn").disabled = !!s.connected;
     document.getElementById("disconnectBtn").disabled = !s.connected;
+    document.getElementById("enableCtrlBtn").disabled = !inObserve;
+    document.getElementById("observeBtn").disabled = !inControl;
     document.getElementById("portSelect").disabled = !!s.connected;
     document.getElementById("connMeta").textContent = s.connected
-      ? `connected: ${s.port}`
+      ? `${s.port} · ${s.control_mode || "observe"}`
       : (s.following_state_file
           ? `following ${s.state_path || "state.json"}${s.peer_connected ? " (peer live)" : ""}`
-          : "not connected — Connect COM, or run continuous with persist_telemetry");
-
-    // Plant control gating — never disable ESTOP so a stuck link doesn't hide the kill switch
-    for (const id of ["mcuNormal", "mcuRecovery", "mcuDiag", "recoverBtn"]) {
-      document.getElementById(id).disabled = !s.connected;
+          : "not connected — Connect (observe) is safe; Enable control only when you want motors");
+    const banner = document.getElementById("modeBanner");
+    if (!s.connected && !s.following_state_file) {
+      banner.className = "banner ok";
+      banner.textContent = "Idle — not owning COM. Connect opens observe (DIAG_ONLY, no auto soft-kill). PDU sim panel uses :8765; this UI defaults to :8766.";
+    } else if (!s.connected && s.following_state_file) {
+      banner.className = "banner ok";
+      banner.textContent = "Follow mode — reading state.json only. Soft-kill Park signals the peer; do not Connect while continuous owns CDC.";
+    } else if (inObserve) {
+      banner.className = "banner";
+      banner.textContent = "Observe — streaming telemetry, MCU DIAG_ONLY, auto soft-kill off. Board will not ESTOP from PDU V/I on connect. Enable control when ready to command.";
+    } else {
+      banner.className = "banner warn";
+      banner.textContent = "Control — MCU NORMAL + soft-kill auto-park armed. Idle all / Back to observe before Disconnect if you parked.";
     }
-    document.getElementById("mcuEstop").disabled = false;
+
+    // Plant control gating — ESTOP only when we own COM (follow mode uses Soft-kill Park)
+    const plantLive = inControl;
+    for (const id of ["mcuNormal", "mcuRecovery", "mcuDiag", "recoverBtn", "idleAllBtn", "mcuEstop"]) {
+      document.getElementById(id).disabled = !plantLive;
+    }
 
     // Streaming badge — the background thread that actually owns the wire.
     const streamBadge = document.getElementById("streamingBadge");
@@ -562,8 +666,8 @@ async function tick() {
         setText(`heldkd${slot}`, h ? fmt(h.kd, 2) : "—");
         const applyBtn = document.getElementById(`apply${slot}`);
         const idleBtn = document.getElementById(`idle${slot}`);
-        if (applyBtn) applyBtn.disabled = !s.connected;
-        if (idleBtn) idleBtn.disabled = !s.connected;
+        if (applyBtn) applyBtn.disabled = !inControl;
+        if (idleBtn) idleBtn.disabled = !inControl;
       });
     }
   } catch (e) {
@@ -645,6 +749,7 @@ def make_handler(state: AppState):
                             payload["state_path"] = str(sp)
                             payload["peer_connected"] = peer_connected
                             payload["connected"] = False
+                            payload["control_mode"] = "idle"
                             payload["streaming"] = bool(
                                 payload.get("streaming") or peer_connected
                             )
@@ -665,6 +770,17 @@ def make_handler(state: AppState):
                         pass
                 payload = state.telemetry.snapshot_dict()
                 payload.update(state.held_snapshot())
+                payload["control_mode"] = state.control_mode if state.connected else "idle"
+                payload["following_state_file"] = False
+                # Idle (no COM) must not look like a board fault — telemetry
+                # cache grades disconnected as "red"; soften for the UI.
+                if not state.connected:
+                    payload["grade"] = "idle"
+                    payload["summary"] = "idle — not connected"
+                    payload["context"] = [
+                        "Connect (observe) to stream telemetry without plant apply",
+                        "Enable control only when you intend to command actuators",
+                    ]
                 with state_cache_lock:
                     state_cache["t"] = now
                     state_cache["payload"] = payload
@@ -683,24 +799,43 @@ def make_handler(state: AppState):
                     port = body.get("port")
                     if not port:
                         raise ValueError("port is required")
-                    state.connect(port)
+                    mode = body.get("mode") or "observe"
+                    state.connect(port, mode=mode)
                 elif path == "/api/disconnect":
                     state.disconnect()
+                elif path == "/api/control_mode":
+                    state.set_control_mode(body.get("mode") or "observe")
                 elif path == "/api/record/start":
                     state.telemetry.start_recording()
                 elif path == "/api/record/stop":
                     state.telemetry.stop_recording()
                 elif path == "/api/recover":
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    if state.control_mode != "control":
+                        raise RuntimeError("Enable control first (observe mode is read-only)")
                     state.recover()
                 elif path == "/api/pdb/soft_kill_park":
                     result = state.soft_kill_park()
                     self._send_json({"ok": True, **result})
                     return
                 elif path == "/api/mcu_state":
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    if state.control_mode != "control":
+                        raise RuntimeError("Enable control first (observe mode is read-only)")
                     state.set_mcu_state(int(body["state"]))
                 elif path == "/api/actuator/idle_all":
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    if state.control_mode != "control":
+                        raise RuntimeError("Enable control first (observe mode is read-only)")
                     state.idle_all_actuators()
                 elif path.startswith("/api/actuator/"):
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    if state.control_mode != "control":
+                        raise RuntimeError("Enable control first (observe mode is read-only)")
                     rest = path[len("/api/actuator/") :]
                     if rest.endswith("/idle"):
                         state.idle_actuator(int(rest[: -len("/idle")]))
@@ -726,7 +861,9 @@ def make_handler(state: AppState):
     return Handler
 
 
-def serve(state: AppState, host: str = "127.0.0.1", http_port: int = 8765) -> ThreadingHTTPServer:
+def serve(
+    state: AppState, host: str = "127.0.0.1", http_port: int = DEFAULT_HTTP_PORT
+) -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer((host, http_port), make_handler(state))
     thread = threading.Thread(target=httpd.serve_forever, name="deft-dashboard-http", daemon=True)
     thread.start()

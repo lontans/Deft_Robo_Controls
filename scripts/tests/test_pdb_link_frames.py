@@ -25,7 +25,9 @@ from deft_controls_sdk.pdb import (
     KILL_HARD_ESTOP,
     KILL_NORMAL,
     KILL_REASON_COMMS_LOSS,
+    KILL_REASON_NONE,
     KILL_REASON_OVERCURRENT,
+    KILL_REASON_UNDERVOLTAGE,
     KILL_SOFT_READY,
     KILL_SOFT_REQ,
     MAGIC_CMD,
@@ -267,3 +269,102 @@ def test_stale_failsafe_flag_on_hard_comms_loss():
 def test_soft_kill_ready_constant_exported():
     assert KILL_SOFT_READY == 2
     assert KILL_NORMAL == 0
+
+
+# FW pdb_link_eval_kill() USB overlay — uses shared host mirror of the C policy.
+from deft_controls_sdk.pdb.limits import pdb_vi_reject_reason as _fw_vi_reject_reason
+
+
+def _fw_usb_kill_overlay(fb: dict, *, fresh: bool) -> tuple[int, int]:
+    """Mirror pdb_link_eval_kill() USB system kill presentation."""
+    if not fresh:
+        return KILL_HARD_ESTOP, KILL_REASON_COMMS_LOSS
+    peer_state = int(fb["kill_state"])
+    peer_reason = int(fb["kill_reason"])
+    if peer_state != KILL_NORMAL:
+        return peer_state, peer_reason
+    vi = _fw_vi_reject_reason(fb)
+    if vi != KILL_REASON_NONE:
+        return KILL_SOFT_REQ, vi
+    return peer_state, peer_reason
+
+
+def test_fw_vi_overlay_pack_undervoltage_soft_kill():
+    fb = parse_feedback(
+        pack_feedback(
+            pack_v=(3900, 0, 0, 0),  # 39.0 V — below 40 V
+            rail_v=(4800, 1900, 1200, 500),
+            pack_i=(100, 0, 0, 0),
+            rail_i=(10, 20, 30, 40),
+            contactor_state=0b1111,
+            kill_state=KILL_NORMAL,
+            kill_reason=0,
+        )
+    )
+    assert _fw_usb_kill_overlay(fb, fresh=True) == (
+        KILL_SOFT_REQ,
+        KILL_REASON_UNDERVOLTAGE,
+    )
+
+
+def test_fw_vi_overlay_overcurrent_beats_uv():
+    fb = parse_feedback(
+        pack_feedback(
+            pack_v=(3900, 0, 0, 0),
+            rail_v=(4800, 1900, 1200, 500),
+            pack_i=(3100, 0, 0, 0),  # 31 A
+            rail_i=(10, 20, 30, 40),
+            contactor_state=0b1111,
+            kill_state=KILL_NORMAL,
+            kill_reason=0,
+        )
+    )
+    assert _fw_usb_kill_overlay(fb, fresh=True) == (
+        KILL_SOFT_REQ,
+        KILL_REASON_OVERCURRENT,
+    )
+
+
+def test_fw_vi_overlay_skips_zero_pack_slots():
+    fb = parse_feedback(
+        pack_feedback(
+            pack_v=(4800, 0, 0, 0),  # unused packs at 0 must not UV
+            rail_v=(4800, 1900, 1200, 500),
+            pack_i=(100, 0, 0, 0),
+            rail_i=(10, 20, 30, 40),
+            contactor_state=0b1111,
+            kill_state=KILL_NORMAL,
+            kill_reason=0,
+        )
+    )
+    assert _fw_usb_kill_overlay(fb, fresh=True) == (KILL_NORMAL, 0)
+
+
+def test_fw_vi_overlay_stale_still_comms_loss():
+    fb = parse_feedback(
+        pack_feedback(
+            pack_v=(3900, 0, 0, 0),
+            rail_v=(4800, 0, 0, 0),
+            kill_state=KILL_NORMAL,
+            kill_reason=0,
+        )
+    )
+    assert _fw_usb_kill_overlay(fb, fresh=False) == (
+        KILL_HARD_ESTOP,
+        KILL_REASON_COMMS_LOSS,
+    )
+
+
+def test_fw_vi_overlay_does_not_demote_peer_hard():
+    fb = parse_feedback(
+        pack_feedback(
+            pack_v=(3900, 0, 0, 0),
+            rail_v=(4800, 0, 0, 0),
+            kill_state=KILL_HARD_ESTOP,
+            kill_reason=KILL_REASON_OVERCURRENT,
+        )
+    )
+    assert _fw_usb_kill_overlay(fb, fresh=True) == (
+        KILL_HARD_ESTOP,
+        KILL_REASON_OVERCURRENT,
+    )

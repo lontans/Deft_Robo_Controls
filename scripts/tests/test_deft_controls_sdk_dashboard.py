@@ -72,6 +72,10 @@ def test_state_before_any_connect_is_well_formed(server) -> None:
     # well-formed with no hub yet, not just the feedback side.
     assert data["streaming"] is False
     assert data["held"] == [None] * 26
+    # Idle must not look like a board fault (was grade=red / "disconnected").
+    assert data["grade"] == "idle"
+    assert data["control_mode"] == "idle"
+    assert "not connected" in (data.get("summary") or "").lower()
 
 
 def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> None:
@@ -87,6 +91,8 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
 
         def __init__(self) -> None:
             self._held = {0: ActuatorDesire(position=1.0, kp=8.0, kd=0.4), 3: ActuatorDesire()}
+            self.auto_soft_kill = None
+            self.mcu_states = []
 
         def held_desire(self, slot: int):
             return self._held.get(slot)
@@ -94,19 +100,37 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
         def held_desires(self):
             return dict(self._held)
 
-        def start_streaming(self, hz: float = 50.0, *, telemetry_hz: float = 10.0) -> None:
-            pass
+        def start_streaming(
+            self, hz: float = 50.0, *, telemetry_hz: float = 10.0, auto_soft_kill: bool = True
+        ) -> None:
+            self.auto_soft_kill = auto_soft_kill
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            self.auto_soft_kill = enabled
+
+        def set_mcu_state(self, state, *, send: bool = True) -> None:
+            self.mcu_states.append(int(state))
+
+        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
+            self._held[slot] = desire
 
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(app_module.ControlsPcbHub, "connect", staticmethod(lambda port, **kw: _FakeHub()))
+    fake = _FakeHub()
+    monkeypatch.setattr(
+        app_module.ControlsPcbHub, "connect", staticmethod(lambda port, **kw: fake)
+    )
 
     state, base = server
-    state.connect("COM5")
+    state.connect("COM5")  # observe default
+    assert fake.auto_soft_kill is False
+    assert fake.mcu_states and int(fake.mcu_states[-1]) == 2  # DIAG_ONLY
+    assert state.control_mode == "observe"
     status, data = _get(base, "/api/state")
     assert status == 200
     assert data["streaming"] is True
+    assert data["control_mode"] == "observe"
     assert data["held"][0] == {
         "position": 1.0,
         "velocity": 0.0,
@@ -168,7 +192,18 @@ def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
         def held_desires(self):
             return {}
 
-        def start_streaming(self, hz: float = 50.0, *, telemetry_hz: float = 10.0) -> None:
+        def start_streaming(
+            self, hz: float = 50.0, *, telemetry_hz: float = 10.0, auto_soft_kill: bool = True
+        ) -> None:
+            pass
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            pass
+
+        def set_mcu_state(self, state, *, send: bool = True) -> None:
+            pass
+
+        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
 
         def soft_kill_park(self) -> None:
@@ -187,6 +222,54 @@ def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
     assert data.get("ok") is True
     assert data.get("mode") == "direct"
     assert fake.parked is True
+
+
+def test_observe_blocks_plant_commands_until_enable_control(server, monkeypatch) -> None:
+    import deft_controls_sdk.debug_dashboard.app as app_module
+    from deft_controls_sdk.link import McuState
+
+    class _FakeHub:
+        port = "COM5"
+        is_streaming = True
+
+        def __init__(self) -> None:
+            self.auto_soft_kill = True
+            self.mcu = None
+
+        def held_desires(self):
+            return {}
+
+        def start_streaming(
+            self, hz: float = 50.0, *, telemetry_hz: float = 10.0, auto_soft_kill: bool = True
+        ) -> None:
+            self.auto_soft_kill = auto_soft_kill
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            self.auto_soft_kill = enabled
+
+        def set_mcu_state(self, state, *, send: bool = True) -> None:
+            self.mcu = state
+
+        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    fake = _FakeHub()
+    monkeypatch.setattr(
+        app_module.ControlsPcbHub, "connect", staticmethod(lambda port, **kw: fake)
+    )
+    state, base = server
+    state.connect("COM5", mode="observe")
+    status, data = _post(base, "/api/mcu_state", {"state": 0})
+    assert status == 400
+    assert "Enable control" in data["error"]
+    status, data = _post(base, "/api/control_mode", {"mode": "control"})
+    assert status == 200
+    assert state.control_mode == "control"
+    assert fake.auto_soft_kill is True
+    assert fake.mcu == McuState.NORMAL
 
 
 def test_ports_endpoint_returns_a_list(server) -> None:
@@ -273,7 +356,16 @@ def test_app_state_rejects_double_connect_via_lock(monkeypatch) -> None:
         def __init__(self, port):
             self.port = port
 
-        def start_streaming(self, hz=50.0, *, telemetry_hz=10.0):
+        def start_streaming(self, hz=50.0, *, telemetry_hz=10.0, auto_soft_kill=True):
+            pass
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            pass
+
+        def set_mcu_state(self, state, *, send: bool = True) -> None:
+            pass
+
+        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
 
         def close(self):

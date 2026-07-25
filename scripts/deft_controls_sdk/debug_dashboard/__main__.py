@@ -44,7 +44,12 @@ def _status_block(snap) -> str:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Serve the localhost controller + telemetry UI")
     p.add_argument("--port", default=None, help="Serial port (e.g. COM5) — omit to connect from the browser")
-    p.add_argument("--http-port", type=int, default=8765)
+    p.add_argument(
+        "--http-port",
+        type=int,
+        default=8766,
+        help="UI bind port (default 8766 — avoids pdb_uart_sim --control-port 8765)",
+    )
     p.add_argument("--hz", type=float, default=40.0, help="Plant stream TX rate (legacy teleop default)")
     p.add_argument(
         "--telemetry-hz",
@@ -66,16 +71,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"plant TX {args.hz:.0f} Hz · telemetry publish {args.telemetry_hz:.0f} Hz (latest-wins)")
 
     if args.port:
-        print(f"Connecting {args.port}...")
-        state.connect(args.port)
-        print(f"Connected. Streaming plant frames.")
+        print(f"Connecting {args.port} in observe mode (DIAG_ONLY, no auto soft-kill)...")
+        state.connect(args.port, mode="observe")
+        print("Connected (observe). Use Enable control in the UI for NORMAL plant apply.")
     else:
         sp = state.telemetry.state_path
         print(
             "Not connected to COM — UI follows state.json when present:\n"
             f"  {sp}\n"
             "If yam_continuous_all is writing that file, leave Connect alone.\n"
-            "Only click Connect when nothing else owns the CDC port.",
+            "Connect (observe) is safe telemetry only; Enable control arms motors.\n"
+            "Note: pdb_uart_sim control panel is :8765 — this UI defaults to :8766.",
             flush=True,
         )
 
