@@ -53,7 +53,7 @@ from deft_controls_sdk.vbeta.yam_limits import (  # noqa: E402
 
 # Match legacy teleop/defaults.py `_ARM_KP` / `DM_KD` (via vbeta DEFAULT_ARM_*).
 KP = tuple(float(x) for x in DEFAULT_ARM_KP)
-KD = float(DEFAULT_ARM_KD)
+KD = tuple(float(x) for x in DEFAULT_ARM_KD)  # per-joint, was a flat scalar
 STREAM_HZ = 20.0
 # Suite / careful teleop default (dual-arm proven). Use --vel to go faster.
 ARROW_VEL = 0.12  # rad/s cruise
@@ -177,7 +177,7 @@ def _write_mit(
             position=float(q[i]),
             velocity=float(vel[i]),
             kp=float(KP[i]) * scale,
-            kd=KD,
+            kd=float(KD[i]),
         )
     session.set_actuators(desires, send=False)
     arm._setpoint = q.copy()  # noqa: SLF001
@@ -284,7 +284,7 @@ def _write_outputs(
         "clear_hi": [float(x) for x in hi],
         "inset": inset,
         "kp": list(KP),
-        "kd": KD,
+        "kd": list(KD),
         "source": source,
     }
     path = _SESSION_DIR / f"yam_clear_left_teleop_{date.today().isoformat()}.json"
@@ -366,7 +366,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for _ in range(5):
                 desires = {
                     slot: ActuatorDesire(
-                        position=float(q0[i]), velocity=0.0, kp=0.0, kd=KD
+                        position=float(q0[i]), velocity=0.0, kp=0.0, kd=float(KD[i])
                     )
                     for i, slot in enumerate(arm.slots)
                 }

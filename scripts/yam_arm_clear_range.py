@@ -25,7 +25,7 @@ import threading
 import time
 from datetime import date
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -57,7 +57,7 @@ _NOMINAL_ESC = tuple(range(0x01, 0x08))
 
 # Loaded-bench gains (vbeta DEFAULT_ARM_* — J2 needs high kp under gravity).
 _CLEAR_KP: Tuple[float, ...] = tuple(DEFAULT_ARM_KP)
-_CLEAR_KD = float(DEFAULT_ARM_KD)
+_CLEAR_KD: Tuple[float, ...] = tuple(DEFAULT_ARM_KD)  # per-joint, was a flat scalar
 _DEFAULT_STREAM_HZ = 20.0
 _J2_INDEX = 1
 
@@ -158,15 +158,17 @@ def _write_mit(
     *,
     dq: Optional[np.ndarray] = None,
     kp_scale: float = 1.0,
-    kd: Optional[float] = None,
+    kd: Optional[Union[float, Sequence[float]]] = None,
     active: Sequence[int] = _ACTIVE_ALL7,
     kp_scale_per_joint: Optional[Sequence[float]] = None,
 ) -> None:
     """Same as ``_tmp_yam_i2rt_prove.write_active`` — direct set_actuators, not arm.write.
 
     Inactive slots get blank ``ActuatorDesire()`` (prove blanks J7).
-    Default ``kd``: full ``_CLEAR_KD`` when any kp>0; else 0 (non-commanding).
-    Pass ``kd=_CLEAR_KD`` explicitly for kp=0 damping holds at a *known* q.
+    Default ``kd``: per-joint ``_CLEAR_KD`` when any kp>0; else 0 (non-commanding).
+    Pass ``kd=_CLEAR_KD`` (per-joint) or a plain float (same value for every
+    active joint, e.g. the ``kd=0.5`` damping-only holds below) explicitly
+    for kp=0 damping holds at a *known* q.
     """
     q = np.asarray(q, dtype=np.float32).reshape(7)
     vel = (
@@ -186,9 +188,9 @@ def _write_mit(
             js = float(np.clip(kp_scale_per_joint[i], 0.0, 1.0))
         kp = float(_CLEAR_KP[i]) * js
         if kd is not None:
-            kd_i = float(kd)
+            kd_i = float(kd[i]) if isinstance(kd, Sequence) and not isinstance(kd, (str, bytes)) else float(kd)
         else:
-            kd_i = float(_CLEAR_KD) if kp > 0.01 else 0.0
+            kd_i = float(_CLEAR_KD[i]) if kp > 0.01 else 0.0
         desires[slot] = ActuatorDesire(
             position=float(q[i]),
             velocity=float(vel[i]),

@@ -35,7 +35,14 @@ _DAMIAO_MASTER = (0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17)
 # `_ARM_KP` / `DM_KD`. J2=160 was a mistaken "gravity" bump; it vibrates under
 # multi-joint CLEAR motion (use 60 like proven plant teleop).
 DEFAULT_ARM_KP: Tuple[float, ...] = (40.0, 60.0, 90.0, 60.0, 25.0, 25.0, 20.0)
-DEFAULT_ARM_KD: float = 1.0
+# Per-joint kd (was a flat 1.0 for all 7 joints). i2rt_cpp's YAM driver scales
+# kd with kp per motor type (kp=[80,80,80,25,10,10] / kd=[5,5,5,1.5,1.5,1.5],
+# ratio ~kp/16). Flat kd=1.0 under-damped the high-kp joints (J3 ratio was
+# 1/90=0.011 vs i2rt's 0.0625) relative to the low-kp ones. These values are
+# kp/16 — a conservative step toward i2rt's ratio, NOT copied 1:1, given the
+# J2=160 kp-bump history above: unvalidated on hardware, bench-test on CH1
+# before trusting under multi-joint load. See docs/i2rt-vs-ours-arm-compare.md P1.
+DEFAULT_ARM_KD: Tuple[float, ...] = (2.5, 3.75, 5.6, 3.75, 1.5, 1.5, 1.25)
 
 # Base RobStride gains (conservative hold / creep)
 DEFAULT_STEER_KP = 40.0

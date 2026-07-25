@@ -66,7 +66,7 @@ from deft_controls_sdk.vbeta.yam_bench_clear_left import (  # noqa: E402
 HZ = 40.0
 ARM_CRUISE_RAD_S = 0.12
 ARM_KP = tuple(float(x) for x in DEFAULT_ARM_KP)
-ARM_KD = float(DEFAULT_ARM_KD)
+ARM_KD = tuple(float(x) for x in DEFAULT_ARM_KD)  # per-joint, was a flat scalar
 DXL_CRUISE_TICK_S = 350.0
 RS_HOLD_KP = 20.0
 RS_HOLD_KD = 1.0
@@ -195,7 +195,7 @@ def _set_arm(
             position=float(q[i]),
             velocity=float(vel[i]),
             kp=float(ARM_KP[i]) * scale,
-            kd=ARM_KD,
+            kd=float(ARM_KD[i]),
         )
     _conn(hub).set_actuators(desires, send=False)
 

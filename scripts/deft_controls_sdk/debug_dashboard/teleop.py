@@ -136,14 +136,14 @@ def build_actuator_specs(cfg_map: str = "bench") -> Dict[int, SlotSpec]:
     for i, slot in enumerate(LEFT_ARM_SLOTS):
         specs[slot] = SlotSpec(
             slot=slot, group="arm_left", label=f"L-arm J{i + 1}", protocol="damiao",
-            kp=DEFAULT_ARM_KP[i], kd=DEFAULT_ARM_KD, verified=True,
+            kp=DEFAULT_ARM_KP[i], kd=DEFAULT_ARM_KD[i], verified=True,
             lo=ARM_LEFT_LO[i], hi=ARM_LEFT_HI[i], seed_relative=False,
             cruise_max=ARM_CRUISE_MAX, cruise_default=ARM_CRUISE_DEFAULT,
         )
     for i, slot in enumerate(RIGHT_ARM_SLOTS):
         specs[slot] = SlotSpec(
             slot=slot, group="arm_right", label=f"R-arm J{i + 1}", protocol="damiao",
-            kp=DEFAULT_ARM_KP[i], kd=DEFAULT_ARM_KD, verified=False,
+            kp=DEFAULT_ARM_KP[i], kd=DEFAULT_ARM_KD[i], verified=False,
             lo=None, hi=None, seed_relative=False,
             cruise_max=ARM_CRUISE_MAX, cruise_default=ARM_CRUISE_DEFAULT,
         )
