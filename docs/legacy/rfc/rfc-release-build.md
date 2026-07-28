@@ -50,9 +50,9 @@ pack/unpack, CRC16, host-position interp).
 
    (`_tmp_load_matrix_report.py` no longer exists — `bench_load_matrix.py` is
    the durable successor, see
-   [bench-optimize-and-load-matrix-plan.md](bench-optimize-and-load-matrix-plan.md).)
+   [bench-optimize-and-load-matrix-plan.md](../bench/bench-optimize-and-load-matrix-plan.md).)
 
-4. **Write `docs/bench-load-matrix-release-<date>.md`** with the same table
+4. **Write `../bench/bench-load-matrix-release-<date>.md`** with the same table
    shape as the existing bench docs (§A real CH6, §B ×25 rx_sim, bandwidth
    baseline by bus group), so it's a direct row-for-row comparison against
    [legacy/bench-load-matrix-2026-07-23.md](legacy/bench-load-matrix-2026-07-23.md).

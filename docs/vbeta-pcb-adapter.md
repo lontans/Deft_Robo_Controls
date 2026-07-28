@@ -3,6 +3,10 @@
 Replace `I2RTArmDriver` and `FeatherPlatformClient` with PCB-backed drivers in
 `scripts/deft_controls_sdk/vbeta/`. Cameras / episode packing stay in vbeta.
 
+**Study this stack by testing (not skim):** [study-sdk-damiao-vertical.md](study-sdk-damiao-vertical.md)
+— vertical labs from `vbeta_smoke.py arm` / `install_pcb_backend` down to
+`damiao_apply_cycle`, with checkpoints and Ask-me prompts.
+
 ## Reference checkout (`docs/deft_vbeta_ref/deft_vbeta`)
 
 Declared in [`.gitmodules`](../.gitmodules) as a real submodule
@@ -22,7 +26,7 @@ this repo.
 under the actual `yam_product_rows()` CFG (not the bench-spare map) via
 [`scripts/vbeta_product_prove.py`](../scripts/vbeta_product_prove.py) — full results, the base
 ID-remap gap below, and `deft_vbeta/`'s current blocker in
-[`bench-vbeta-product-cfg-2026-07-24.md`](bench-vbeta-product-cfg-2026-07-24.md). Left arm: live,
+[`bench-vbeta-product-cfg-2026-07-24.md`](legacy/bench/bench-vbeta-product-cfg-2026-07-24.md). Left arm: live,
 MIT-armed, `Goal_Position` tracking confirmed. Right arm (CH2): CFG'd, not physically present this
 session. Base (CH4–6, product IDs `0x01`/`0x02`): **not found** — see remap gap.
 
@@ -176,7 +180,7 @@ PCB-only, no I2RT/Feather equivalent to match.
 clone, not the read-only `docs/deft_vbeta_ref/deft_vbeta` reference). Not yet exercised through a
 live `YAMAIMobile` instance — the Jetson's Python env has neither `torch` nor `mujoco`, both
 required at `YAMAIMobile.__init__` import time. See
-[`bench-vbeta-product-cfg-2026-07-24.md`](bench-vbeta-product-cfg-2026-07-24.md) for the direct
+[`bench-vbeta-product-cfg-2026-07-24.md`](legacy/bench/bench-vbeta-product-cfg-2026-07-24.md) for the direct
 (non-`YAMAIMobile`) adapter prove that doesn't depend on that environment.
 
 Live call sites construct `YAMAIMobile` directly; arms come from
@@ -240,14 +244,14 @@ pieces come online — see
 [`scripts/deft_controls_sdk/vbeta/rig.py`](../scripts/deft_controls_sdk/vbeta/rig.py).
 Nothing here has been proven on hardware; it's additive to the standalone
 `PcbArmDriver` path already smoke-tested (see
-[`bench-vbeta-arm-2026-07-24.md`](bench-vbeta-arm-2026-07-24.md)).
+[`bench-vbeta-arm-2026-07-24.md`](legacy/bench/bench-vbeta-arm-2026-07-24.md)).
 
 **Bring-up order** (each step keeps everything before it working):
 
 1. Hold baseline — one `PcbArmDriver` alone (already smoke-tested)
 2. Add RobStride soft-hold — `robstride_soft_hold()` on the rig's canonical
    RS02 bus-6 slot (`RIG_RS02_BUS6_SLOT = 24`, `id=0x70`, per
-   [`bench-pdb-plant-integ-2026-07-23.md`](bench-pdb-plant-integ-2026-07-23.md)).
+   [`bench-pdb-plant-integ-2026-07-23.md`](legacy/bench/bench-pdb-plant-integ-2026-07-23.md)).
    This slot is CFG-disabled/spare in `yam_product_rows()` — needs a bench CFG
    override to actually drive it, not the YAM product CFG.
 3. Neck DXL hold — `neck_hold_present()` re-issues the present pitch/yaw so

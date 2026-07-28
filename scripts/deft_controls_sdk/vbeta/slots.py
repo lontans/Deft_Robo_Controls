@@ -115,7 +115,7 @@ def yam_left_arm_rows() -> List[Tuple[int, bool, int, int, int]]:
 def cubemars_yam_rows() -> List[Tuple[int, bool, int, int, int]]:
     """Bench-only scaffold: same slot map as `yam_product_rows()` with the
     arm rows swapped from Damiao MIT to CubeMars MIT (PROTO_CUBEMARS) —
-    see docs/rfc-cubemars-mit-plant.md. **Not used by any default/live
+    see docs/legacy/rfc/rfc-cubemars-mit-plant.md. **Not used by any default/live
     path** (YAM product CFG stays Damiao; this exists for future bench work
     against real CubeMars hardware only). `master_id=0` per arm slot means
     "no RX-ID override" (feedback arrives on the motor's own ID per the

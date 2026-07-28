@@ -56,9 +56,13 @@ Overlaps retired after continuous + product prove + bus56 lab cover the same gat
 
 Earlier archives: `tmp_runners/`, `_tmp_bus6_real_hw.py`, `_tmp_jetson_start_paced_sim.py`.
 
-## `docs/legacy/` — dated benches and superseded wire docs
+## `docs/legacy/` — dated benches, landed RFCs, superseded wire docs
 
-See prior passes; load-matrix dated benches and host-exchange v1/v2 live there.
+- [`docs/legacy/bench/`](legacy/bench/) — all dated `bench-*`, session summaries, MI findings
+- [`docs/legacy/rfc/`](legacy/rfc/) — landed RFCs (CubeMars MIT, LED, RX index, stagger, Release)
+- Host-exchange v1/v2 and older load-matrix runs stay under `docs/legacy/` directly
+
+Living index: [`manual/README.md`](manual/README.md), stitch map: [`mental-model-post-2a35cfe.md`](mental-model-post-2a35cfe.md).
 
 ## `scripts/legacy/` retirement
 

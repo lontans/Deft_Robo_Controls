@@ -7,13 +7,13 @@
 host TX rates and bus-group scenarios, and writes a report matching the
 table shape of `docs/legacy/bench-load-matrix-*.md`.
 
-Plan: docs/bench-optimize-and-load-matrix-plan.md
+Plan: docs/legacy/bench/bench-optimize-and-load-matrix-plan.md
 
   cd scripts
   python bench_load_matrix.py --port COM5 --hz 40,100,200,500 --scenario all
   python bench_load_matrix.py --port COM5 --hz 40 --scenario idle
   python bench_load_matrix.py --port COM5 --hz 40,500 --scenario mcp --trials 3 --seconds 8 \
-      --report ../docs/bench-load-matrix-<date>.md
+      --report ../docs/legacy/bench/bench-load-matrix-<date>.md
 
 Pass gates (see plan §2.3): 40 Hz is the hard gate (ack_lag_max<=2, healthy
 fb_hz, plain plant pdu tag). 500 Hz is a capability note, not a hard fail —

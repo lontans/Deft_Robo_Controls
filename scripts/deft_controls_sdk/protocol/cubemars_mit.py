@@ -1,7 +1,7 @@
 """CubeMars AK-series MIT Power Mode wire helpers (PDF §5.3).
 
 Mirrors the intended App/Src/plant/plugins/cubemars.c MIT path (see
-docs/rfc-cubemars-mit-plant.md). Pack layout matches Damiao MIT
+docs/legacy/rfc/rfc-cubemars-mit-plant.md). Pack layout matches Damiao MIT
 (damiao_pack_tx) — not the broken sample in the CubeMars PDF.
 
 Legacy Servo Mode (ext-ID mode 6) lives in

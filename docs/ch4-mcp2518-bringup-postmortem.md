@@ -205,4 +205,4 @@ MCP2518 rule: **FIFO channel 0 = TXQ**; first RX FIFO = **channel 1** @ SFR 0x05
 
 ## Copy-paste personal notes
 
-Plain-text version for external notes: [ch4-mcp2518-bringup-notes.txt](ch4-mcp2518-bringup-notes.txt)
+Plain-text version for external notes: [ch4-mcp2518-bringup-notes.txt](legacy/bench/ch4-mcp2518-bringup-notes.txt)

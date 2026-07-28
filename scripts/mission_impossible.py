@@ -6,7 +6,7 @@
     python mission_impossible.py m1 --port /dev/ttyACM0
     python mission_impossible.py all --port /dev/ttyACM0
 
-Appends results to docs/mission_impossible_findings.md (repo root relative).
+Appends results to docs/legacy/bench/mission_impossible_findings.md.
 Exclusive CDC owner while RUNNING. On FAIL/BLOCKED, append a follow-up block.
 """
 from __future__ import annotations
@@ -45,7 +45,7 @@ from bench_load_matrix import parse_hz_list, render_report, run_matrix
 
 SCRIPTS = Path(__file__).resolve().parent
 REPO = SCRIPTS.parent
-FINDINGS = REPO / "docs" / "mission_impossible_findings.md"
+FINDINGS = REPO / "docs" / "legacy" / "bench" / "mission_impossible_findings.md"
 
 ARM_KP = tuple(float(x) for x in DEFAULT_ARM_KP)
 ARM_KD = tuple(float(x) for x in DEFAULT_ARM_KD)  # per-joint, was a flat scalar

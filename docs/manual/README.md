@@ -11,6 +11,7 @@ checkboxes; use this TOC when you want the chapter map.
 
 ## Contents
 
+0. [Mental model (post-2a35cfe)](#0-mental-model-post-2a35cfe)
 1. [Setup / Jetson / serial ownership](#1-setup--jetson--serial-ownership)
 2. [Soft-DFU flash](#2-soft-dfu-flash)
 3. [Plant map](#3-plant-map)
@@ -18,6 +19,14 @@ checkboxes; use this TOC when you want the chapter map.
 5. [Arms / base / neck](#5-arms--base--neck)
 6. [Continuous vs vbeta stack](#6-continuous-vs-vbeta-stack)
 7. [Recovery / E-STOP / COMMS_LOSS](#7-recovery--e-stop--comms_loss)
+
+---
+
+## 0. Mental model (post-2a35cfe)
+
+If you already own the CAN router, polling TX/RX, and Host/Plant 694 B contract, but need the layers added since dual-YAM teleop (optimizations, mixed-protocol demux, CubeMars/ZeroErr, PDB kill SM, Soft-DFU + NVM flash map, lean script path): **[mental-model-post-2a35cfe.md](../mental-model-post-2a35cfe.md)**.
+
+**Hands-on SDK study** (follow one Damiao arm test down through `deft_controls_sdk` / `deft_vbeta` i2rt relay → plant): **[study-sdk-damiao-vertical.md](../study-sdk-damiao-vertical.md)**.
 
 ---
 

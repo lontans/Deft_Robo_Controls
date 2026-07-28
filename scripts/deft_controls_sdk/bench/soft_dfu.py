@@ -518,7 +518,7 @@ def _pick_firmware_elf(root: Path) -> Path:
 def default_firmware_elf() -> Path:
     """Pick the newest of ``Release/`` / ``Debug/`` ``DeftRoboticsControlsPCB.elf``.
 
-    See docs/rfc-release-build.md — production flashes should use Release when
+    See docs/legacy/rfc/rfc-release-build.md — production flashes should use Release when
     that build is current; if Debug was rebuilt more recently, use that so
     ``python scripts/soft_dfu_flash.py`` (no flags) flashes what you just built.
     """

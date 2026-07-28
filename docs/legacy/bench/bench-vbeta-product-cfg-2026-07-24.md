@@ -104,7 +104,7 @@ python3 vbeta_product_prove.py --port /dev/ttyACM0 --hold-s 10 --jog-joint 0 --j
 
 ## Related
 
-- [vbeta-pcb-adapter.md](vbeta-pcb-adapter.md) — adapter contract, Option A/B integration sketch
+- [vbeta-pcb-adapter.md](../../vbeta-pcb-adapter.md) — adapter contract, Option A/B integration sketch
 - [peripherals/base-robstride-mcp.md](peripherals/base-robstride-mcp.md) ·
   [peripherals/base-damiao-ch6.md](peripherals/base-damiao-ch6.md) — bench-spare base ID truth this
   run's remap-gap finding depends on

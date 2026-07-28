@@ -172,7 +172,7 @@ Practical entrypoints:
 
 ## Exercise 6 — vbeta product prove ladder (CLI)
 
-**Goal:** Run the realistic path from [vbeta-live-prove-plan.md](vbeta-live-prove-plan.md)
+**Goal:** Run the realistic path from [vbeta-live-prove-plan.md](legacy/bench/vbeta-live-prove-plan.md)
 using **direct adapters** (not full `YAMAIMobile` / torch).
 
 **Do in order:**
@@ -186,7 +186,7 @@ python scripts/vbeta_product_prove.py --port <CDC> --hold-s 30 --jog-joint 0
 ```
 
 (`--jog-joint 0` avoids a soft-limit parking issue seen on joint 1 — see
-[bench-vbeta-product-cfg-2026-07-24.md](bench-vbeta-product-cfg-2026-07-24.md).)
+[bench-vbeta-product-cfg-2026-07-24.md](legacy/bench/bench-vbeta-product-cfg-2026-07-24.md).)
 
 4. Optional: right arm discover-only if CH2 empty.
 5. Optional: base product-ID probe — expect **known gap** if motors still on
@@ -287,7 +287,7 @@ Read: [manual §4](manual/README.md#4-pdu--soft-kill), [pdu-uart-soft-kill.md](p
 **Pass:**
 
 - [ ] No orphan Python holding `/dev/ttyACM*` / COMx
-- [ ] Handoff note written (chat, sticky, or `docs/bench-*.md`)
+- [ ] Handoff note written (chat, sticky, or `docs/legacy/bench/bench-*.md`)
 
 ---
 

@@ -148,7 +148,7 @@ Watch `raw_fb_hz`, `cmd_seq_lag` (8-bit `last_command_seq`), `act_lap_ms`/`act_l
 `bench_load_matrix.py` is the durable successor to the retired
 `_tmp_mcp_timing_probe.py` / `_tmp_rate_rx_sweep.py` / `_tmp_load_matrix_report.py`
 (see [scripts-hygiene.md](scripts-hygiene.md)) — full spec in
-[bench-optimize-and-load-matrix-plan.md](bench-optimize-and-load-matrix-plan.md).
+[bench-optimize-and-load-matrix-plan.md](legacy/bench/bench-optimize-and-load-matrix-plan.md).
 For chasing a specific symptom, narrow the scenario instead of running `all`:
 
 ```powershell

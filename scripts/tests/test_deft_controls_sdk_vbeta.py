@@ -278,7 +278,7 @@ def test_neck_and_led() -> None:
 
 
 def test_led_factory_pattern_helpers() -> None:
-    """Named factory/traffic-light helpers (docs/rfc-led-factory-patterns.md)
+    """Named factory/traffic-light helpers (docs/legacy/rfc/rfc-led-factory-patterns.md)
     resolve to the right mode + carry brightness through, same contract as
     the generic set_led/led_off path above."""
     session, store = _session()

@@ -257,7 +257,7 @@ python -m deft_controls_sdk.debug_dashboard --port COM5 --http-port 8766 --hz 40
 
 `bench_load_matrix.py` is the durable successor to the retired
 `_tmp_mcp_timing_probe.py` — see
-[bench-optimize-and-load-matrix-plan.md](bench-optimize-and-load-matrix-plan.md).
+[bench-optimize-and-load-matrix-plan.md](legacy/bench/bench-optimize-and-load-matrix-plan.md).
 
 Watch: `raw_fb_hz`, `ack_lag_max`, `lap_ms`, `ticks_pending`. CH4–6 ACT LEDs should
 strobe under hold (empty bus / no ACK included).
@@ -318,7 +318,7 @@ rails every tick; all-25 rotates poll/RX across six buses so average MCP SPI/lap
 
 Hardware: MCP2518FD controller + **MCP2562** transceiver on SPI (CS **PB11**, INT **PB10**, ACT **PB14**). Reference path: FDCAN1 CH1. Motor: RS02 `0x70` @ 1 Mbps classic extended.
 
-Full ranked bugs + DoD: [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md) · personal notes: [ch4-mcp2518-bringup-notes.txt](ch4-mcp2518-bringup-notes.txt).
+Full ranked bugs + DoD: [ch4-mcp2518-bringup-postmortem.md](ch4-mcp2518-bringup-postmortem.md) · personal notes: [ch4-mcp2518-bringup-notes.txt](legacy/bench/ch4-mcp2518-bringup-notes.txt).
 
 ### Timeline (symptoms → breakthrough)
 

@@ -119,7 +119,7 @@ HW/ID/power on the daisy second node until a probe returns `found=1` again. Deta
 
 ## Known falsehoods retired
 
-- **"CH6's RobStride canonical slot is 23."** Superseded — per `docs/bench-pdb-sdk-contract-2026-07-24.md`,
+- **"CH6's RobStride canonical slot is 23."** Superseded — per `docs/legacy/bench/bench-pdb-sdk-contract-2026-07-24.md`,
   CH6 RobStride moved to slot **24** under wire layout v3 (was 23 under v2). This doc and
   `yam_continuous_all.py::BASE_ROWS` both already reflect slot 24; treat any reference to "CH6 RS →
   slot 23" as stale v2-era material.

@@ -1,7 +1,7 @@
 """Golden vectors for the CubeMars AK MIT Power Mode wire helpers (PDF §5.3).
 
 No hardware, no COM5 — pure byte-level pack/unpack against the vendor PDF's
-bit-field tables (not its buggy sample code; see docs/rfc-cubemars-mit-plant.md
+bit-field tables (not its buggy sample code; see docs/legacy/rfc/rfc-cubemars-mit-plant.md
 §"PDF sample bugs (do not copy)"). Mirrors the intended
 App/Src/plant/plugins/cubemars.c MIT path.
 """

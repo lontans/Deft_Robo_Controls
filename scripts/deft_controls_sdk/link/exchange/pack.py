@@ -81,7 +81,7 @@ def patch_led_command(
     """Pack host_led_command_t (2 B) at LED_CMD_OFF.
 
     ``mode`` is 5-bit (0=OFF, 1=TEST, 2=FLASH, 3..7 factory traffic-light —
-    see ``LED_MODE_*`` / docs/rfc-led-factory-patterns.md). ``led_count`` 0 ⇒
+    see ``LED_MODE_*`` / docs/legacy/rfc/rfc-led-factory-patterns.md). ``led_count`` 0 ⇒
     firmware LED_STRIP_MAX (300). Layout stays 672 B / 2 B LED word.
     """
     word = (

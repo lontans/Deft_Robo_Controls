@@ -6,8 +6,8 @@ Executor: Cursor (owns `App/`/`Core/`, COM5, soft-DFU).
 Patch: [`docs/patches/stagger-robstride-maintain.patch`](patches/stagger-robstride-maintain.patch).
 Follow-on to: [rfc-release-build.md](rfc-release-build.md),
 [rfc-per-bus-rx-index.md](rfc-per-bus-rx-index.md) — both already applied and
-matrixed (see [legacy/bench-load-matrix-release-2026-07-23.md](legacy/bench-load-matrix-release-2026-07-23.md),
-[legacy/bench-load-matrix-release-rxindex-2026-07-23.md](legacy/bench-load-matrix-release-rxindex-2026-07-23.md)).
+matrixed (see [legacy/bench-load-matrix-release-2026-07-23.md](../bench-load-matrix-release-2026-07-23.md),
+[legacy/bench-load-matrix-release-rxindex-2026-07-23.md](../bench-load-matrix-release-rxindex-2026-07-23.md)).
 
 **500 Hz narrative (short):** Release/RX-index cut mean lap time; this stagger
 targets the rate-independent **peak**. The remaining 500 Hz `cmd_seq_lag_p95`
@@ -133,7 +133,7 @@ Release+RX-index image so this run isolates the stagger's effect:
   bench runs used 8 s phases, which is already enough; just don't shrink it
   for this comparison).
 - Compare against
-  [legacy/bench-load-matrix-release-rxindex-2026-07-23.md](legacy/bench-load-matrix-release-rxindex-2026-07-23.md).
+  [legacy/bench-load-matrix-release-rxindex-2026-07-23.md](../bench-load-matrix-release-rxindex-2026-07-23.md).
 
 ## Success metric
 
@@ -148,7 +148,7 @@ also forces a couple of extra SPI-flush passes to drain). No regression in
 ## Result (Cursor matrix, 2026-07-23 13:56 PDT)
 
 Patch applied and matrixed:
-[legacy/bench-load-matrix-release-stagger-2026-07-23.md](legacy/bench-load-matrix-release-stagger-2026-07-23.md).
+[legacy/bench-load-matrix-release-stagger-2026-07-23.md](../bench-load-matrix-release-stagger-2026-07-23.md).
 Partial confirmation, not a full one — flagging honestly rather than
 overclaiming:
 
