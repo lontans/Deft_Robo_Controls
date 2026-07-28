@@ -4,8 +4,10 @@
 Arm (CH1 Damiao slots 0-6): **all-7 CFG enabled**, Goal=FB acquire, soft-engage
 with teleop gains. Default cruise: J2 CLEAR bounce while J1/J3-J7 brace at FB.
 ``--mouse``: M650 joystick teleop instead of J2 bounce (same mapping as
-``mouse_arm_teleop.py``); base/DXL keep cruising. Solo-CFG J2 left wrists
-faulted (no clear/enable/MIT) — do not use that path.
+``mouse_arm_teleop.py``); base/DXL keep cruising. Auto-enables i2rt-style
+gravity torque feedforward (scale 1.45) so J4/etc. don't fight load with kp
+alone — ``--no-gravity-comp`` to opt out. Solo-CFG J2 left wrists faulted
+(no clear/enable/MIT) — do not use that path.
 
 Skips Damiao REG_SCAN discover by default (trust YAM CFG + plant FB). Optional
 ``--discover`` / ``--discover-base`` for bus sweeps when bringing up a new rig.
@@ -97,15 +99,18 @@ J2 = 1
 J2_ESC = 0x02
 ARM_KP = tuple(float(x) for x in DEFAULT_ARM_KP)  # (40, 60, 90, 60, 25, 25, 20)
 ARM_KD = tuple(float(x) for x in DEFAULT_ARM_KD)  # per-joint, was a flat 1.0
+# i2rt_cpp MotorChainRobot::gravity_comp_factor_ default before online calibrate.
+I2RT_GRAVITY_SCALE = 1.45
 # Normal continuous J2 CLEAR cruise (rad/s). Bring-up stays soft separately.
 CRUISE_UP = 0.18
 CRUISE_DOWN = 0.12
 ENGAGE_S = 2.4
 MAX_CMD_LEAD = 0.40  # allow deeper CLEAR chase; never snap past FB at leg end
-# Progressive latch uses soft hold gains; full teleop kp only after all-7 green.
+# Soft latch gains while MIT-enable settles; full teleop kp after soft-engage.
 LATCH_KP_SCALE = 0.35
 LATCH_RAMP_S = 1.6
 LATCH_HOLD_S = 1.2
+LATCH_ATTEMPTS = 2
 
 # (slot, bus, protocol, motor_id, master_id, label)
 BASE_ROWS: Tuple[Tuple[int, int, int, int, int, str], ...] = (
@@ -274,7 +279,7 @@ def _kick_fdcan1(hub) -> None:
 
 
 def _cfg_arm_slots(hub, enabled: set) -> None:
-    """Enable only the given CH1 Damiao slots (progressive latch helper)."""
+    """Enable the given CH1 Damiao slots (left arm 0–6)."""
     with pause_plant_stream(hub):
         for i in range(7):
             hub.debug.cfg_set_slot(
@@ -654,8 +659,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help=(
             "Cruise with Logitech M650 mouse teleop instead of J2 CLEAR bounce "
-            "(same mapping as mouse_arm_teleop.py). Requires pynput. Base/DXL "
-            "still cruise unless --no-base / --no-dxl."
+            "(same mapping as mouse_arm_teleop.py). Requires pynput. Also "
+            "auto-enables gravity-comp (i2rt scale 1.45) unless "
+            "--no-gravity-comp. Base/DXL still cruise unless --no-base / --no-dxl."
         ),
     )
     ap.add_argument(
@@ -676,10 +682,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help=(
             "Enable MuJoCo static-gravity torque feedforward on the 6 arm "
-            "joints during cruise (i2rt-style, opt-in — default OFF keeps "
-            "torque=0.0, unchanged). Scale starts at 0.0 (no torque sent) "
-            "until calibrated; requires `pip install mujoco`. Unvalidated "
-            "on real hardware — see docs/i2rt-vs-ours-arm-compare.md P2."
+            "joints during cruise (i2rt-style). Applies uniform scale "
+            f"{I2RT_GRAVITY_SCALE} (override with --gravity-comp-scale). "
+            "Requires `pip install mujoco` + yam.xml. See "
+            "docs/i2rt-vs-ours-arm-compare.md P2."
+        ),
+    )
+    ap.add_argument(
+        "--no-gravity-comp",
+        action="store_true",
+        help="Disable auto gravity-comp that --mouse would otherwise enable.",
+    )
+    ap.add_argument(
+        "--gravity-comp-scale",
+        type=float,
+        default=I2RT_GRAVITY_SCALE,
+        help=(
+            f"Uniform gravity_comp.scale for J1..J6 when feedforward is on "
+            f"(default {I2RT_GRAVITY_SCALE}, i2rt starting factor)."
         ),
     )
     ap.add_argument(
@@ -701,20 +721,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = ap.parse_args(list(argv) if argv is not None else None)
 
-    gravity_comp: Optional[GravityComp] = None
-    if args.gravity_comp:
-        gravity_comp = GravityComp()
-        print(
-            "gravity-comp: ENABLED, scale starts at 0.0 (no torque sent yet) — "
-            "call GravityComp.calibrate() or set .scale from a real bench pass",
-            flush=True,
-        )
-
     port = args.port or find_cdc_port()
     j2_lo, j2_hi = float(CLEAR_LO[J2]), float(CLEAR_HI[J2])
     with_base = not bool(args.no_base)
     with_dxl = not bool(args.no_dxl)
     use_mouse = bool(args.mouse)
+    # Mouse teleop leans on kp alone for gravity → J4 buzz on turn; match i2rt
+    # and send static gravity τ unless explicitly disabled.
+    want_gravity = bool(args.gravity_comp) or (
+        use_mouse and not bool(args.no_gravity_comp)
+    )
+    gravity_comp: Optional[GravityComp] = None
+    if want_gravity:
+        try:
+            gravity_comp = GravityComp()
+            scale = float(args.gravity_comp_scale)
+            gravity_comp.scale[:] = scale
+            print(
+                f"gravity-comp: ENABLED scale={scale:.3f} on J1..J6 "
+                f"(mouse_auto={use_mouse and not args.gravity_comp}) — "
+                "tune with --gravity-comp-scale or GravityComp.calibrate()",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"gravity-comp: FAILED ({exc}) — continuing with torque=0.0 "
+                "(install mujoco + ensure yam.xml under docs/deft_vbeta_ref/)",
+                flush=True,
+            )
+            gravity_comp = None
     base_rate = float(args.base_rate if args.base_omega is None else args.base_omega)
     cruise_mode = "mouse" if use_mouse else "J2-CLEAR"
     print(
@@ -807,15 +842,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 flush=True,
             )
 
-        # Progressive all-green: enable CH1 one-by-one with soft Goal=FB hold
-        # (not a snap-home). Full teleop kp comes later in soft-engage.
-        print("\n== PROGRESSIVE ARM LATCH (soft Goal=FB) ==", flush=True)
+        # All-7 MIT latch at once: soft Goal=FB hold (not snap-home). Full
+        # teleop kp comes later in soft-engage.
+        print("\n== ARM LATCH ALL-7 (soft Goal=FB) ==", flush=True)
         ensure_yam_left_arm_cfg(hub, force=True)
-        _cfg_arm_slots(hub, set())  # all off first
+        armed: set = set(range(7))
+        _cfg_arm_slots(hub, armed)
         hub.set_mcu_state(McuState.NORMAL, send=True)
 
         q0 = np.zeros(7, dtype=np.float32)
-        armed: set = set()
 
         def _seed_hold(secs: float) -> None:
             t_end = time.perf_counter() + secs
@@ -870,7 +905,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return ok
 
         def _recover_rearm() -> None:
-            """Blank + hub.recover (disable/reset latches) then re-CFG armed set."""
+            """Blank + hub.recover then re-CFG all-7."""
             hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
             session.set_actuators(_blank(), send=False)
             time.sleep(0.15)
@@ -883,47 +918,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             hub.set_mcu_state(McuState.NORMAL, send=True)
             _seed_hold(0.6)
 
-        for i in range(7):
+        ok = False
+        for attempt in range(LATCH_ATTEMPTS):
             if stop["flag"]:
                 break
-            # J4 (index 3) often needs an extra enable latch after siblings are live.
-            attempts = 3 if i == 3 else 2
-            ok = False
-            for attempt in range(attempts):
-                armed.add(i)
-                _cfg_arm_slots(hub, armed)
-                hub.set_mcu_state(McuState.NORMAL, send=True)
-                _seed_hold(0.8)
-                ramp = LATCH_RAMP_S + (0.6 if i == 3 else 0.0)
-                hold = LATCH_HOLD_S + (0.8 if i == 3 else 0.0)
-                ok = _latch_armed(ramp_s=ramp, hold_s=hold)
-                print(
-                    f"  armed={sorted(armed)} faults={_arm_faults(session)} "
-                    f"ok={ok} try={attempt + 1}/{attempts}",
-                    flush=True,
-                )
-                if ok:
-                    break
-                print(f"  J{i + 1} not green — recover + re-arm", flush=True)
-                _recover_rearm()
-            if not ok:
-                print(
-                    f"WARN: J{i + 1} still not MIT-green after {attempts} tries",
-                    flush=True,
-                )
-
-        # Final pass: re-latch any still-dark joints (esp. J4) before continuous.
-        for pass_i in range(2):
+            _cfg_arm_slots(hub, armed)
+            hub.set_mcu_state(McuState.NORMAL, send=True)
+            _seed_hold(0.8)
+            ok = _latch_armed(ramp_s=LATCH_RAMP_S, hold_s=LATCH_HOLD_S)
             faults = _arm_faults(session)
-            bad = [s for s in range(7) if faults[s] != 1]
-            if not bad or stop["flag"]:
+            print(
+                f"  all-7 faults={faults} ok={ok} "
+                f"try={attempt + 1}/{LATCH_ATTEMPTS}",
+                flush=True,
+            )
+            if ok:
                 break
-            print(f"  final green pass {pass_i + 1}: retry {bad}", flush=True)
-            armed = set(range(7))
+            bad = [s + 1 for s in range(7) if faults[s] != 1]
+            print(f"  not all green (J{bad}) — recover + re-arm all-7", flush=True)
             _recover_rearm()
-            _latch_armed(
-                ramp_s=LATCH_RAMP_S + 0.8,
-                hold_s=LATCH_HOLD_S + 1.0,
+
+        if not ok:
+            print(
+                f"WARN: not all joints MIT-green after {LATCH_ATTEMPTS} all-7 tries",
+                flush=True,
             )
 
         # Final freeze at present — this is the continuous home, not zero.
