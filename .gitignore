@@ -34,14 +34,14 @@ venv/
 .deft_session/
 scripts/.deft_session/
 
-# Bench / agent run logs and dump text (keep useful .py helpers only under legacy/)
+# Bench / agent run logs and dump text
 scripts/_tmp_*_run.log
 scripts/_tmp_*.log
 scripts/_tmp_*.txt
 scripts/_tmp_*.py
-scripts/legacy/_tmp_*.log
-scripts/legacy/_tmp_*.txt
-scripts/legacy/_tmp_*_run.log
+
+# Deprecated CLIs — local-only; living path is HostProxy + pcb_lab
+scripts/pcb_lab/legacy/
 
 # Local agent / IDE scratch (not product source)
 .claude/

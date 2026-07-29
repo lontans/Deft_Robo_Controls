@@ -38,24 +38,17 @@ pip install -r requirements.txt
 
 python soft_dfu_flash.py
 python -m deft_controls_sdk.debug_dashboard --port COM5
-pytest tests
+python -m pcb_lab doctor --port COM5
+pytest pcb_lab/tests
 ```
 
-## Deprecated CLIs (`scripts/legacy/`)
+## Deprecated CLIs (`scripts/pcb_lab/legacy/` — gitignored)
 
-Former root bringup / continuous / PDB / vbeta smoke scripts live under [`../scripts/legacy/`](../scripts/legacy/README.md). Runnable for bench continuity; **do not extend** — replace with PlantProxy / `pcb_lab`.
-
-```powershell
-cd scripts
-$env:PYTHONPATH = "legacy;."
-python legacy/vbeta_smoke.py arm --hold
-python legacy/rs02_channel_bringup.py --bus 4
-python legacy/yam_continuous_all.py --help
-```
+Old bringup / continuous / PDB / vbeta smoke scripts may still exist **locally** under `scripts/pcb_lab/legacy/` (not tracked). Prefer HostProxy + `python -m pcb_lab` / vbeta. Restore from `archive/pre-plant-platform` if needed.
 
 ## Hygiene
 
-Already gitignored: `scripts/_tmp_*`, `.deft_session/`, `__pycache__/`, `.pytest_cache/`, `*.egg-info/`. Wipe local dumps anytime:
+Already gitignored: `scripts/pcb_lab/legacy/`, `scripts/_tmp_*`, `.deft_session/`, `__pycache__/`, `.pytest_cache/`, `*.egg-info/`. Wipe local dumps anytime:
 
 ```powershell
 Remove-Item -Recurse -Force scripts\.deft_session, scripts\__pycache__, scripts\.pytest_cache -ErrorAction SilentlyContinue

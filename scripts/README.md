@@ -1,45 +1,33 @@
 # scripts/
 
-Thin living host surface for the Controls PCB. Prefer the SDK; treat root CLIs as gone.
+Thin living host surface for the Controls PCB.
 
-## Living (keep)
+## Living
 
 | Path | Role |
 |------|------|
-| [`deft_controls_sdk/`](deft_controls_sdk/README.md) | Preferred host API (`ControlsPcbHub`, vbeta adapters, Soft-DFU impl, dashboard) |
-| [`tests/`](tests/) | Offline SDK tests (`pytest`) |
-| [`soft_dfu_flash.py`](soft_dfu_flash.py) / [`.sh`](soft_dfu_flash.sh) | One-liner Soft-DFU entry |
-| [`udev/`](udev/) | Linux udev rules for CDC/DFU |
+| [`deft_controls_sdk/`](deft_controls_sdk/README.md) | Hub + HostProxy + vbeta + **debug** + dashboard |
+| [`pcb_lab/`](pcb_lab/README.md) | Lab app + **tests** (+ optional local `legacy/`, gitignored) |
+| [`soft_dfu_flash.py`](soft_dfu_flash.py) / [`.sh`](soft_dfu_flash.sh) | Soft-DFU entry |
+| [`udev/`](udev/) | Linux udev rules |
 | [`requirements.txt`](requirements.txt) / [`requirements-dev.txt`](requirements-dev.txt) | Deps |
-| [`legacy/`](legacy/README.md) | Deprecated CLIs + frozen pre-SDK packages |
 
 ```powershell
 cd scripts
 pip install -r requirements.txt
 python soft_dfu_flash.py
 python -m deft_controls_sdk.debug_dashboard --port COM5
-pytest tests
+python -m pcb_lab doctor
+pytest pcb_lab/tests
 ```
 
-## Deprecated → `legacy/`
+## pcb_lab layout
 
-Everything that used to sit at `scripts/*.py` (bringup, continuous, PDB prove, mouse/quest teleop, vbeta smoke wrappers, Jetson helpers, …) now lives under [`legacy/`](legacy/README.md). Still runnable for bench continuity; **do not extend**. Near-term replacement: PlantProxy + lerobot-shaped `pcb_lab` (see [`../docs/integration.md`](../docs/integration.md)).
-
-```powershell
-cd scripts
-$env:PYTHONPATH = "legacy;."
-python legacy/vbeta_smoke.py arm --hold
-python legacy/yam_continuous_all.py --help
+```text
+pcb_lab/
+  lab.py          # hold / step / blank / doctor → HostProxy
+  tests/          # offline SDK + lab tests
+  legacy/         # gitignored local CLIs (not in repo)
 ```
 
-Dashboard continuous launch still syncs `legacy/yam_continuous_all.py` (and peers) to a **flat** Jetson `scripts/` tree for path compatibility.
-
-## Not source (ignored / local only)
-
-| Path | Notes |
-|------|--------|
-| `.deft_session/` | Live telemetry mirror |
-| `__pycache__/`, `.pytest_cache/`, `*.egg-info/` | Build/test artifacts |
-| `_tmp_*` | Scratch — do not commit |
-
-Docs map: [`../docs/README.md`](../docs/README.md).
+Docs: [`../docs/README.md`](../docs/README.md).

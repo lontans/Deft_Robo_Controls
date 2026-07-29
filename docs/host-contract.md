@@ -78,4 +78,4 @@ with ControlsPcbHub.connect("COM5") as hub:
 - Plant top-level on hub; `hub.debug` = bench lease; `hub.telemetry` = FB cache / recording.
 - Flash host **and** firmware together after a layout bump.
 
-Package layout: `ControlsPcbHub` → `link/` → `bench/` → `telemetry/` → `debug_dashboard`.
+Package layout: `ControlsPcbHub` → `link/` → `debug/` → `telemetry/` → `debug_dashboard`; plant demux = `HostProxy`; lab = `pcb_lab/`.

@@ -1,6 +1,6 @@
 """YAM Damiao arm soft limits for vbeta (host-side clamps).
 
-Port of ``scripts/legacy/control_hub/yam_limits.py`` into the SDK surface.
+Port of ``scripts/pcb_lab/legacy/control_hub/yam_limits.py`` into the SDK surface.
 J1–J6 come from MuJoCo ``External_Documentation/yam_arm_damiao/yam.xml``;
 J7 is bench-provisional (motor frame). Left/right arms share the same
 local soft ranges (identical hardware) until a left-bench clear table is

@@ -1,11 +1,11 @@
 """Tagged-pdu (DEBUG mode) wire helpers — RS2 / DM0 / CFG bench PDU tags.
 
 Mirrors `App/Inc/plant/plant_diag.h` and `plant_config_nvm.h`. Ported from
-scripts/legacy/controls_pcb_host/protocol/diag_pdu.py + commands.py +
+scripts/pcb_lab/legacy/controls_pcb_host/protocol/diag_pdu.py + commands.py +
 feedback.py — kept byte-for-byte identical to the legacy encode/decode so a
 DEBUG-mode probe behaves the same whether it goes through the SDK or the
 legacy CLI. Plant-path pack/parse stays in pack.py/parse.py; this module is
-only imported by `deft_controls_sdk/bench/`.
+only imported by `deft_controls_sdk/debug/`.
 """
 from __future__ import annotations
 

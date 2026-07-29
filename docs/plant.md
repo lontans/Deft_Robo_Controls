@@ -64,7 +64,7 @@ Separate from USB host exchange. Controls ↔ PDB MCU over **UART4** PC10/PC11, 
 NORMAL → SOFT_KILL_REQ → (plant_recovery_all) → SOFT_KILL_READY → HARD_ESTOP
 ```
 
-Stale PDBF (>200 ms) or PB7 low → HARD + COMMS_LOSS. Soft kill alone must not open main power; PDB is sole rail-switch authority. USB FB mirrors kill into `system` + `pdb[64]`. Hub: `soft_kill_park*`. Sim: `scripts/legacy/pdb_uart_sim.py`.
+Stale PDBF (>200 ms) or PB7 low → HARD + COMMS_LOSS. Soft kill alone must not open main power; PDB is sole rail-switch authority. USB FB mirrors kill into `system` + `pdb[64]`. Hub: `soft_kill_park*`. Sim: `scripts/pcb_lab/legacy/pdb_uart_sim.py`.
 
 Source: `App/Inc/host/pdb_link.h`, `App/Src/host/pdb_link.c`.
 

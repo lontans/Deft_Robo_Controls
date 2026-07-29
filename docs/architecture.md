@@ -102,7 +102,7 @@ Blank policy: skip SPI on uncommanded MCP; Damiao/CubeMars on FDCAN keep enable 
 
 ## Platform north star
 
-Controls PCB = thin **plant platform** (one COM, many peripherals). Near-term: Python **PlantProxy** demux in the SDK; ROS peripheral drivers later. Do not edit YAMAIMobile for plant glue — keep MotorsBus-shaped APIs. See [integration.md](integration.md).
+Controls PCB = thin **plant platform** (one COM, many peripherals). Host-side demux: **HostProxy** in the SDK; lab via `pcb_lab`; YAM via `vbeta`. ROS peripheral drivers later. Do not edit YAMAIMobile for plant glue. See [integration.md](integration.md).
 
 ## Module map
 
@@ -110,5 +110,5 @@ Controls PCB = thin **plant platform** (one COM, many peripherals). Near-term: P
 App/host/     wire schema, link, PDB UART
 App/plant/    actuator, control_loop, plant_diag, can/, plugins/
 scripts/deft_controls_sdk/   ControlsPcbHub (preferred)
-scripts/legacy/              frozen — do not extend
+scripts/pcb_lab/             lab + tests + legacy/ (retire)
 ```
