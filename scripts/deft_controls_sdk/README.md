@@ -1,8 +1,8 @@
 # deft_controls_sdk
 
 Host SDK for the Deft Robotics controls PCB (USB CDC). Canonical call surface:
-[`docs/api.md`](../../docs/api.md). Wire: [`docs/host-exchange-v3.md`](../../docs/host-exchange-v3.md)
-(694 B layout v3). DEBUG frames: [`docs/host-debug-v1.md`](../../docs/host-debug-v1.md).
+[`docs/host-contract.md`](../../docs/host-contract.md). Architecture:
+[`docs/architecture.md`](../../docs/architecture.md). Doc map: [`docs/README.md`](../../docs/README.md).
 
 Does **not** import `scripts/legacy/`.
 

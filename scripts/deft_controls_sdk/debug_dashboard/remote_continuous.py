@@ -1,11 +1,15 @@
-"""Launch/stop ``yam_continuous_all.py`` on the Jetson from the dashboard.
+"""Launch/stop ``legacy/yam_continuous_all.py`` on the Jetson from the dashboard.
 
-Mirrors ``scripts/launch_continuous.py``'s proven sync-then-launch pattern
+Mirrors ``scripts/legacy/launch_continuous.py``'s proven sync-then-launch pattern
 (sftp the driver + the SDK modules it needs, clear stale process/flag state,
 start in the background) but as a *persistent* run the operator starts and
 stops from the GUI, rather than that script's fixed-50s prove-and-autokill
 harness. Connection details (host/user/password) match that script's env-var
 convention so both point at the same bench without extra config.
+
+Local copies live under ``scripts/legacy/``; remote layout stays flat under
+``REMOTE_DIR`` (basename only) so existing Jetson paths keep working until
+PlantProxy / pcb_lab replaces this path.
 
 This module never runs on import or dashboard startup — only an explicit
 POST to ``/api/continuous/launch`` or ``/api/continuous/stop`` calls into it,
@@ -28,17 +32,21 @@ LOCAL_SCRIPTS_DIR = Path(__file__).resolve().parents[2]
 
 # Fixed list, not a full repo push — keeps the sync fast and matches exactly
 # what yam_continuous_all.py needs at import/run time (same core set as
-# launch_continuous.py). Does not overwrite dashboard GUI sources.
+# legacy/launch_continuous.py). Does not overwrite dashboard GUI sources.
+# Each entry: (local path under scripts/, remote path under REMOTE_DIR).
 SYNC_FILES = (
-    "yam_continuous_all.py",
-    "pdb_uart_sim.py",
-    "stop_can.py",
-    "deft_controls_sdk/bench/robstride.py",
-    "deft_controls_sdk/bench/rs02_motion.py",
-    "deft_controls_sdk/vbeta/slots.py",
-    "deft_controls_sdk/vbeta/session.py",
-    "deft_controls_sdk/vbeta/yam_bench_clear_left.py",
-    "deft_controls_sdk/telemetry/cache.py",
+    ("legacy/yam_continuous_all.py", "yam_continuous_all.py"),
+    ("legacy/pdb_uart_sim.py", "pdb_uart_sim.py"),
+    ("legacy/stop_can.py", "stop_can.py"),
+    ("deft_controls_sdk/bench/robstride.py", "deft_controls_sdk/bench/robstride.py"),
+    ("deft_controls_sdk/bench/rs02_motion.py", "deft_controls_sdk/bench/rs02_motion.py"),
+    ("deft_controls_sdk/vbeta/slots.py", "deft_controls_sdk/vbeta/slots.py"),
+    ("deft_controls_sdk/vbeta/session.py", "deft_controls_sdk/vbeta/session.py"),
+    (
+        "deft_controls_sdk/vbeta/yam_bench_clear_left.py",
+        "deft_controls_sdk/vbeta/yam_bench_clear_left.py",
+    ),
+    ("deft_controls_sdk/telemetry/cache.py", "deft_controls_sdk/telemetry/cache.py"),
 )
 
 
@@ -85,10 +93,10 @@ def default_launcher(*, duration_s: float = 0.0, extra_args: str = "") -> dict:
 
         sftp = client.open_sftp()
         try:
-            for rel in SYNC_FILES:
-                local = LOCAL_SCRIPTS_DIR / rel.replace("/", os.sep)
+            for local_rel, remote_rel in SYNC_FILES:
+                local = LOCAL_SCRIPTS_DIR / local_rel.replace("/", os.sep)
                 if local.is_file():
-                    sftp.put(str(local), f"{REMOTE_DIR}/{rel}")
+                    sftp.put(str(local), f"{REMOTE_DIR}/{remote_rel}")
         finally:
             sftp.close()
 
