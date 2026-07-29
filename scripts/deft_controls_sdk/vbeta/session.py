@@ -1,24 +1,23 @@
-"""Sole ControlsPcbHub owner for vbeta drivers."""
+"""Sole COM session for vbeta drivers — thin wrap of HostProxy.
+
+YAM-shaped drivers (PcbArmDriver, …) keep taking PcbRobotSession.
+Platform demux lives in deft_controls_sdk.host_proxy.HostProxy.
+"""
 from __future__ import annotations
 
-import time
 from typing import Mapping, Optional
 
-from deft_controls_sdk import ControlsPcbHub, LedDesire, McuState
-from deft_controls_sdk.link import ActuatorDesire, FeedbackImage, ServoDesire
-from deft_controls_sdk.link.api_types import LED_MODE_IDLE_CORNFLOWER
-from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD
-from deft_controls_sdk.vbeta.cfg import ensure_yam_product_cfg
+from deft_controls_sdk import ControlsPcbHub
+from deft_controls_sdk.host_proxy import HostProxy, Profile, yam_product_profile
+from deft_controls_sdk.link import ActuatorDesire, FeedbackImage, LedDesire, ServoDesire
+from deft_controls_sdk.link.exchange import DEFAULT_BAUD
 
 
 class PcbRobotSession:
-    """One process, one COM — arms / platform / neck / LEDs share this hub."""
+    """One process, one COM — arms / platform / neck / LEDs share HostProxy."""
 
-    def __init__(self, hub: ControlsPcbHub, *, owns_hub: bool = True) -> None:
-        self._hub = hub
-        self._owns_hub = owns_hub
-        self._stream_hz = 40.0
-        self._closed = False
+    def __init__(self, proxy: HostProxy) -> None:
+        self._proxy = proxy
 
     @classmethod
     def connect(
@@ -33,64 +32,42 @@ class PcbRobotSession:
         idle_first: bool = False,
         persist_telemetry: bool = False,
     ) -> "PcbRobotSession":
-        hub = ControlsPcbHub.connect(
-            port, serial=serial, baud=baud, persist_telemetry=persist_telemetry
+        proxy = HostProxy.connect(
+            port,
+            serial=serial,
+            baud=baud,
+            stream_hz=stream_hz,
+            profile=yam_product_profile(),
+            idle_first=idle_first,
+            persist_telemetry=persist_telemetry,
+            apply_yam_cfg=apply_yam_cfg,
+            force_cfg=force_cfg,
         )
-        session = cls(hub, owns_hub=True)
-        session._stream_hz = float(stream_hz)
-        if idle_first:
-            # Gate plant CAN + blank desires + cornflower before CFG/MIT.
-            blank = {s: ActuatorDesire() for s in range(ACTUATOR_COUNT)}
-            hub.set_mcu_state(McuState.DIAG_ONLY, send=False)
-            session.set_actuators(blank, send=False)
-            hub.set_led(
-                LedDesire(mode=LED_MODE_IDLE_CORNFLOWER, master_brightness=8),
-                send=False,
-            )
-            hub.send_once()
-        else:
-            hub.recover()
-        if apply_yam_cfg:
-            ensure_yam_product_cfg(hub, force=force_cfg)
-        hub.start_streaming(hz=session._stream_hz)
-        return session
+        return cls(proxy)
 
     @classmethod
     def wrap(cls, hub: ControlsPcbHub, *, stream_hz: float = 40.0) -> "PcbRobotSession":
         """Use an existing hub (tests / caller already owns COM)."""
-        session = cls(hub, owns_hub=False)
-        session._stream_hz = float(stream_hz)
-        if not hub.is_streaming:
-            hub.start_streaming(hz=session._stream_hz)
-        return session
+        return cls(HostProxy.wrap(hub, stream_hz=stream_hz, profile=yam_product_profile()))
+
+    @classmethod
+    def from_proxy(cls, proxy: HostProxy) -> "PcbRobotSession":
+        return cls(proxy)
+
+    @property
+    def proxy(self) -> HostProxy:
+        return self._proxy
 
     @property
     def hub(self) -> ControlsPcbHub:
-        return self._hub
+        return self._proxy.hub
+
+    @property
+    def profile(self) -> Profile:
+        return self._proxy.profile
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            # Leave plant gated + cornflower idle (not NORMAL/LED-off — strip
-            # would fall back to PDB red on UART4).
-            blank = {s: ActuatorDesire() for s in range(ACTUATOR_COUNT)}
-            self.set_actuators(blank, send=False)
-            self._hub.set_mcu_state(McuState.DIAG_ONLY, send=False)
-            self._hub.set_led(
-                LedDesire(mode=LED_MODE_IDLE_CORNFLOWER, master_brightness=8),
-                send=False,
-            )
-            self._hub.send_once()
-            # Brief stream so the idle image is applied, then stop; g_cmd_live holds.
-            if not self._hub.is_streaming:
-                self._hub.start_streaming(hz=5.0)
-            time.sleep(0.25)
-            self._hub.stop_streaming()
-        finally:
-            if self._owns_hub:
-                self._hub.close()
+        self._proxy.close()
 
     def __enter__(self) -> "PcbRobotSession":
         return self
@@ -99,38 +76,28 @@ class PcbRobotSession:
         self.close()
 
     def set_actuator(self, slot: int, desire: ActuatorDesire, *, send: bool = False) -> None:
-        self._hub.set_actuator(slot, desire, send=send)
+        self._proxy.set_actuator(slot, desire, send=send)
 
     def set_actuators(self, desires: Mapping[int, ActuatorDesire], *, send: bool = False) -> None:
-        conn = self._hub._connection  # noqa: SLF001 — batch hold update
-        conn.set_actuators(desires, send=send)
+        self._proxy.set_actuators(desires, send=send)
 
     def set_servo(self, slot: int, desire: ServoDesire, *, send: bool = False) -> None:
-        self._hub.set_servo(slot, desire, send=send)
+        self._proxy.set_servo(slot, desire, send=send)
 
     def set_led(self, desire: LedDesire, *, send: bool = False) -> None:
-        self._hub.set_led(desire, send=send)
+        self._proxy.set_led(desire, send=send)
 
     def service_soft_kill(self) -> bool:
-        """If peer requested soft-kill, park via hub (Track B API)."""
-        fn = getattr(self._hub, "soft_kill_park_if_requested", None)
-        if fn is None:
-            return False
-        return bool(fn(send=False))
+        return self._proxy.service_soft_kill()
 
     def send_once(self) -> None:
-        self.service_soft_kill()
-        self._hub.send_once()
+        self._proxy.send_once()
 
     def poll_feedback(self) -> Optional[FeedbackImage]:
-        return self._hub._connection.poll_feedback()  # noqa: SLF001
+        return self._proxy.poll_feedback()
 
     def latest_feedback(self) -> Optional[FeedbackImage]:
-        fb = self.poll_feedback()
-        if fb is not None:
-            return fb
-        raw = self._hub._connection._latest_fb_raw  # noqa: SLF001
-        return FeedbackImage(raw) if raw is not None else None
+        return self._proxy.latest_feedback()
 
     def sleep(self, seconds: float) -> None:
-        time.sleep(seconds)
+        self._proxy.sleep(seconds)

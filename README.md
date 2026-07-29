@@ -11,11 +11,11 @@ STM32G474 firmware for the Deft controls board: **~500 Hz** plant loop, **694 B*
 | [docs/host-contract.md](docs/host-contract.md) | 694 B plant/DEBUG wire, Soft-DFU, SDK call surface |
 | [docs/bringup.md](docs/bringup.md) | Flash, plant map, how to run |
 | [docs/plant.md](docs/plant.md) | Buses, protocols, PDB kill |
-| [docs/integration.md](docs/integration.md) | SDK / vbeta / i2rt stacks, PlantProxy direction |
+| [docs/integration.md](docs/integration.md) | SDK / vbeta / i2rt stacks, HostProxy / pcb_lab |
 | [docs/decisions.md](docs/decisions.md) | ADRs |
 | [docs/vendor.md](docs/vendor.md) | Vendor PDF/EDS cheat-sheet (PCB-relevant only) |
 
-Host tools: [scripts/README.md](scripts/README.md) (SDK living; CLIs in `scripts/legacy/`). Local vendor files: [External_Documentation/README.md](External_Documentation/README.md).
+Host tools: [scripts/README.md](scripts/README.md) (SDK + `pcb_lab/`). Local vendor files: [External_Documentation/README.md](External_Documentation/README.md).
 
 ## Host software
 
@@ -27,7 +27,7 @@ python soft_dfu_flash.py
 python -m deft_controls_sdk.debug_dashboard
 ```
 
-Canonical API: [docs/host-contract.md](docs/host-contract.md). Deprecated CLIs: [scripts/legacy/](scripts/legacy/) — see [scripts/README.md](scripts/README.md).
+Canonical API: [docs/host-contract.md](docs/host-contract.md). Lab: [scripts/pcb_lab/](scripts/pcb_lab/).
 
 ## Hardware (short)
 
@@ -42,7 +42,7 @@ Canonical API: [docs/host-contract.md](docs/host-contract.md). Deprecated CLIs: 
 App/           host link, actuators, plugins, control_loop
 Core/          Cube HAL
 USB_Device/    USB CDC
-scripts/       deft_controls_sdk/, soft_dfu_flash.py, tests/, legacy/
+scripts/       deft_controls_sdk/, pcb_lab/, soft_dfu_flash.py
 docs/          living set (see docs/README.md)
 External_Documentation/   local PDFs (ignored) + stub README
 ```

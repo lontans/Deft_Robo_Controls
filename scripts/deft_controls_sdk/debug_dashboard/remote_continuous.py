@@ -1,13 +1,13 @@
 """Launch/stop ``legacy/yam_continuous_all.py`` on the Jetson from the dashboard.
 
-Mirrors ``scripts/legacy/launch_continuous.py``'s proven sync-then-launch pattern
+Mirrors ``scripts/pcb_lab/legacy/launch_continuous.py``'s proven sync-then-launch pattern
 (sftp the driver + the SDK modules it needs, clear stale process/flag state,
 start in the background) but as a *persistent* run the operator starts and
 stops from the GUI, rather than that script's fixed-50s prove-and-autokill
 harness. Connection details (host/user/password) match that script's env-var
 convention so both point at the same bench without extra config.
 
-Local copies live under ``scripts/legacy/``; remote layout stays flat under
+Local copies live under ``scripts/pcb_lab/legacy/``; remote layout stays flat under
 ``REMOTE_DIR`` (basename only) so existing Jetson paths keep working until
 PlantProxy / pcb_lab replaces this path.
 
@@ -35,11 +35,11 @@ LOCAL_SCRIPTS_DIR = Path(__file__).resolve().parents[2]
 # legacy/launch_continuous.py). Does not overwrite dashboard GUI sources.
 # Each entry: (local path under scripts/, remote path under REMOTE_DIR).
 SYNC_FILES = (
-    ("legacy/yam_continuous_all.py", "yam_continuous_all.py"),
-    ("legacy/pdb_uart_sim.py", "pdb_uart_sim.py"),
-    ("legacy/stop_can.py", "stop_can.py"),
-    ("deft_controls_sdk/bench/robstride.py", "deft_controls_sdk/bench/robstride.py"),
-    ("deft_controls_sdk/bench/rs02_motion.py", "deft_controls_sdk/bench/rs02_motion.py"),
+    ("pcb_lab/legacy/yam_continuous_all.py", "yam_continuous_all.py"),
+    ("pcb_lab/legacy/pdb_uart_sim.py", "pdb_uart_sim.py"),
+    ("pcb_lab/legacy/stop_can.py", "stop_can.py"),
+    ("deft_controls_sdk/debug/robstride.py", "deft_controls_sdk/debug/robstride.py"),
+    ("deft_controls_sdk/debug/rs02_motion.py", "deft_controls_sdk/debug/rs02_motion.py"),
     ("deft_controls_sdk/vbeta/slots.py", "deft_controls_sdk/vbeta/slots.py"),
     ("deft_controls_sdk/vbeta/session.py", "deft_controls_sdk/vbeta/session.py"),
     (

@@ -1,6 +1,7 @@
-"""deft_vbeta-shaped drivers on ControlsPcbHub.
+"""YAM / deft_vbeta-shaped drivers on HostProxy (via PcbRobotSession).
 
-See docs/vbeta-pcb-adapter.md.
+Product path only — lab uses ``pcb_lab``; wire/DEBUG uses Hub/bench.
+See docs/integration.md.
 """
 from __future__ import annotations
 

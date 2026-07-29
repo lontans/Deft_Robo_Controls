@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Optional, Union
 
-from deft_controls_sdk.bench import DebugAPI, find_cdc_port
+from deft_controls_sdk.debug import DebugAPI, find_cdc_port
 from deft_controls_sdk.link import ActuatorDesire, Connection, FeedbackImage, LedDesire, McuState, ServoDesire
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD
 from deft_controls_sdk.pdb import KILL_SOFT_REQ, PdbStatus, pdb_status_from_frame
@@ -76,7 +76,7 @@ class ControlsPcbHub:
     @property
     def debug(self) -> DebugAPI:
         """DEBUG mode: discover / calibrate / config, under a bench lease.
-        See deft_controls_sdk/bench/README or DebugAPI's docstring."""
+        See deft_controls_sdk/debug/README or DebugAPI's docstring."""
         return self._debug
 
     @property
@@ -106,7 +106,7 @@ class ControlsPcbHub:
 
     def start_streaming(
         self,
-        hz: float = 40.0,
+        hz: float = 200.0,
         *,
         telemetry_hz: float = 10.0,
         auto_soft_kill: bool = True,
@@ -195,7 +195,7 @@ class ControlsPcbHub:
         *,
         slots: Optional[list[int]] = None,
         seconds: float = 0.5,
-        hz: float = 40.0,
+        hz: float = 200.0,
     ) -> Optional[FeedbackImage]:
         """Pump the 694 B plant stream until actuator FB in HBHF is fresh.
 

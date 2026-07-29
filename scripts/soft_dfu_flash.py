@@ -16,7 +16,7 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from deft_controls_sdk.bench.soft_dfu import main  # noqa: E402
+from deft_controls_sdk.debug.soft_dfu import main  # noqa: E402
 
 _SUBCOMMANDS = frozenset({"flash", "enter", "leave", "scan"})
 

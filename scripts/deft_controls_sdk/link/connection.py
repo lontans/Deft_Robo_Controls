@@ -1,7 +1,7 @@
 """Connection — owns the USB/UART link, held actuator desires, and the optional
 background plant-stream/telemetry-publish loop.
 
-No teleop policy or bench plugins (see deft_controls_sdk/bench/ for DEBUG-mode
+No teleop policy or bench plugins (see deft_controls_sdk/debug/ for DEBUG-mode
 ops, which borrow this same connection under a lease rather than opening a second
 port). Streaming and telemetry-publish (formerly a separate LinkSession) live here
 too — both are just behaviors of "the one thing that owns the socket," and DEBUG
@@ -179,7 +179,7 @@ class Connection:
             return s
 
     def next_seq(self) -> int:
-        """Public accessor — DEBUG-mode bench frames (deft_controls_sdk/bench/)
+        """Public accessor — DEBUG-mode bench frames (deft_controls_sdk/debug/)
         need their own sequence numbers on the same wire, same counter as plant."""
         return self._next_seq()
 
@@ -195,7 +195,7 @@ class Connection:
         parse_fn until one parses and (if given) satisfies predicate, or timeout.
 
         Protocol-agnostic on purpose: Connection stays plant-only and never
-        imports RS2/DM/CFG parsing — deft_controls_sdk/bench/ supplies
+        imports RS2/DM/CFG parsing — deft_controls_sdk/debug/ supplies
         parse_fn/predicate per bench op. Mirrors the drain-then-poll pattern
         used by every bench probe in legacy (wait_probe_response / _wait_cfg_response).
         """
