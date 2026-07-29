@@ -1,0 +1,282 @@
+DM-J4340-2EC Geared Motor
+
+User Manual V1.0   2024.03.14
+Disclaimer
+
+
+  Thank you for purchasing the DM-J4340-2EC geared motor (hereinafter
+referred to as "the motor").
+  Before using this product, please carefully read and follow the instructions
+in this document and all safety guidelines provided. Failure to do so may
+result in harm to yourself or others, or cause damage to the product or
+surrounding property.
+   By using this product, you are deemed to have read this document
+thoroughly and to have understood, acknowledged, and accepted all the
+terms and contents of this document and any related materials.
+  You agree to use this product only for legitimate purposes and assume full
+responsibility for its usage and any resulting consequences.
+  The manufacturer shall not be held liable for any damage, injury, or legal
+responsibility caused directly or indirectly by the use of this product.
+
+
+Precautions
+1. Please strictly operate the motor within the specified working environment
+and the maximum allowable winding temperature range. Failure to do so
+may result in permanent and irreversible damage to the product.
+2. Prevent foreign objects from entering the rotor; otherwise, abnormal rotor
+operation may occur.
+3. Before use, check whether all components are intact. Do not use the
+product if any parts are missing, aged, or damaged.
+4. Ensure correct wiring and that the motor is installed properly and securely.
+5. Do not touch the electronic rotor section during operation to avoid
+accidents. The motor may become hot during high-torque output; be
+cautious to prevent burns.
+6. Users must not disassemble the motor without authorization, as this may
+affect control accuracy or lead to abnormal operation.
+
+Motor Features
+
+ 1.Dual encoders provide single-turn absolute position output on the output
+ shaft, ensuring no loss of position even after power failure.
+ 2.Integrated motor and driver design with a compact and highly integrated
+ structure.
+ 3.Supports upper-computer visual debugging and firmware upgrades.
+ 4.Capable of reporting motor speed, position, torque, and temperature via
+ the CAN bus.
+ 5.Equipped with dual temperature protection.
+ 6.Supports trapezoidal acceleration and deceleration in position control
+ mode.
+Packing List
+
+ 1. Motor (with driver) ×1
+ 2. Power cable (with CAN communication terminal): XT30 (2+2)-F plug,
+ single-ended cable (100mm) ×1
+ 3. Debug serial signal cable: GH1.25 3-pin cable (opposite side, 300mm) ×1
+
+
+Interface and Wiring Description
+   Specific Name
+                         Interface Label                Description
+   – Number
+
+   Power Interface
+          –1
+   (with integrated
+         CAN                                1. Connect the power supply
+   Communication                            using the XT30(2+2)-F plug
+       Terminal)                            power cable. The rated voltage is
+                                            24V, which powers the motor.
+                                            2. Use the CAN communication
+                                            terminal to connect to an external
+                                             control device. It can receive
+                                            CAN control commands and
+  Power Interface                           transmit motor status information.
+         –2                                 3. The motor is equipped with two
+  (with integrated                           power interfaces. Either interface
+        CAN                                  can be used independently or
+  Communication                             connected in series with multiple
+      Terminal)                             motors for streamlined wiring.
+
+
+
+
+                                            Connect via GH1.25 3-pin cable.
+                                            Use a USB to CAN debugging tool
+                                             (or a general USB-to-serial
+  Debug Serial Port
+        –3                                  module) to connect to a PC for
+                                            parameter configuration and
+                                            firmware upgrades via the
+                                            debugging assistant.
+Motor Dimensions and Installation
+Please refer to the motor mounting hole dimensions and positions to install the motor onto
+the corresponding equipment.
+
+
+
+
+Indicator Light Status
+                                    ERR bit is 1, indicating enabled mode and normal
+                  Green-Solid On
+ Normal Status                      operating status
+                  Red-Solid On      ERR bit is 0, indicating disabled mode
+                                Indicates a fault. Corresponding fault types
+                                include:
+                                8 – Overvoltage
+                                9 – Undervoltage
+                                A – Overcurrent
+ Abnormal Status Red – Blinking B – MOS Overtemperature
+                                C – Motor Coil Overtemperature
+                                D – Communication Loss
+                                E – Overload
+                                You can check the fault type via the feedback
+                                frame or through the debugging assistant interface.
+
+Operating Modes
+
+ MIT Mode
+
+MIT mode is designed to be compatible with the original MIT mode. It allows
+seamless switching while enabling flexible configuration of control ranges (P_
+MAX, V_MAX, T_MAX). The ESC converts received CAN data into control
+variables to calculate the torque value, which serves as the current reference
+for the current loop. The current loop then regulates to achieve the specified
+torque current.
+The control block diagram is as follows:
+   Derived from the MIT mode, various control modes can be implemented.
+   For example:
+   When kp = 0 and kd ≠ 0, setting v_des enables constant speed rotation;
+   When kp = 0 and kd = 0, setting t_ff enables constant torque output.
+   Note:
+   When controlling position, kd must not be set to 0, otherwise it may
+   cause motor oscillation or even loss of control.
+
+   Position-Velocity Mode
+
+   The position-velocity mode uses a three-loop cascaded control scheme.
+   The position loop serves as the outermost loop, and its output is the setpoint
+   for the velocity loop. The velocity loop’s output is used as the setpoint for the
+   inner current loop, which controls the actual current output. The control block
+   diagram is as follows:
+
+
+
+
+p_des is the target position for control, and v_des limits the maximum absolute
+speed during motion.
+When using the recommended control parameters from the debugging
+assistant in position cascaded mode, high control accuracy can be achieved
+with relatively smooth operation. However, the response time is relatively
+longer.
+Configurable parameters include not only v_des but also acceleration/
+deceleration settings. If additional oscillations occur during control, increasing
+the acceleration/deceleration values may help.
+Note:
+p_des and v_des are in units of rad and rad/s respectively, and both use the
+float data type.
+
+
+ Velocity Mode
+Velocity mode allows the motor to run steadily at the set speed. The control
+block diagram is as follows:
+Note:
+The unit of v_des is rad/s, and the data type is float.
+To enable automatic parameter calculation using the debugging assistant, the
+damping factor must be set to a non-zero positive value.
+Typically, it ranges from 2.0 to 10.0:A value that is too small may cause speed
+oscillation and significant overshootA value that is too large may result in a
+longer rise timeThe recommended setting is 4.0.
+
+Usage
+Control is implemented using the standard CAN frame format with a fixed
+baud rate of 1 Mbps. Based on function, frames are categorized into
+command frames and feedback frames:
+Command frames: These carry control data received by the motor to execute
+ specific control commands.
+Feedback frames: These are sent from the motor to the upper-level controller
+ and contain the motor’s status data.
+The format and frame ID of the command frames vary depending on the
+motor’s selected mode, whereas the feedback frame format remains
+consistent across all modes.
+
+
+
+ Feedback Frame
+The Feedback Frame ID is configured via the debugging assistant (Master ID)
+and defaults to 0. It mainly reports the motor's position, speed, and torque.
+The specific frame format is defined as:
+ Feedback
+ Message       D[0]        D[1]       D[2]        D[3]           D[4]          D[5]     D[6]     D[7]
+  MST_ID     ID|ERR<<4   POS[15:8]   POS[7:0]   VEL[11:4]   VEL[3:0]|T[11:8]   T[7:0]   T_MOS   T_Rotor
+
+
+ID: Controller ID, corresponding to the lower 8 bits of the CAN ID.
+ERR: Status indicator, with types as follows:
+            0 – Disabled
+            1 – Enabled
+            8 – Overvoltage
+            9 – Undervoltage
+            A – Overcurrent
+            B – MOS overtemperature
+            C – Motor coil overtemperature
+            D – Communication lost
+            E – Overload
+POS: Motor position information
+*VEL: Motor speed information
+*T: Motor torque information
+*T_MOS: Average temperature of the MOSFETs on the driver board
+(unit: °C)
+T_Rotor: Average temperature of the motor’s internal coil (unit: °C)
+* Position, speed, and torque are converted from floating-point to signed
+fixed-point
+format using a linear mapping:
+Position uses 16-bit data
+Speed and torque use 12-bit data each
+    Control Frame in MIT Mode
+Control      D[0]      D[1]      D[2]          D[3]         D[4]         D[5]               D[6]         D[7]
+Message
+
+             p_des     p_des     v_des      v_des[3:0]|      Kp           Kd              Kd[3:0]|
+   ID                                                                                                   t_ff[7:0]
+             [15:8]    [7:0]     [11:4]      Kp[11:8]       [7:0]        [11:4]           t_ff[11:8]
+
+Frame ID is equal to the configured CAN ID value.
+P_des: Position command
+V_des: Velocity command
+Kp: Position proportional gain
+Kd: Position derivative gain
+T_ff: Torque feedforward value
+All parameters follow the mapping relationships described in the previous section.
+The ranges of p_des, v_des, and t_ff can be configured via the debugging assistant.
+Kp range: [0, 500] Kd range: [0, 5]
+A standard CAN data frame contains only 8 bytes.
+In MIT mode, the control command format packs five parameters
+— Position , Velocity, Kp, Kd, and Torque — into those 8 bytes.
+Position: 16 bits (2 bytes)
+Velocity: 12 bits
+Kp: 12 bits
+Kd: 12 bits
+
+    Control Frame in Position-Velocity Mode
+ Control        D[0]      D[1]       D[2]          D[3]           D[4]            D[5]           D[6]     D[7]
+ Message
+ 0x100+ID                          p_des                                                 v_des
+
+Frame ID = configured CAN ID value + 0x100
+P_des: Position command, float, little-endian (low byte first, high byte last)
+V_des: Velocity command, float, little-endian (low byte first, high byte last)
+In this mode, the CAN ID used to send commands is 0x100 + ID. The velocity
+command (v_des) defines the maximum speed during the movement to the
+target position—i.e., the speed during the constant-velocity phase.
+
+ Control Frame in Velocity Mode
+  Control               D[0]                D[1]              D[2]                               D[3]
+  Message
+  0x200+ID                                                v_des
+Frame ID = configured CAN ID value + 0x200
+V_des: Velocity command, float, little-endian (low byte first, high
+byte last)In this mode, the CAN ID used to send commands is
+0x200 + ID.
+
+
+
+Using the Debugging Assistant
+
+
+Use the USB-to-CAN debugging tool to connect the motor to the computer,
+and configure motor parameters or perform firmware upgrades via the
+debugging assistant.
+The motor's serial port connects to the PC through a GH1.25 3-pin cable. The
+ CAN communication terminal on the motor’s power interface is connected
+to the USB-to-CAN debugging tool using an XT30 (2+2)-F plug cable.
+Parameter configuration and firmware upgrades can be carried out through
+the debugging assistant.
+After connecting the motor’s serial port, CAN port, and power interface,
+open the debugging assistant on the computer, select the appropriate serial
+port device, and open the port. Once the motor is powered on, the serial port
+will output information, with “Control Mode” indicating the current drive
+mode.
+Key Parameters
+
+  Please refer to the following parameters for proper motor usage:
+

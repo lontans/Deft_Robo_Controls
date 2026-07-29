@@ -1,0 +1,1511 @@
+AK Series Actuator Driver Manual
+                                         V1.0.6
+
+
+
+
+               1 / 47
+                        https://www.cubemars.com/
+                                              CONTENT
+Content---------------------------------------------------------------------------------------------------- 2
+Notice------------------------------------------------------------------------------------------------------ 4
+Feature-----------------------------------------------------------------------------------------------------5
+Disclaimer--------------------------------------------------------------------------------------------------5
+Version Change Record---------------------------------------------------------------------------------- 6
+1.Drive Product Information---------------------------------------------------------------------------- 7
+  1.1 Introdution of Driver'appearance & Specifications ----------------------------------------- 7
+  1.2 Drive Interface and Definition------------------------------------------------------------------- 8
+     1.2.1 Drive Interface Diagram---------------------------------------------------------------------8
+     1.2.2 The Brand and Model of Drive Interface--------------------------------------------------8
+     1.2.3 Drive Interface Pin Definition-------------------------------------------------------------- 9
+  1.3 Drive Indicator Definition------------------------------------------------------------------------ 9
+  1.4 Main Accessories and Specifications---------------------------------------------------------- 10
+2. R-link Produce Information------------------------------------------------------------------------- 11
+  2.1 Introdution of R-link' Appearance & Specifications --------------------------------------- 11
+  2.2 R-link Interface and Definition----------------------------------------------------------------- 12
+  2.3 R-link Indicator Definition---------------------------------------------------------------------- 13
+3. Actuator and R-link Connection and Notices----------------------------------------------------- 13
+4. Instructions for Use of the Upper Computer ----------------------------------------------------14
+  4.1 PC Interface and Instruction------------------------------------------------------------------- 14
+     4.1.1 Home-----------------------------------------------------------------------------------------15
+  4.2 Driveboard Calibration-------------------------------------------------------------------------- 21
+     4.2.1 Servo Mode--------------------------------------------------------------------------------- 21
+     4.2.2 MIT Power Mode--------------------------------------------------------------------------- 22
+  4.3 Control Demo------------------------------------------------------------------------------------ 23
+     4.3.1 Servo Mode--------------------------------------------------------------------------------- 23
+     4.3.2 MIT Power Mode--------------------------------------------------------------------------- 28
+  4.4 Firmware Update-------------------------------------------------------------------------------- 31
+
+                                                    2 / 47
+                                                                                  https://www.cubemars.com/
+5. Driveboard Communication Protocol and Description------------------------------------------32
+  5.1 Servo Mode Control and Description--------------------------------------------------------- 32
+     5.1.1 Duty Cycle Mode--------------------------------------------------------------------------- 34
+     5.1.2 Current Loop Mode------------------------------------------------------------------------ 34
+     5.1.3 Current Brake Mode----------------------------------------------------------------------- 35
+     5.1.4 Velocity Loop Mode------------------------------------------------------------------------ 36
+     5.1.5 Position Loop Mode------------------------------------------------------------------------37
+    5.1.6 Set Origin Mode------------------------------------------------------------------------------------------37
+     5.1.7 Position and Velocity Loop Mode -------------------------------------------------------38
+  5.2 Motor Message Format under Servo Mode ------------------------------------------------ 39
+  5.3 MIT Power Mode Communication Protocol ------------------------------------------------ 40
+
+
+
+
+                                                       3 / 47
+                                                                                       https://www.cubemars.com/
+Notice
+
+1. Ensure that the circuit is normal and the interface is correctly
+
+connected as required.
+
+
+2. The driver board will be hot when output, please use it carefully to
+
+avoid burns.
+
+
+3. Please Check whether the parts are in good condition before use. If
+
+any parts are missing or aging, please stop using and contact technical
+
+support in time.
+
+
+4. Several optional control modes can’t be switched when driver board is
+
+working, and different control mode have different communication
+
+protocol. If you need to switch, please reboot the power to the diver
+
+board then to change. Using the wrong protocol control may burn the
+
+driver board.
+
+
+5. Please use it strictly in accordance with the working voltage, current,
+
+temperature and other parameters specified in this article, otherwise it
+
+will cause permanent damage to the product.
+
+
+
+
+                                   4 / 47
+                                                      https://www.cubemars.com/
+Feature
+
+The AK series actuators’ driver board adopts the driver chip with high-
+
+performance, uses the Field Oriented Control (FOC) algorithm, and is
+
+equipped with advanced active disturbance rejection control technology
+
+to control the speed and angle. It is matched with our modular motor to
+
+form a powerful power package. It can be used with CubeMars Tool
+
+assistant software for parameter setting and firmware upgrade.
+
+
+Disclaimer
+
+Thank you for purchasing the AK series actuators. Before using, please
+
+read this statement carefully. Once used, it is deemed to be an
+
+endorsement and acceptance of the entire content of this statement.
+
+Please strictly abide by the product manual and related laws, regulations,
+
+policies and guidelines to install and use the product. In the process of
+
+using the product, the user promises to be responsible for his actions
+
+and all consequences arising therefrom.
+
+CubeMars will not be liable for any losses caused by improper use,
+
+installation, or modification by the user.
+
+CubeMars is a trademark of JIANGXI XINTUO ENTERPRISE CO., LTD and
+
+its affiliates. The product names, brands, etc. appearing in this article are
+
+the trademarks of their respective companies. This product and manual
+
+are copyrighted by JIANGXI XINTUO ENTERPRISE CO., LTD. Without
+                                    5 / 47
+                                                         https://www.cubemars.com/
+permission, it is not allowed to reproduce in any form. The final
+
+interpretation right of the disclaimer belongs to JIANGXI XINTUO
+
+ENTERPRISE CO., LTD.
+
+
+
+
+Version Change Record
+         Date                Version               Change content
+       2021.9.1              Ver. 1.0.0            create version
+       2021.9.26             Ver.1.0.1       Correct the Can code of 5.3
+      2021.10.08             Ver.1.0.2       Change code of 5.1 and 5.2
+                                             Correct data definitions of
+      2021.10.29             Ver.1.0.3
+                                                  5.1,5.2 and 5.3
+                                                 Added the message
+      2021.11.15             Ver.1.0.4
+                                              acceptance of 5.2 and 5.3
+      2021.11.24             Ver.1.0.5       UART protocol update of 5.2
+      2021.11.30             Ver.1.0.6       Add some information of 5.3
+
+
+
+
+                               6 / 47
+                                                 https://www.cubemars.com/
+1.Drive Product Information
+
+1.1 Introduction of Drive' appearance &Specifications
+
+
+
+
+                                             ①Three-phase wires connection port
+
+                                             ②Hardware version
+
+                                             ③CAN communication connection port
+
+                                             ④DC power port
+
+                                             ⑤Serial communication connection port
+
+                                             ⑥Mounting holes
+
+
+
+
+                                       Specifications
+
+     Rated Voltage                                 48V
+     Peak Voltage                                  52V
+     Rated current                                 20A
+     Peak current                                  60A
+     Power consumption                             ≤50mA
+     Can bus bit rate                              1Mbps (no change recommended)
+     Size                                          62mm×58mm
+     Working Environment temperature               -20℃-65℃
+     Maximum allowable temperature
+                                                   100℃
+     of driver board
+     Encoder Accuracy                              14bit(single turn absolute)
+
+
+
+
+                                        7 / 47
+                                                                  https://www.cubemars.com/
+1.2 Drive Interface and Definition
+
+1.2.1 Drive Interface Diagram
+
+
+
+
+1.2.2 The Brand and Model of Drive Interface
+                Onboard                                Wire interface
+    No.                             Brand                                          Brand
+            interface model                               model
+
+      1     A1257WR-S-3P               CJT              A1257H-3P                   CJT
+
+      2       XT30PW-M              AMASS               XT30UPB-F                 AMASS
+
+      3     A1257WR-S-4P               CJT              A1257H-4P                   CJT
+
+
+
+
+1.2.3 Drive Interface pin Definition
+          Interface
+No.                           Pin   Explain
+          function
+          Serial
+1                         1         Serial signal ground（GND）
+          communication
+                                              8 / 47
+                                                                        https://www.cubemars.com/
+       Interface
+No.                    Pin       Explain
+       function
+                       2         Serial signal output （TX）
+
+                       3         Serial signal input（RX）
+
+                       1         Negative pole（-）
+2      POWER INPUT
+                       2         Positive pole（+）
+
+                       1         CAN communication low side （CAN_L）
+
+                       2         CAN communication high side（CAN_H）
+        Can
+3
+       communication
+                       3         CAN communication high side（CAN_H）
+
+                       4         CAN communication low side （CAN_L）
+
+
+
+1.3 Drive Indicator Definition
+
+                                     Indicator definition
+
+                                                                 The power indicator is used to show the power supply of
+                                                                 the driver board. Normally, it will light up blue when the
+                                    1.Power indicator(when
+                                                                 power is plugged in. If the blue light is not on, please
+                                    blue light is on）
+                                                                 remove the power immediately and never turn on the
+                                                                 power again.
+                                                                 The communication indicator is used to show the
+                                    2.Communication              communication status of the driver board. normally the
+                                    Indicator （ when green       driver board will light up green when the driver board
+                                    light is on）                 communicates normally. If the green light is not on, please
+                                                                 check whether the CAN communication wiring is normal.
+                                                                 The drive failure indicator is used to show the failure of the
+                                                                 drive board. normally, it will light up in red only when the
+                                     3.Drive failure indicator   drive board fails, and it will usually go off under normal
+                                     （when red light is on）      circumstances. When the drive failure indicator lights up, it
+                                                                 means that the drive board has been damaged. The power
+                                                                 supply should be turned off and no operation is allowed.
+
+
+
+
+                                           9 / 47
+                                                                            https://www.cubemars.com/
+1.4 Main Accessories and Specifications
+NO.         Item        Specification                                       QTY        Remark
+                                           24AWG-300MM-Teflon
+                                                                            Each
+          Serial          wire rod         silver-plated wire-black                     ±2MM
+                                                                            1PCS
+ 1     communication                             yellow green
+           line                                    A1257H-3P                1PCS
+                            pin
+                                                   A2541H-3P                1PCS
+                                          16AWG-200MM-Silicone              Each
+                          wire rod                                                      ±2MM
+                                            wire-red and black              1PCS
+ 2       power line
+                                                   XT30UPB-M                1PCS
+                            pin
+                                                   XT30UPB-F                1PCS
+                                           24AWG-300MM-Teflon
+                                                                            Each
+           CAN            wire rod      silver-plated wire-white and                    ±2MM
+                                                                            1PCS
+ 3     communication                                 blue
+           line                                    A1257H-4P                2PCS
+                            pin
+                                                   A2541H-2P                1PCS
+ 4       Thermistor               MF51B103F3950-10K-3950                    2PCS
+                                                                                       AK10-9
+         Electrolytic
+ 5                                   120Uf-63V-10x12MM                      2PCS        V2.0
+          capacitor
+                                                                                      standard
+                                  BSC026N08NS5-80V-2.6mΩ
+ 6      MOS power                                                          12PCS       Random
+                                   TPH2R608NH-75V-2.6mΩ
+
+
+
+
+                                         10 / 47
+                                                                      https://www.cubemars.com/
+2. R-link produce information
+
+2.1 Introduction of R-link' appearance&Specifications
+
+
+
+
+     Specification
+
+     Rated Voltage                               5V
+
+     Power consumption                           ≤30mA
+
+     Size                                        39.2x29.2x10MM
+
+     Working Environment temperature             -20℃-65℃
+
+     Maximum allowable temperature
+                                                 85℃
+     of board
+
+
+
+
+                                       11 / 47
+                                                             https://www.cubemars.com/
+    2.2 R-link Interface and Definition
+
+
+
+
+No.             Interface function       Pin      Definition
+
+
+                                         1       CAN communication low side(CAN_L)
+
+                                         2       CAN communication high side(CAN_H)
+
+1              Communication Interface   3       Serial signal input（RX）
+
+                                         4       Serial signal output （TX）
+
+                                         5       Serial signal ground（GND）
+
+                                         1       VBUS
+
+                                         2       D-
+
+2              USB interface             3       D+
+
+                                         4       ID
+
+                                         5       GND
+
+
+
+
+                                             12 / 47
+                                                                     https://www.cubemars.com/
+2.3 R-link Indicator Definition
+
+              No.                             Color                         Definition
+
+                                                                  The power indicator is used
+                                                                  to indicate the power status
+                                                                  of the R-link. Under normal
+                                                                  circumstances, it will light up
+                                                                  green when the power is
+               1                             GREEN                plugged in. If the green light
+                                                                  does not light up when the
+                                                                  power is plugged in, please
+                                                                  remove        the        power
+                                                                  immediately and never turn
+                                                                  on the power again
+                                                                  Serial communication output
+                                                                  (TX), always off, flashes when
+               2                              BLUE
+                                                                  there is data output from the
+                                                                  R-link serial port.
+                                                                  Serial communication output
+                                                                  (TX), always off, flashes when
+               3                              RED
+                                                                  there is data input from the
+                                                                  R-link serial port.
+
+
+
+
+3.    Actuator and R-link Connection and Notices
+
+
+
+
+Connection instructions: Connect the USB cable to the PC and R-Link, the 5-Pin port to the R-Link
+port, the 4-Pin port to the CAN port of the motor, and the 3-Pin to the UART port of the motor.
+
+
+
+
+                                              13 / 47
+                                                                        https://www.cubemars.com/
+4. Instructions for use of the upper computer
+
+4.1 PC interface and instruction
+
+
+
+
+A.   Home
+B.   Chinese and English Switching
+C.   Main page
+D.   Implement data display
+E.   Current mode
+F.   Serial port selection
+G.   control parameter
+
+
+
+
+                                     14 / 47
+                                                https://www.cubemars.com/
+4.1.1 Home
+
+4.1.1.1 waveform display
+
+
+
+
+This page supports viewing real-time data feedback and drawing images.
+
+Data includes: motor current, temperature, real-time speed, inner
+
+encoder position, outer encoder position, high-frequency speed, rotor
+
+position, path planning, position deviation, DQ current, etc.
+
+
+
+
+                                   15 / 47
+                                                       https://www.cubemars.com/
+4.1.1.2 System Setting
+
+
+
+
+This page is mainly about changing the hardware limitations of the drive
+
+board such as voltage, current, power, temperature, duty ratio, etc. It
+
+mainly protects the drive board and motors.
+⚠ ：Please use it strictly in accordance with the specified voltage, current, power, and
+temperature. Our company will not bear any legal responsibility if the operation of
+this product in violation of regulations causes injury to the human body or
+irreversible damage to the drive board and motor.
+
+
+
+
+4.1.1.3 Parameter Setting
+
+
+
+
+                                         16 / 47
+                                                                https://www.cubemars.com/
+This page is mainly about adjusting the parameters of the drive board,
+
+including but not limited to current loop Kp-Ki, encoder paranoia,
+
+maximum and minimum current, maximum and minimum speed, speed
+
+loop Kp-Ki-KD, reduction ratio and other parameters, as well as encoder
+
+calibration and motor parameter tuning.
+⚠ ：Please use it strictly in accordance with the specified voltage, current, power, and
+temperature. Our company will not bear any legal responsibility if the operation of
+this product in violation of regulations causes injury to the human body or
+irreversible damage to the drive board and motor.
+
+
+
+
+4.1.1.4 Application Functions
+
+
+
+
+This page is mainly about CAN ID setting, CAN communication rate and
+
+CAN communication sudden interruption setting.
+                                         17 / 47
+                                                                https://www.cubemars.com/
+4.1.1.5 Parameter Save
+
+
+
+
+Save the upper computer parameters to the actuator.
+
+4.1.1.6 Export Settings
+
+
+
+Save the upper computer parameters as two files with the suffixes ".McParams" and
+to the computer.
+
+
+
+
+The ".McParams" file is:
+
+
+
+
+The ".AppParams" file is:
+
+
+
+                                      18 / 47
+                                                            https://www.cubemars.com/
+4.1.1.7 Import Settings
+
+
+
+
+Upload the parameters of the two files with the suffix ".McParams" and
+
+".AppParams" on the computer to the upper computer.
+
+4.1.1.8 Restore Factory
+
+
+
+
+This feature is not currently enabled.
+
+4.1.1.9 Mode Switch
+
+
+
+
+This page is mainly about switching the control mode of the drive board,
+
+including "guide mode", "servo mode" and "MIT power mode", and
+
+update the driver board firmware.
+
+
+
+
+                                    19 / 47
+                                                     https://www.cubemars.com/
+A).Import firmware area：It can import files with the suffix ".bin" in the
+
+computer.
+
+B). Firmware update progress bar
+
+C). Enter boot mode
+
+D). Enter MIT power mode
+
+E). Enter servo mode
+
+4.1.1.10 System reset
+
+
+
+
+Stop the actuator and reset.
+
+4.1.1.11 About
+About the version number of the host computer and the official website of the
+company https://www.cubemars.com/
+
+                                    20 / 47
+                                                         https://www.cubemars.com/
+4.2 Driver board calibration
+
+After you reinstall the driver board on the motor, or change the line
+
+sequence of the motor's three-phase line, or update the firmware, you
+
+must calibrate it. After calibration, the motor can be used normally.
+
+4.2.1 Servo mode
+
+Confirm that the motor input power is stable, the R-LINK connection is
+
+normal, and the motor is in servo mode, after successfully connecting
+
+with the host computer, enter the system setting page, and click
+
+"Electrical   Parameters",     "Identification   Parameters",        "Update
+
+Parameters", "Start calibration", "Update parameters" successively.
+
+
+
+
+                                   21 / 47
+                                                       https://www.cubemars.com/
+4.2.2 MIT power mode
+
+Confirm that the motor input power is stable, the R-LINK connection is
+
+normal, and the motor is in force control mode, after successfully
+
+connecting with the host computer, click "Debug Mode" on the "Motion
+
+Control" interface, and then input "calibrate" in the input field, Wait for
+
+about 30 seconds. At the same time, the output field will scroll the
+
+position value of the encoder in real time until the output field prints
+
+"Encoder Electrical Offset (rad)", the actuator will reboot and print the
+
+message from the driver board then the calibration is completed. When
+
+calibrating, the voltage is about 1A at 48V, and the current is restored to
+
+about 0.02A after the calibration.
+
+
+
+
+                                     22 / 47
+                                                       https://www.cubemars.com/
+4.3 Control demo
+
+4.3.1 Servo mode
+
+4.3.1.1 Multi-turn position velocity mode
+
+
+Confirm that the motor input power is stable, the R-LINK connection is
+
+normal, and the motor is in servo mode, after successfully connecting
+
+with the host computer, click "multi-turn mode" on the "servo control"
+
+interface, and input the desired position (the position at this time is ±
+
+100 revolutions, is from -36000°to 36000°), after the desired speed and
+
+acceleration, the motor will move at the desired speed until it reaches
+
+the desired position.
+
+
+
+
+                                            23 / 47
+                                                      https://www.cubemars.com/
+4.3.1.2 Single loop position velocity mode
+
+
+Confirm that the motor input power is stable, the R-LINK connection is
+
+normal, and the motor is in servo mode, after successfully connecting
+
+with the host computer, click "single-turn mode" on the "servo control"
+
+interface, and after inputting the desired position (there is only one
+
+circle at this time, is from 0°to 359°), the desired speed and acceleration,
+
+the motor will move at the desired speed until it reaches the desired
+
+position.
+
+
+
+
+                                             24 / 47
+                                                        https://www.cubemars.com/
+4.3.1.3 Position mode
+
+Confirm that the motor input power is stable, the R-LINK connection is
+
+normal, and the motor is in servo mode, input the desired position in the
+
+"Servo Control" interface after connecting with the host computer
+
+successfully, and the motor will reach the desired position at the
+
+maximum speed.
+
+
+
+
+                                  25 / 47
+                                                      https://www.cubemars.com/
+4.3.1.4 Velocity mode
+
+Confirm that the motor input power is stable, the R-LINK connection is
+
+normal, and the motor is in servo mode, after connecting with the host
+
+computer successfully, input the desired speed (±50000ERPM) in the
+
+"Servo Control" interface, and the motor will move at the desired speed.
+
+
+
+
+4.3.1.5 Duty cycle mode
+
+Confirm that the motor input power is stable, the R-LINK connection is
+
+normal, and the motor is in servo mode, input the desired duty
+
+ratio(default 0.005-0.95) in the "Servo Control" after connecting with the
+
+host computer, the motor will work at the desired duty ratio.
+
+                                  26 / 47
+                                                      https://www.cubemars.com/
+4.3.2 MIT power Mode
+
+4.3.2.1 Position Mode
+
+Confirm that the motor input power is stable, the R-LINK connection is
+
+normal, and the motor is in force control mode, after connecting with
+
+the host computer successfully, input corresponding “CAN ID” in the
+
+“Mit Control” interface and then click “RUN”，you can enter the motor
+
+mode. The motor will perform position movement (default speed
+
+12000erpm, acceleration 40000erpm) after inputting desired position,
+
+KP and KD.
+                                 27 / 47
+                                                    https://www.cubemars.com/
+4.3.2.2 Velocity mode
+
+Confirm that the motor input power is stable, R-Link connection is well,
+
+and the motor is in force control mode. After the motor is successfully
+
+connected with the upper computer, enter the corresponding "CAN ID"
+
+on the "Mit Control" interface and click "Enable Control" to enter the
+
+motor mode. After the expected speed and KD are input, the motor will
+
+running at speed.
+
+
+
+
+                                  28 / 47
+                                                     https://www.cubemars.com/
+4.3.2.3 Torque mode
+
+Confirm that the motor input power is stable, R-Link connection is
+
+normal, and the motor is in force control mode. After the motor is
+
+successfully     connected   with   the       upper   computer,    enter      the
+
+corresponding "CAN ID" on the "Mit Control" interface and click "Enable
+
+Control" to enter the motor mode. After the expected torque is input,
+
+the motor will running accord to the torque.
+
+                                    29 / 47
+                                                          https://www.cubemars.com/
+30 / 47
+          https://www.cubemars.com/
+4.4 Firmware update
+
+
+1. Click Open File and select the firmware. The firmware name extension
+
+is.bin.
+
+
+2. Click Bootloader.
+
+
+3. Click download and wait for the progress bar to reach 100%. Then
+
+restart the power supply.
+
+
+
+
+                                 31 / 47
+                                                     https://www.cubemars.com/
+5. Driver board communication protocol and description
+
+5.1 Servo mode and control mode description
+Servo mode with six control modes
+
+Duty cycle mode: duty cycle voltage is specified for a given motor, similar to square
+wave drive mode
+Current loop mode: given the Iq current specified by the motor, the motor output
+torque = Iq *KT, so it can be used as a torque loop
+Current brake mode: the motor is fixed at the current position by the specified brake
+current given by the motor (pay attention to the motor temperature when using)
+Velocity mode: the speed specified by the given motor
+Position mode: Given the specified position of the motor, the motor will run to the
+specified position, (default speed 12000erpm acceleration 40000erpm)
+Position velocity loop mode: the position, speed and acceleration specified by the
+given motor. The motor will run at a given acceleration and maximum speed to a
+specified position.
+
+The servo motor protocol is CAN protocol, and the extended frame format is shown
+below
+Can ID bits                      [28]-[8]                          [7]-[0]
+Field name                       Control mode                      Source node ID
+
+
+Control mode contain {0,1,2,3,4,5,6,7} Seven eigenvalues correspond to seven control modes
+respectively
+
+Duty cycle mode: 0
+Current loop mode: 1
+Current brake mode: 2
+Velocity mode: 3
+Position mode: 4
+Set origin mode:5
+Position velocity loop mode: 6
+
+Examples of various mode control motors are provided below
+The following are library functions and macro definitions for each instance
+typedef enum {
+     typedef enum {
+     CAN_PACKET_SET_DUTY = 0, //Duty cycle mode
+     CAN_PACKET_SET_CURRENT, //Current loop mode
+
+                                              32 / 47
+                                                                         https://www.cubemars.com/
+     CAN_PACKET_SET_CURRENT_BRAKE, // Current brake mode
+     CAN_PACKET_SET_RPM,             //Velocity mode
+     CAN_PACKET_SET_POS,            // Position mode
+     CAN_PACKET_SET_ORIGIN_HERE,   //Set origin mode
+     CAN_PACKET_SET_POS_SPD,     //Position velocity loop mode
+} CAN_PACKET_ID;
+
+
+
+void comm_can_transmit_eid(uint32_t id, const uint8_t *data, uint8_t len) {
+     uint8_t i=0;
+     if (len > 8) {
+           len = 8;
+     }
+  CanTxMsg TxMessage;
+  TxMessage.StdId = 0;
+     TxMessage.IDE = CAN_ID_EXT;
+     TxMessage.ExtId = id;
+     TxMessage.RTR = CAN_RTR_DATA;
+     TxMessage.DLC = len;
+     //memcpy(txmsg.data8, data, len);
+     for(i=0;i<len;i++)
+  TxMessage.Data[i]=data[i];
+  CAN_Transmit(CHASSIS_CAN, &TxMessage);
+}
+
+void buffer_append_int32(uint8_t* buffer, int32_t number, int32_t *index) {
+     buffer[(*index)++] = number >> 24;
+     buffer[(*index)++] = number >> 16;
+     buffer[(*index)++] = number >> 8;
+     buffer[(*index)++] = number;
+}
+
+void buffer_append_int16(uint8_t* buffer, int16_t number, int16_t *index) {
+     buffer[(*index)++] = number >> 8;
+     buffer[(*index)++] = number;
+}
+
+
+
+
+                                             33 / 47
+                                                                       https://www.cubemars.com/
+5.1.1 Duty cycle mode:
+Duty cycle mode sends data definitions
+
+
+    Data bits           Data[3]               Data[2]             Data[1]               Data[0]
+
+
+      Range              0~0xff                0~0xff             0~0xff                 0~0xff
+
+  Corresponding    Duty cycle 25-32      Duty cycle 17-24     Duty cycle 9-16
+                                                                                   Duty cycle 1-8 bit
+    variables             bit                   bit                 bit
+
+
+
+void comm_can_set_duty(uint8_t controller_id, float duty) {
+     int32_t send_index = 0;
+     uint8_t buffer[4];
+     buffer_append_int32(buffer, (int32_t)(duty * 100000.0), &send_index);
+     comm_can_transmit_eid(controller_id |((uint32_t)CAN_PACKET_SET_DUTY << 8), buffer,
+send_index);
+}
+
+
+
+
+5.1.2 Current loop mode
+
+Current loop mode sends data definition
+
+
+    Data bits           Data[3]               Data[2]             Data[1]               Data[0]
+
+
+      Range              0~0xff                0~0xff             0~0xff                 0~0xff
+
+ Corresponding
+                    Current 25-32 bit     Current 17-24 bit   Current 9-16 bit       Current 1-8 bit
+    variables
+Among them, the current value is of int32 type, and the value -60000-60000 represents -60-60A.
+Current loop mode sending routine
+void comm_can_set_current(uint8_t controller_id, float current) {
+     int32_t send_index = 0;
+     uint8_t buffer[4];
+     buffer_append_int32(buffer, (int32_t)(current * 1000.0), &send_index);
+     comm_can_transmit_eid(controller_id |
+               ((uint32_t)CAN_PACKET_SET_CURRENT << 8), buffer, send_index);
+}
+
+
+
+                                               34 / 47
+                                                                            https://www.cubemars.com/
+5.1.3 Current Brake Mode
+ Current brake mode sends data definition
+
+
+   Data bits         Data[3]                Data[2]             Data[1]               Data[0]
+
+
+   Range              0~0xff                0~0xff               0~0xff                0~0xff
+
+Correspondin       Brake current     Brake current 17-24   Brake current 9-16     Brake current 1-8
+ g variables         25-32 bit                bit                 bit                    bit
+Among them, the braking current value is of int32 type, and the value 0-60000 represents 0-60A.
+Current brake mode sending routine
+void comm_can_set_cb(uint8_t controller_id, float current) {
+     int32_t send_index = 0;
+     uint8_t buffer[4];
+     buffer_append_int32(buffer, (int32_t)(current * 1000.0), &send_index);
+     comm_can_transmit_eid(controller_id |
+               ((uint32_t)CAN_PACKET_SET_CURRENT_BRAKE << 8), buffer, send_index);
+}
+
+
+
+
+                                              35 / 47
+                                                                          https://www.cubemars.com/
+5.1.4 Velocity mode
+Velocity loop simple control block diagram
+
+
+
+
+Velocity loop mode sends data definition
+
+
+   Data bits          Data[3]                Data[2]         Data[1]               Data[0]
+
+
+    Range              0~0xff                0~0xff           0~0xff                0~0xff
+
+
+Corresponding     Speed 25-32 bit       Speed 17-24 bit   Speed 9-16 bit        Speed 1-8 bit
+  variables
+Among them, the speed value is int32 type, and the range -100000-100000 represents
+-100000-100000 electrical speed.
+Velocity loop sending routine
+
+void comm_can_set_rpm(uint8_t controller_id, float rpm) {
+     int32_t send_index = 0;
+     uint8_t buffer[4];
+     buffer_append_int32(buffer, (int32_t)rpm, &send_index);
+     comm_can_transmit_eid(controller_id |
+               ((uint32_t)CAN_PACKET_SET_RPM << 8), buffer, send_index);
+}
+
+
+
+
+                                              36 / 47
+                                                                       https://www.cubemars.com/
+5.1.5 Position loop mode
+
+Position loop simple control block diagram
+
+
+
+
+Position loop mode sends data definitions
+
+
+   Data bits          Data[3]                Data[2]           Data[1]               Data[0]
+
+
+    Range              0~0xff                0~0xff             0~0xff                0~0xff
+
+
+Corresponding   Position 25-32 bit    Position 17-24 bit   Position 9-16 bit    Position 1-8 bit
+  variables
+
+
+Position loop sending routine, position as int32 type ，range-360000000~360000000 represents
+position -36000°~36000°
+
+void comm_can_set_pos(uint8_t controller_id, float pos) {
+     int32_t send_index = 0;
+     uint8_t buffer[4];
+     buffer_append_int32(buffer, (int32_t)(pos * 1000000.0), &send_index);
+     comm_can_transmit_eid(controller_id |
+               ((uint32_t)CAN_PACKET_SET_POS << 8), buffer, send_index);
+}
+
+5.1.6 Set origin mode
+
+  Date bits           Data[0]
+
+    Range             0~0x02
+
+Corresponding
+                   Set instruction
+   variable
+Among them, the setting command is uint8_t type, 0 means setting the temporary origin (power
+failure elimination), 1 means setting the permanent zero point (automatic parameter saving), 2
+
+                                              37 / 47
+                                                                         https://www.cubemars.com/
+means restoring the default zero point (automatic parameter saving);
+
+Position loop sending routine
+void comm_can_set_origin(uint8_t controller_id, uint8_t set_origin_mode) {
+     comm_can_transmit_eid(controller_id |
+               ((uint32_t) CAN_PACKET_SET_ORIGIN_HERE << 8), buffer, send_index);
+}
+
+
+
+
+5.1.7Position and Velocity Loop Mode
+
+
+Simplified block diagram of position velocity loop
+
+
+
+
+Position velocity loop mode sends data definition
+
+
+                 Data[0]    Data[1]    Data[2]       Data[3]    Data[4]    Data[5]   Data[6]       Data[7]
+   Data bits
+
+                 0~0xff     0~0xff     0~0xff        0~0xff     0~0xff     0~0xff    0~0xff        0~0xff
+     Range
+
+                 Position   Position   Position      Position   Speed 8    Speed 8   Accelerated   Accelerated
+Corresponding    25-32      17-24      9-16 bit      1-8 bit    bit high   bit low   speed 8 bit   speed 8 bit
+   variables     bit        bit                                                      high          low
+Among them, the position is int32 type, and the range -360000000-360000000 represents the
+position -36000°-36000°;
+Among them, the speed is int16 type, and the range -100000-100000 represents -100000-100000
+electrical speed;
+ Among them, the acceleration is int16 type, and the range -100000-100000 represents
+-100000-100000 electrical speed/s².
+
+void comm_can_set_pos_spd(uint8_t controller_id, float pos,int16_t spd, int16_t RPA ) {
+     int32_t send_index = 0;
+Int16_t send_index1 = 0;
+     uint8_t buffer[4];
+     buffer_append_int32(buffer, (int32_t)(pos * 10000.0), &send_index);
+                                                  38 / 47
+                                                                             https://www.cubemars.com/
+buffer_append_int16(buffer,spd, & send_index1);
+buffer_append_int16(buffer,RPA, & send_index1);
+     comm_can_transmit_eid(controller_id |
+             ((uint32_t)CAN_PACKET_SET_POS << 8), buffer, send_index);
+}
+
+
+
+5.2 Servo mode of motor message format
+In servo mode, motor packets are uploaded in timing mode. The upload frequency can be set to
+1-500Hz, and the upload byte is 8 bytes
+
+
+                Data[0]      Data[1]     Data[2]       Data[3]   Data[4]      Data[5]      Data[6]        Data[7]
+   Data bits
+
+                0~0xff       0~0xff      0~0xff        0~0xff    0~0xff       0~0xff       0~0xff         0~0xff
+    Range
+
+
+                Position     Position    Speed 8       Speed 8   Current      Current      Motor          An error
+Corresponding
+                8      bit   8     bit   bit high      bit low   8      bit   8      bit   temperature    code
+   variables
+                high         low                                 high         low
+
+
+Among them, the position is int16 type, and the range -32000-32000 represents the position
+-3200°-3200°;
+Among them, the speed is int16 type, and the range -32000-32000 represents
+-320000-320000rpm electrical speed;
+Among them, the current is of type int16, and the value -6000-6000 represents -60-60A
+Among them, the temperature is int8 type, and the range of -20-127 represents the temperature
+of the driver board: -20℃-127℃;
+Among them, the error code is uint8 type, 0 means no fault, 1 means over temperature fault, 2
+means over current fault, 3 means over voltage fault, 4 means under voltage fault, 5 means
+encoder fault, 6 means phase current unbalance fault (The hardware may be damaged);
+
+The following is an example of message acceptance
+ void motor_receive(float* motor_pos,float*
+motor_spd,float* cur,int_8* temp,int_8* error,rx_message)
+  {
+      int16_t pos_int = (rx_message)->Data[0] << 8 | (rx_message)->Data[1]);
+      int16_t spd_int = (rx_message)->Data[2] << 8 | (rx_message)->Data[3]);
+      int16_t cur_int = (rx_message)->Data[4] << 8 | (rx_message)->Data[5]);
+    &motor_pos= (float)( pos_int * 0.1f); //电机位置
+    &motor_spd= (float)( spd_int * 10.0f);//电机速度
+    &motor_cur= (float) ( cur_int * 0.01f);//电机电流
+
+                                                    39 / 47
+                                                                                  https://www.cubemars.com/
+    &motor_temp= (rx_message)->Data[6] ;//电机温度
+    &motor_error= (rx_message)->Data[7] ;//电机故障码
+    }
+
+Servo serial port protocol
+Message format:
+Frame        Data            Data Frame   Data bit     Check the    Check the     End     of
+header       length          （0x14）                    high     8   lower     8   frame
+（0x02）                                                 bits         bits          （0x03）
+Frame header: fixed message (0x02)
+Data length: is the length of the data frame + data bits
+Data frame: the mode of sending the motor through the serial port (ps: speed loop, position loop,
+speed position loop, etc.)
+Check bit: CRC check (the specific check method will be mentioned in the code below)
+End of frame: fixed message (0x03)
+
+
+
+Code demonstration (this serial port code is based on C/C++):
+     Data message sorting:
+// CRC Table
+const unsigned short crc16_tab[] = { 0x0000, 0x1021, 0x2042, 0x3063, 0x4084,
+          0x50a5, 0x60c6, 0x70e7, 0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad,
+          0xe1ce, 0xf1ef, 0x1231, 0x0210, 0x3273, 0x2252, 0x52b5, 0x4294, 0x72f7,
+          0x62d6, 0x9339, 0x8318, 0xb37b, 0xa35a, 0xd3bd, 0xc39c, 0xf3ff, 0xe3de,
+          0x2462, 0x3443, 0x0420, 0x1401, 0x64e6, 0x74c7, 0x44a4, 0x5485, 0xa56a,
+          0xb54b, 0x8528, 0x9509, 0xe5ee, 0xf5cf, 0xc5ac, 0xd58d, 0x3653, 0x2672,
+          0x1611, 0x0630, 0x76d7, 0x66f6, 0x5695, 0x46b4, 0xb75b, 0xa77a, 0x9719,
+          0x8738, 0xf7df, 0xe7fe, 0xd79d, 0xc7bc, 0x48c4, 0x58e5, 0x6886, 0x78a7,
+          0x0840, 0x1861, 0x2802, 0x3823, 0xc9cc, 0xd9ed, 0xe98e, 0xf9af, 0x8948,
+          0x9969, 0xa90a, 0xb92b, 0x5af5, 0x4ad4, 0x7ab7, 0x6a96, 0x1a71, 0x0a50,
+          0x3a33, 0x2a12, 0xdbfd, 0xcbdc, 0xfbbf, 0xeb9e, 0x9b79, 0x8b58, 0xbb3b,
+          0xab1a, 0x6ca6, 0x7c87, 0x4ce4, 0x5cc5, 0x2c22, 0x3c03, 0x0c60, 0x1c41,
+          0xedae, 0xfd8f, 0xcdec, 0xddcd, 0xad2a, 0xbd0b, 0x8d68, 0x9d49, 0x7e97,
+          0x6eb6, 0x5ed5, 0x4ef4, 0x3e13, 0x2e32, 0x1e51, 0x0e70, 0xff9f, 0xefbe,
+          0xdfdd, 0xcffc, 0xbf1b, 0xaf3a, 0x9f59, 0x8f78, 0x9188, 0x81a9, 0xb1ca,
+          0xa1eb, 0xd10c, 0xc12d, 0xf14e, 0xe16f, 0x1080, 0x00a1, 0x30c2, 0x20e3,
+          0x5004, 0x4025, 0x7046, 0x6067, 0x83b9, 0x9398, 0xa3fb, 0xb3da, 0xc33d,
+          0xd31c, 0xe37f, 0xf35e, 0x02b1, 0x1290, 0x22f3, 0x32d2, 0x4235, 0x5214,
+          0x6277, 0x7256, 0xb5ea, 0xa5cb, 0x95a8, 0x8589, 0xf56e, 0xe54f, 0xd52c,
+          0xc50d, 0x34e2, 0x24c3, 0x14a0, 0x0481, 0x7466, 0x6447, 0x5424, 0x4405,
+          0xa7db, 0xb7fa, 0x8799, 0x97b8, 0xe75f, 0xf77e, 0xc71d, 0xd73c, 0x26d3,
+          0x36f2, 0x0691, 0x16b0, 0x6657, 0x7676, 0x4615, 0x5634, 0xd94c, 0xc96d,
+
+                                             40 / 47
+                                                                       https://www.cubemars.com/
+         0xf90e, 0xe92f, 0x99c8, 0x89e9, 0xb98a, 0xa9ab, 0x5844, 0x4865, 0x7806,
+         0x6827, 0x18c0, 0x08e1, 0x3882, 0x28a3, 0xcb7d, 0xdb5c, 0xeb3f, 0xfb1e,
+         0x8bf9, 0x9bd8, 0xabbb, 0xbb9a, 0x4a75, 0x5a54, 0x6a37, 0x7a16, 0x0af1,
+         0x1ad0, 0x2ab3, 0x3a92, 0xfd2e, 0xed0f, 0xdd6c, 0xcd4d, 0xbdaa, 0xad8b,
+         0x9de8, 0x8dc9, 0x7c26, 0x6c07, 0x5c64, 0x4c45, 0x3ca2, 0x2c83, 0x1ce0,
+         0x0cc1, 0xef1f, 0xff3e, 0xcf5d, 0xdf7c, 0xaf9b, 0xbfba, 0x8fd9, 0x9ff8,
+         0x6e17, 0x7e36, 0x4e55, 0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0 };
+
+
+//int16 数据位整理
+void buffer_append_int16(uint8_t* buffer, int16_t number, int32_t *index) {
+     buffer[(*index)++] = number >> 8;
+     buffer[(*index)++] = number;
+}
+
+
+//uint16 数据位整理
+void buffer_append_uint16(uint8_t* buffer, uint16_t number, int32_t *index) {
+     buffer[(*index)++] = number >> 8;
+     buffer[(*index)++] = number;
+}
+
+
+//int32 数据位整理
+void buffer_append_int32(uint8_t* buffer, int32_t number, int32_t *index) {
+     buffer[(*index)++] = number >> 24;
+     buffer[(*index)++] = number >> 16;
+     buffer[(*index)++] = number >> 8;
+     buffer[(*index)++] = number;
+}
+
+
+//uint32 数据位整理
+void buffer_append_uint32(uint8_t* buffer, uint32_t number, int32_t *index) {
+     buffer[(*index)++] = number >> 24;
+     buffer[(*index)++] = number >> 16;
+     buffer[(*index)++] = number >> 8;
+     buffer[(*index)++] = number;
+}
+
+
+//int64 数据位整理
+void buffer_append_int64(uint8_t* buffer, int64_t number, int32_t *index) {
+     buffer[(*index)++] = number >> 56;
+     buffer[(*index)++] = number >> 48;
+     buffer[(*index)++] = number >> 40;
+     buffer[(*index)++] = number >> 32;
+     buffer[(*index)++] = number >> 24;
+                                             41 / 47
+                                                                       https://www.cubemars.com/
+    buffer[(*index)++] = number >> 16;
+    buffer[(*index)++] = number >> 8;
+    buffer[(*index)++] = number;
+}
+
+
+//uint64 数据位整理
+void buffer_append_uint64(uint8_t* buffer, uint64_t number, int32_t *index) {
+     buffer[(*index)++] = number >> 56;
+     buffer[(*index)++] = number >> 48;
+     buffer[(*index)++] = number >> 40;
+     buffer[(*index)++] = number >> 32;
+     buffer[(*index)++] = number >> 24;
+     buffer[(*index)++] = number >> 16;
+     buffer[(*index)++] = number >> 8;
+     buffer[(*index)++] = number;
+}
+
+
+//CRC 校验
+unsigned short crc16(unsigned char *buf, unsigned int len) {
+unsigned int i;
+     unsigned short cksum = 0;
+     for (i = 0; i < len; i++) {
+           cksum = crc16_tab[(((cksum >> 8) ^ *buf++) & 0xFF)] ^ (cksum << 8);
+     }
+     return cksum;
+}
+
+
+ //数据包的整理发送
+void packet_send_packet(unsigned char *data, unsigned int len, int handler_num) {
+     int b_ind = 0;
+     unsigned short crc;
+     if (len > PACKET_MAX_PL_LEN) {
+           return;
+     }
+     if (len <= 256) {
+           handler_states[handler_num].tx_buffer[b_ind++] = 2;
+           handler_states[handler_num].tx_buffer[b_ind++] = len;
+     } else {
+           handler_states[handler_num].tx_buffer[b_ind++] = 3;
+           handler_states[handler_num].tx_buffer[b_ind++] = len >> 8;
+           handler_states[handler_num].tx_buffer[b_ind++] = len & 0xFF;
+     }
+
+                                              42 / 47
+                                                                        https://www.cubemars.com/
+              memcpy(handler_states[handler_num].tx_buffer + b_ind, data, len);
+              b_ind += len;
+
+              crc = crc16(data, len);
+              handler_states[handler_num].tx_buffer[b_ind++] = (uint8_t)(crc >> 8);
+              handler_states[handler_num].tx_buffer[b_ind++] = (uint8_t)(crc & 0xFF);
+              handler_states[handler_num].tx_buffer[b_ind++] = 3;
+
+            if (handler_states[handler_num].send_func) {
+                  handler_states[handler_num].send_func(handler_states[handler_num].tx_buffer,
+        b_ind);
+            }
+        }
+
+
+
+        5.3 MIT power mode communication protocol
+        Special Can code
+        Enter motor control mode {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0XFC }
+        Exit motor control mode {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0XFD}
+        Set the current position of the motor to 0 {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0XFE }
+        Note: motor control mode must be entered before using CAN communication control
+        motor!
+
+        If you want to read the current state when there is no state, the command sent is:
+        {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0XFC }）
+
+
+        Force control mode drive board receives data definition
+
+        Identifier: set motor ID (default: 1)                                      Frame type: standard
+        frame
+        Frame format: DATA                                                       DLC: 8 bytes
+
+Data fields        DATA[0]             DATA[1]              DATA[2]                       DATA[3]
+Data bits            7-0                  7-0                    7-0               7-4                3-0
+The data       Motor position      Motor position 8    Motor speed 8        Motor speed 4        KP value 4 bit
+content          8 bit high            bit low         bit high                bit low               high
+
+
+
+Data fields        DATA[4]             DATA[5]                         DATA[6]                      DATA[7]
+Data bits            7-0                  7-0                    7-4               3-0                0-7
+
+                                                       43 / 47
+                                                                                  https://www.cubemars.com/
+The data          KP value 8 bit       KD value 8 bit     KD value 4 bit        Current value 4         Current value 8
+content                low                 high                low              bit high                    bit low
+
+
+
+        MIT power mode driver board sending data definition
+
+        Identifier: 0X00+ Drive ID             Frame type: standard frame
+        Frame format: DATA                     DLC: 6 bytes
+
+
+Data fields           DATA[0]            DATA[1]             DATA[2]                 DATA[3]               DATA[4]
+Data bits               7-0                 7-0                   7-0                  7-0                   7-4
+The data         Driver board ID                        Motor position 8         Motor speed 8          Motor speed 4
+content               code           Motor position 8      bit lower              bit higher              bit lower
+                                       bit higher
+
+
+Data fields           DATA[4]            DATA[5]             DATA[6]                 DATA[7]
+Data bits               3-0                 7-0                   7-0                  7-0
+The data          Current 4 bit        Current 8 bit          Motor              An error code
+content              higher               lower            temperature
+
+
+
+        CAN Speed: 1 MHZ
+        Simple block diagram of MIT power mode
+
+
+
+
+        Operation control mode send and receive code routines
+        Module          AK10-9          AK60-6          AK70-10             AK80-6             AK80-9              AK80-80
+        Position
+                                                                   -12.5f-12.5f
+        (rad)
+              Speed
+                        -50.0f-50.0f    -50.0f-50.0f    -50.0f-50.0f        -76.0f-76.0f       -50.0f-50.0f        -8.0f-8.0f
+        （rad/s）
+            Torque                                                                                                 -144.0f-144
+                        -65.0f-65.0f    -15.0f-15.0f    -25.0f-25.0f        -12.0f-12.0f       -18.0f-18.0f
+         （N.M）                                                                                                         .0f
+
+         Kp range                                                       0-500
+
+
+                                                        44 / 47
+                                                                                      https://www.cubemars.com/
+Kd range                                                    0-5
+
+
+Schematic diagram of internal controller pid
+If you want to realize pure position, pure speed, and pure torque control, you only need to assign
+0 to the corresponding variable and the rest. For example, if you want to achieve position control,
+assign the motor position when sending the package, and send 0 for torque and speed.
+Kp controls the parameters of the position loop, and Kd controls the parameters of the speed
+loop. So theoretically, Kd should be assigned 0 in the pure position mode. Kp should be assigned
+0 in pure speed mode.
+
+       Sends routine code
+
+       void pack_cmd(CANMessage * msg, float p_des, float v_des, float kp, float kd, float t_ff){
+       /// limit data to be within bounds ///
+       float P_MIN =-95.5;
+       float P_MAX =95.5;
+       float V_MIN =-30;
+       float V_MAX =30;
+       float T_MIN =-18;
+       float T_MAX =18;
+       float Kp_MIN =0;
+       float Kp_MAX =500;
+       float Kd_MIN =0;
+       float Kd_MAX =5;
+       float Test_Pos=0.0;
+       p_des = fminf(fmaxf(P_MIN, p_des), P_MAX);
+       v_des = fminf(fmaxf(V_MIN, v_des), V_MAX);
+       kp = fminf(fmaxf(Kp_MIN, kp), Kp_MAX);
+       kd = fminf(fmaxf(Kd_MIN, kd), Kd_MAX);
+       t_ff = fminf(fmaxf(T_MIN, t_ff), T_MAX);
+       /// convert floats to unsigned ints ///
+       int p_int = float_to_uint(p_des, P_MIN, P_MAX, 16);
+       int v_int = float_to_uint(v_des, V_MIN, V_MAX, 12);
+       int kp_int = float_to_uint(kp, KP_MIN, KP_MAX, 12);
+       int kd_int = float_to_uint(kd, KD_MIN, KD_MAX, 12);
+       int t_int = float_to_uint(t_ff, T_MIN, T_MAX, 12);
+       /// pack ints into the can buffer ///
+       msg->data[0] = p_int>>8;               // Position 8 higher
+       msg->data[1] = p_int&0xFF;             // Position 8 lower
+       msg->data[2] = v_int>>4;               // Speed 8 higher
+       msg->data[3] = ((v_int&0xF)<<4)|(kp_int>>8); //
+Speed 4 bit lower KP 4bit higher
+                                              45 / 47
+                                                                         https://www.cubemars.com/
+       msg->data[4] = kp_int&0xFF;        // KP 8 bit lower
+       msg->data[5] = kd_int>>4;          // Kd 8 bit higher
+       msg->data[6] = ((kd_int&0xF)<<4)|(kp_int>>8);      //
+                                                                 KP 4 bit lower torque 4 bit higher
+       msg->data[7] = t_int&0xff;              // torque 4 bit lower
+
+       }
+
+When sending packets, all the numbers should be converted into integer numbers by the
+following functions and then sent to the motor.
+
+       int float_to_uint(float x, float x_min, float x_max, unsigned int bits)
+       {
+       /// Converts a float to an unsigned int, given range and number of bits ///
+       float span = x_max - x_min;
+       if(x < x_min) x = x_min;
+       else if(x > x_max) x = x_max;
+       return (int) ((x- x_min)*((float)((1<<bits)/span)));
+       }
+
+Receive routine code
+
+       void unpack_reply(CANMessage msg){
+       /// unpack ints from can buffer ///
+       int id = msg.data[0]; //驱动 ID 号
+       int p_int = (msg.data[1]<<8)|msg.data[2];               //Motor position data
+       int v_int = (msg.data[3]<<4)|(msg.data[4]>>4);          // Motor speed data
+       int i_int = ((msg.data[4]&0xF)<<8)|msg.data[5];         // Motor torque data
+
+       /// convert ints to floats ///
+       float p = uint_to_float(p_int, P_MIN, P_MAX, 16);
+       float v = uint_to_float(v_int, V_MIN, V_MAX, 12);
+       float i = uint_to_float(i_int, -I_MAX, I_MAX, 12);
+                if(id == 1){
+postion = p;                              //
+                                          Read the corresponding data according to the ID code
+speed = v;
+torque = i;
+                }
+       }
+All numbers are converted to floating-point by the following function.
+
+float uint_to_float(int x_int, float x_min, float x_max, int bits){
+                                                 46 / 47
+                                                                            https://www.cubemars.com/
+/// converts unsigned int to float, given range and number of bits ///
+float span = x_max - x_min;
+float offset = x_min;
+return ((float)x_int)*span/((float)((1<<bits)-1)) + offset;
+   }
+
+
+
+
+                                          47 / 47
+                                                                     https://www.cubemars.com/
+

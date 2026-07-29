@@ -1,0 +1,1290 @@
+                                                         MCP2561/2FD
+            High-Speed CAN Flexible Data Rate Transceiver
+Features:                                                      Description:
+• Optimized for CAN FD (Flexible Data rate) at 2, 5            The MCP2561/2FD is a second generation high-speed
+  and 8 Mbps Operation                                         CAN transceiver from Microchip Technology Inc. It
+  - Maximum Propagation Delay: 120 ns                          offers the same features as the MCP2561/2.
+  - Loop Delay Symmetry: -10%/+10% (2 Mbps)                    Additionally, it guarantees Loop Delay Symmetry in
+• Implements ISO-11898-2 and ISO-11898-5                       order to support the higher data rates required for CAN
+  Standard Physical Layer Requirements                         FD. The maximum propagation delay was improved to
+• Very Low Standby Current (5 µA, typical)                     support longer bus length.
+• VIO Supply Pin to Interface Directly to                     The device meets the automotive requirements for
+  CAN Controllers and Microcontrollers with                   CAN FD bit rates exceeding 2 Mbps, low quiescent
+  1.8V to 5.5V I/O                                             current, electromagnetic compatibility (EMC) and
+• SPLIT Output Pin to Stabilize Common Mode in                 electrostatic discharge (ESD).
+  Biased Split Termination Schemes                             Package Types
+• CAN Bus Pins are Disconnected when Device is
+  Unpowered                                                          MCP2561FD                     MCP2562FD
+  - An Unpowered Node or Brown-Out Event will                        PDIP, SOIC                    PDIP, SOIC
+     Not Load the CAN Bus                                        TXD 1             8 STBY       TXD 1           8 STBY
+• Detection of Ground Fault:                                     VSS 2             7 CANH       VSS 2           7 CANH
+  - Permanent Dominant Detection on TXD                          VDD 3             6 CANL      VDD 3            6 CANL
+  - Permanent Dominant Detection on Bus                          RXD 4             5 SPLIT     RXD 4            5 VIO
+• Power-on Reset and Voltage Brown-Out
+  Protection on VDD Pin                                              MCP2561FD                     MCP2562FD
+• Protection Against Damage Due to Short-Circuit                      3x3 DFN*                      3x3 DFN*
+  Conditions (Positive or Negative Battery Voltage)               TXD 1            8 STBY       TXD 1          8 STBY
+• Protection Against High-Voltage Transients in
+                                                                  VSS 2     EP     7 CANH       VSS 2    EP    7 CANH
+  Automotive Environments                                                    9
+                                                                  VDD 3            6 CANL                 9
+                                                                                               VDD 3           6 CANL
+• Automatic Thermal Shutdown Protection
+                                                                  RXD 4            5 SPLIT     RXD 4           5 VIO
+• Suitable for 12V and 24V Systems
+• Meets or exceeds stringent automotive design                    * Includes Exposed Thermal Pad (EP); see Table 1-2
+  requirements including “Hardware Requirements
+  for LIN, CAN and FlexRay Interfaces in
+  Automotive Applications”, Version 1.3, May 2012
+  - Radiated emissions @ 2 Mbps with Common
+     Mode Choke (CMC)
+  - DPI @ 2 Mbps with CMC
+• High ESD Protection on CANH and CANL,
+  meeting IEC61000-4-2 up to ±14 kV
+• Available in PDIP-8L, SOIC-8L and 3x3 DFN-8L
+• Temperature ranges:
+  - Extended (E): -40°C to +125°C
+  - High (H): -40°C to +150°C
+
+MCP2561/2FD Family Members
+        Device                     Feature                                       Description
+     MCP2561FD                     SPLIT pin      Common mode stabilization
+     MCP2562FD                      VIO pin       Internal level shifter on digital I/O pins
+Note: For ordering information, see the “Product Identification System” section on page 29.
+
+
+
+ 2014 Microchip Technology Inc.                                                                   DS20005284A-page 1
+MCP2561/2FD
+Block Diagram
+
+            SPLIT(2)           VIO(3)                                                  VDD
+
+
+
+
+                            Digital I/O                   Thermal          POR
+            VDD/2
+                             Supply                      Protection        UVLO
+
+
+
+                  VIO
+
+
+                           Permanent
+     TXD
+                         Dominant Detect
+
+                                                                Driver                               CANH
+                  VIO                                            and
+                                                             Slope Control
+                                                                                                     CANL
+                                    Mode
+    STBY
+                                   Control
+
+
+
+
+                                                                          CANH
+                                              Wake-Up
+                                                               LP_RX(1)
+                                               Filter
+                                                                          CANL
+
+                                              Receiver
+     RXD                                                                  CANH
+                                                                HS_RX
+                                                                          CANL
+
+
+
+                                                                                        VSS
+
+
+   Note 1: There is only one receiver implemented. The receiver can operate in Low-Power or High-Speed mode.
+        2: Only MCP2561FD has the SPLIT pin.
+        3: Only MCP2562FD has the VIO pin. In MCP2561FD, the supply for the digital I/O is internally connected
+           to VDD.
+
+
+
+
+DS20005284A-page 2                                                                 2014 Microchip Technology Inc.
+                                                                                   MCP2561/2FD
+1.0      DEVICE OVERVIEW                                       1.1.1       NORMAL MODE
+The MCP2561/2FD is a high-speed CAN device,                    Normal mode is selected by applying low-level voltage
+fault-tolerant device that serves as the interface             to the STBY pin. The driver block is operational and
+between a CAN protocol controller and the physical             can drive the bus pins. The slopes of the output signals
+bus. The MCP2561/2FD device provides differential              on CANH and CANL are optimized to produce minimal
+transmit and receive capability for the CAN protocol           electromagnetic emissions (EME).
+controller, and is fully compatible with the ISO-11898-2       The high speed differential receiver is active.
+and ISO-11898-5 standards.
+                                                               1.1.2       STANDBY MODE
+The Loop Delay Symmetry is guaranteed to support
+data rates that are up to 5 Mbps for CAN FD (Flexible          The device may be placed in Standby mode by
+Data rate). The maximum propagation delay was                  applying high-level voltage to the STBY pin. In Standby
+improved to support longer bus length.                         mode, the transmitter and the high-speed part of the
+                                                               receiver are switched off to minimize power
+Typically, each node in a CAN system must have a
+                                                               consumption. The low-power receiver and the wake-up
+device to convert the digital signals generated by a
+                                                               filter blocks are enabled to monitor the bus for activity.
+CAN controller to signals suitable for transmission over
+                                                               The receive pin (RXD) will show a delayed
+the bus cabling (differential output). It also provides a
+                                                               representation of the CAN bus, due to the wake-up
+buffer between the CAN controller and the high-voltage
+                                                               filter.
+spikes that can be generated on the CAN bus by
+outside sources.                                               The CAN controller gets interrupted by a negative edge
+                                                               on the RXD pin (Dominant state on the CAN bus). The
+1.1      Mode Control Block                                    CAN controller must put the MCP2561/2FD back into
+                                                               Normal mode, using the STBY pin, in order to enable
+The MCP2561/2FD supports two modes of operation:               high speed data communication.
+• Normal Mode                                                  The CAN bus wake-up function requires both supply
+• Standby Mode                                                 voltages, VDD and VIO, to be in valid range.
+These modes are summarized in Table 1-1.
+
+TABLE 1-1:        MODES OF OPERATION
+                                                                         RXD Pin
+      Mode            STBY Pin
+                                                       LOW                                     HIGH
+      Normal             LOW                     Bus is Dominant                         Bus is Recessive
+      Standby            HIGH              Wake-up request is detected             No wake-up request detected
+
+1.2       Transmitter Function                                 1.4       Internal Protection
+The CAN bus has two states:                                    CANH and CANL are protected against battery
+• Dominant State                                               short-circuits and electrical transients that can occur on
+                                                               the CAN bus. This feature prevents destruction of the
+• Recessive State
+                                                               transmitter output stage during such a fault condition.
+A Dominant state occurs when the differential voltage
+                                                               The device is further protected from excessive current
+between CANH and CANL is greater than VDIFF(D)(I).
+                                                               loading by thermal shutdown circuitry that disables the
+A Recessive state occurs when the differential voltage
+                                                               output drivers when the junction temperature exceeds
+is less than VDIFF(R)(I). The Dominant and Recessive
+                                                               a nominal limit of +175°C. All other parts of the chip
+states correspond to the Low and High state of the TXD
+                                                               remain operational, and the chip temperature is
+input pin, respectively. However, a Dominant state
+                                                               lowered due to the decreased power dissipation in the
+initiated by another CAN node will override a
+                                                               transmitter outputs. This protection is essential to
+Recessive state on the CAN bus.
+                                                               protect against bus line short-circuit-induced damage.
+
+1.3      Receiver Function
+In Normal mode, the RXD output pin reflects the
+differential bus voltage between CANH and CANL. The
+Low and High states of the RXD output pin correspond
+to the Dominant and Recessive states of the CAN bus,
+respectively.
+
+
+
+
+ 2014 Microchip Technology Inc.                                                                   DS20005284A-page 3
+MCP2561/2FD
+1.5       Permanent Dominant Detection                       1.6      Power-On Reset (POR) and 
+The MCP2561/2FD device prevents two conditions:
+                                                                      Undervoltage Detection
+• Permanent Dominant condition on TXD                        The MCP2561/2FD has undervoltage detection on
+• Permanent Dominant condition on the bus                    both supply pins: VDD and VIO. Typical undervoltage
+                                                             thresholds are 1.2V for VIO and 4V for VDD.
+In Normal mode, if the MCP2561/2FD detects an
+extended Low state on the TXD input, it will disable the     When the device is powered on, CANH and CANL
+CANH and CANL output drivers in order to prevent the         remain in a high-impedance state until both VDD and
+corruption of data on the CAN bus. The drivers will          VIO exceed their undervoltage levels. Once powered
+remain disabled until TXD goes High.                         on, CANH and CANL will enter a high-impedance state
+                                                             if the voltage level at VDD drops below the undervoltage
+In Standby mode, if the MCP2561/2FD detects an               level, providing voltage brown-out protection during
+extended Dominant condition on the bus, it will set the      normal operation.
+RXD pin to Recessive state. This allows the attached
+controller to go to Low-Power mode until the Dominant        In Normal mode, the receiver output is forced to
+issue is corrected. RXD is latched High until a              Recessive state during an undervoltage condition on
+Recessive state is detected on the bus, and the              VDD. In Standby mode, the low-power receiver is only
+wake-up function is enabled again.                           enabled when both VDD and VIO supply voltages rise
+                                                             above their respective undervoltage thresholds. Once
+Both conditions have a time-out of 1.25 ms (typical).        these threshold voltages are reached, the low-power
+This implies a maximum bit time of 69.44 µs                  receiver is no longer controlled by the POR comparator
+(14.4 kHz), allowing up to 18 consecutive dominant bits      and remains operational down to about 2.5V on the
+on the bus.                                                  VDD supply (MCP2561/2FD). The MCP2562FD
+                                                             transfers data to the RXD pin down to 1.8V on the VIO
+                                                             supply.
+
+
+
+1.7       Pin Descriptions
+Table 1-2 describes the pinout.
+TABLE 1-2:        MCP2561/2FD PIN DESCRIPTIONS
+MCP2561FD MCP2561FD MCP2562FD MCP2562FD
+                                         Symbol                                     Pin Function
+ 3x3 DFN  PDIP, SOIC 3x3 DFN  PDIP, SOIC
+      1              1               1              1      TXD     Transmit Data Input
+      2              2               2              2      VSS     Ground
+      3              3               3              3      VDD     Supply Voltage
+      4              4               4              4      RXD     Receive Data Output
+      5              5              —              —       SPLIT   Common Mode Stabilization - MCP2561FD only
+      —              —               5              5       VIO    Digital I/O Supply Pin - MCP2562FD only
+      6              6               6              6      CANL    CAN Low-Level Voltage I/O
+      7              7               7              7      CANH    CAN High-Level Voltage I/O
+      8              8               8              8      STBY    Standby Mode Input
+      9              —               9             —        EP     Exposed Thermal Pad
+
+
+
+
+DS20005284A-page 4                                                                    2014 Microchip Technology Inc.
+                                                                             MCP2561/2FD
+1.7.1       TRANSMITTER DATA                              1.7.6       VIO PIN (MCP2562FD ONLY)
+            INPUT PIN (TXD)                                Supply for digital I/O pins. In the MCP2561FD, the
+The CAN transceiver drives the differential output pins    supply for the digital I/O (TXD, RXD and STBY) is
+CANH and CANL according to TXD. It is usually              internally connected to VDD.
+connected to the transmitter data output of the CAN
+controller device. When TXD is Low, CANH and CANL          1.7.7       CAN LOW PIN (CANL)
+are in the Dominant state. When TXD is High, CANH          The CANL output drives the Low side of the CAN
+and CANL are in the Recessive state, provided that         differential bus. This pin is also tied internally to the
+another CAN node is not driving the CAN bus with a         receive input comparator. CANL disconnects from the
+Dominant state. TXD is connected to an internal pull-up    bus when MCP2561/2FD is not powered.
+resistor (nominal 33 k) to VDD or VIO, in the
+MCP2561FD or MCP2562FD, respectively.                      1.7.8       CAN HIGH PIN (CANH)
+                                                           The CANH output drives the high-side of the CAN
+1.7.2       GROUND SUPPLY PIN (VSS)
+                                                           differential bus. This pin is also tied internally to the
+Ground supply pin.                                         receive input comparator. CANH disconnects from the
+                                                           bus when MCP2561/2FD is not powered.
+1.7.3       SUPPLY VOLTAGE PIN (VDD)
+Positive supply voltage pin. Supplies transmitter and      1.7.9       STANDBY MODE INPUT PIN (STBY)
+receiver, including the wake-up receiver.                  This pin selects between Normal or Standby mode. In
+                                                           Standby mode, the transmitter, high speed receiver and
+1.7.4       RECEIVER DATA                                 SPLIT are turned off, only the low power receiver and
+            OUTPUT PIN (RXD)                               wake-up filter are active. STBY is connected to an
+RXD is a CMOS-compatible output that drives High or        internal MOS pull-up resistor to VDD or VIO, in the
+Low depending on the differential signals on the CANH      MCP2561FD or MCP2562FD, respectively. The value
+and CANL pins, and is usually connected to the             of the MOS pull-up resistor depends on the supply volt-
+receiver data input of the CAN controller device. RXD is   age. Typical values are 660 k for 5V, 1.1 M for 3.3V
+High when the CAN bus is Recessive, and Low in the         and 4.4 M for 1.8V
+Dominant state. RXD is supplied by VDD or VIO, in the
+MCP2561FD or MCP2562FD, respectively.                      1.7.10      EXPOSED THERMAL PAD (EP)
+                                                           It is recommended that this pad is connected to VSS for
+1.7.5       SPLIT PIN (MCP2561FD ONLY)                     the enhancement of electromagnetic immunity and
+Reference Voltage Output (defined as VDD/2). The pin       thermal resistance.
+is only active in Normal mode. In Standby mode, or
+when VDD is off, SPLIT floats.
+
+
+
+
+ 2014 Microchip Technology Inc.                                                              DS20005284A-page 5
+MCP2561/2FD
+1.8      Typical Applications
+In order to meet the EMC/EMI requirements, a
+Common Mode Choke (CMC) might be required for
+data rates greater than 1 Mbps.
+
+FIGURE 1-1:             MCP2561FD WITH SPLIT PIN
+
+        VBAT
+                          5V LDO
+                                                                                           0.1 μF
+
+
+                                            VDD                                VDD                                                CANH
+                                                                                           CANH
+
+
+                                                                               MCP2561FD
+                                              CANTX                   TXD
+                                                                                                           300         60
+                                        PIC®
+                                                CANRX                 RXD                  SPLIT
+                                        MCU                                                                              4700 pF
+                                                      RBX             STBY                               Optional(1)   60      CANL
+                                               VSS                             VSS CANL
+
+
+
+
+             Note 1: Optional resistor to allow communication during bus failure (CANL shorted to ground).
+
+
+FIGURE 1-2:             MCP2562FD WITH VIO PIN
+
+
+      VBAT
+                             5V LDO
+
+
+
+
+                             1.8V LDO
+                                                                      0.1 μF                             0.1 μF
+
+
+                                                VDD                          VIO                       VDD                         CANH
+
+
+                                                                                           MCP2562FD
+                                                      CANTX              TXD                           CANH
+                                          PIC®
+                                                      CANRX                 RXD                                             120
+                                          MCU
+                                                           RBX           STBY                                                      CANL
+                                                                                                       CANL
+                                                     VSS                             Vss
+
+
+
+
+DS20005284A-page 6                                                                                         2014 Microchip Technology Inc.
+                                                                            MCP2561/2FD
+2.0      ELECTRICAL                                         2.1.5      DIFFERENTIAL VOLTAGE, VDIFF 
+         CHARACTERISTICS                                               (OF CAN BUS)
+                                                            Differential voltage of the two-wire CAN bus, value
+2.1      Terms and Definitions                              VDIFF = VCANH – VCANL.
+
+A number of terms are defined in ISO-11898 that are         2.1.6      INTERNAL CAPACITANCE, CIN 
+used to describe the electrical characteristics of a CAN               (OF A CAN NODE)
+transceiver device. These terms and definitions are
+                                                            Capacitance seen between CANL (or CANH) and
+summarized in this section.
+                                                            ground during the Recessive state, when the CAN
+2.1.1       BUS VOLTAGE                                     node is disconnected from the bus (see Figure 2-1).
+
+VCANL and VCANH denote the voltages of the bus line         2.1.7      INTERNAL RESISTANCE, RIN 
+wires CANL and CANH relative to ground of each                         (OF A CAN NODE)
+individual CAN node.
+                                                            Resistance seen between CANL (or CANH) and
+2.1.2       COMMON MODE BUS VOLTAGE                         ground during the Recessive state, when the CAN
+            RANGE                                           node is disconnected from the bus (see Figure 2-1).
+
+Boundary voltage levels of VCANL and VCANH with
+                                                            FIGURE 2-1:          PHYSICAL LAYER
+respect to ground, for which proper operation will occur,
+                                                                                 DEFINITIONS
+if up to the maximum number of CAN nodes are
+connected to the bus.
+                                                                              ECU
+2.1.3       DIFFERENTIAL INTERNAL
+            CAPACITANCE, CDIFF                                       RIN
+            (OF A CAN NODE)                                                                            CANL
+Capacitance seen between CANL and CANH during                                   RDIFF          CDIFF
+the Recessive state, when the CAN node is                             RIN
+disconnected from the bus (see Figure 2-1).                                                            CANH
+                                                                               CIN      CIN
+2.1.4       DIFFERENTIAL INTERNAL                                                                      GROUND
+            RESISTANCE, RDIFF 
+            (OF A CAN NODE)
+Resistance seen between CANL and CANH during the
+Recessive state when the CAN node is disconnected
+from the bus (see Figure 2-1).
+
+
+
+
+ 2014 Microchip Technology Inc.                                                              DS20005284A-page 7
+MCP2561/2FD
+2.2          Absolute Maximum Ratings†
+VDD .............................................................................................................................................................................7.0V
+VIO ..............................................................................................................................................................................7.0V
+DC Voltage at TXD, RXD, STBY and VSS .............................................................................................-0.3V to VIO + 0.3V
+DC Voltage at CANH, CANL and SPLIT ...................................................................................................... -58V to +58V
+Transient Voltage on CANH, CANL (ISO-7637) (See Figure 2-5)............................................................ -150V to +100V
+Storage temperature ...............................................................................................................................-55°C to +150°C
+Operating ambient temperature ..............................................................................................................-40°C to +150°C
+Virtual Junction Temperature, TVJ (IEC60747-1) ....................................................................................-40°C to +190°C
+Soldering temperature of leads (10 seconds) .......................................................................................................+300°C
+ESD protection on CANH and CANL pins for MCP2561FD (IEC 61000-4-2) ........................................................±14 kV
+ESD protection on CANH and CANL pins for MCP2562FD (IEC 61000-4-2) ..........................................................±8 kV
+ESD protection on CANH and CANL pins (IEC 801; Human Body Model)..............................................................±8 kV
+ESD protection on all other pins (IEC 801; Human Body Model).............................................................................±4 kV
+ESD protection on all pins (IEC 801; Machine Model) ............................................................................................±300V
+ESD protection on all pins (IEC 801; Charge Device Model) ..................................................................................±750V
+
+ † NOTICE: Stresses above those listed under “Maximum ratings” may cause permanent damage to the device. This
+ is a stress rating only and functional operation of the device at those or any other conditions above those indicated in
+ the operational listings of this specification is not implied. Exposure to maximum rating conditions for extended periods
+ may affect device reliability.
+
+
+
+
+DS20005284A-page 8                                                                                                                     2014 Microchip Technology Inc.
+                                                                             MCP2561/2FD
+2.3       DC Characteristics
+Electrical Characteristics: Extended (E): TAMB = -40°C to +125°C and High (H): TAMB = -40°C to +150°C; 
+VDD = 4.5V to 5.5V, VIO = 1.8V to 5.5V (Note 2), RL = 60, CL = 100 pF; unless otherwise specified.
+          Characteristic            Sym        Min      Typ       Max     Units              Conditions
+
+SUPPLY
+VDD Pin
+Voltage Range                        VDD       4.5       —        5.5
+Supply Current                       IDD       —         5         10      mA     Recessive; VTXD = VDD
+                                               —         45        70             Dominant; VTXD = 0V
+Standby Current                     IDDS       —         5         15       µA    MCP2561FD
+                                               —         5         15             MCP2562FD; Includes IIO
+High Level of the POR             VPORH       3.8       —        4.3       V
+Comparator
+Low Level of the POR               VPORL      3.4       —        4.0       V
+Comparator
+Hysteresis of POR                 VPORD       0.3       —        0.8       V
+Comparator
+VIO Pin
+Digital Supply Voltage Range         VIO       1.8       —        5.5       V
+Supply Current on VIO                IIO       —         4         30       µA    Recessive; VTXD = VIO
+                                               —         85       500             Dominant; VTXD = 0V
+Standby Current                     IDDS       —        0.3        1        µA    (Note 1)
+Undervoltage detection on VIO      VUVD(IO)    —        1.2        —        V     (Note 1)
+BUS LINE (CANH; CANL) TRANSMITTER
+CANH; CANL:                        VO(R)      2.0    0.5VDD      3.0       V     VTXD = VDD; No load
+Recessive Bus Output Voltage
+CANH; CANL:                        VO(S)      -0.1     0.0       +0.1      V     STBY = VTXD = VDD; No load
+Bus Output Voltage in Standby
+Recessive Output Current            IO(R)       -5       —         +5      mA     -24V < VCAN < +24V
+CANH: Dominant                     VO(D)      2.75     3.50      4.50      V     TXD = 0; RL = 50 to 65
+Output Voltage
+CANL: Dominant                                0.50     1.50      2.25            RL = 50 to 65
+Output Voltage
+Symmetry of Dominant              VO(D)(M)   -400       0       +400      mV     VTXD = VSS (Note 1)
+Output Voltage
+(VDD – VCANH – VCANL)
+Dominant: Differential            VO(DIFF)    1.5      2.0       3.0       V     VTXD = VSS; RL = 50 to 65
+Output Voltage                                                                    Figure 2-2, Figure 2-4
+Recessive:                                   -120       0         12      mV     VTXD = VDD
+Differential Output Voltage                                                       Figure 2-2, Figure 2-4
+                                              -500       0         50      mV     VTXD = VDD,no load.
+                                                                                  Figure 2-2, Figure 2-4
+Note 1:     Characterized; not 100% tested.
+     2:     Only MCP2562FD has VIO pin. For the MCP2561FD, VIO is internally connected to VDD.
+     3:     -12V to 12V is ensured by characterization, tested from -2V to 7V.
+
+
+
+
+ 2014 Microchip Technology Inc.                                                              DS20005284A-page 9
+MCP2561/2FD
+2.3      DC Characteristics (Continued)
+Electrical Characteristics: Extended (E): TAMB = -40°C to +125°C and High (H): TAMB = -40°C to +150°C; 
+VDD = 4.5V to 5.5V, VIO = 1.8V to 5.5V (Note 2), RL = 60, CL = 100 pF; unless otherwise specified.
+          Characteristic            Sym        Min      Typ       Max     Units              Conditions
+CANH: Short Circuit               IO(SC)      -120      85        —       mA     VTXD = VSS; VCANH = 0V;
+Output Current                                                                    CANL: floating
+                                               -100      —         —       mA     same as above, but
+                                                                                  VDD=5V, TAMB = 25°C (Note 1)
+CANL: Short Circuit                            —        75      +120      mA     VTXD = VSS; VCANL = 18V;
+Output Current                                                                    CANH: floating
+                                                —        —       +100      mA     same as above, but
+                                                                                  VDD=5V, TAMB = 25°C (Note 1)
+BUS LINE (CANH; CANL) RECEIVER
+Recessive Differential          VDIFF(R)(I)   -1.0      —        +0.5      V     Normal Mode;
+Input Voltage                                                                     -12V < V(CANH, CANL) < +12V;
+                                                                                  See Figure 2-6 (Note 3)
+                                               -1.0      —        +0.4            Standby Mode;
+                                                                                  -12V < V(CANH, CANL) < +12V;
+                                                                                  See Figure 2-6 (Note 3)
+Dominant Differential           VDIFF(D)(I)   0.9       —        VDD       V     Normal Mode;
+Input Voltage                                                                     -12V < V(CANH, CANL) < +12V;
+                                                                                  See Figure 2-6 (Note 3)
+                                               1.0       —        VDD             Standby Mode;
+                                                                                  -12V < V(CANH, CANL) < +12V;
+                                                                                  See Figure 2-6 (Note 3)
+Differential                    VTH(DIFF)     0.5      0.7       0.9       V     Normal Mode;
+Receiver Threshold                                                                -12V < V(CANH, CANL) < +12V;
+                                                                                  See Figure 2-6 (Note 3)
+                                               0.4       —        1.15            Standby Mode;
+                                                                                  -12V < V(CANH, CANL) < +12V;
+                                                                                  See Figure 2-6 (Note 3)
+Differential                    VHYS(DIFF)    50        —        200      mV     Normal mode, see Figure 2-6,
+Input Hysteresis                                                                  (Note 1)
+Common Mode                        RIN        10        —         30       k    (Note 1)
+Input Resistance
+Common Mode                       RIN(M)       -1       0         +1       %     VCANH = VCANL, (Note 1)
+Resistance Matching
+Differential Input               RIN(DIFF)    10        —        100       k    (Note 1)
+Resistance
+Common Mode                      CIN(CM)       —        —         20       pF    VTXD = VDD; (Note 1)
+Input Capacitance
+Differential                     CIN(DIFF)     —        —         10             VTXD = VDD; (Note 1)
+Input Capacitance
+CANH, CANL:                         ILI        -5       —         +5       µA    VDD = VTXD = VSTBY = 0V.
+Input Leakage                                                                     For MCP2562FD, VIO = 0V.
+                                                                                  VCANH = VCANL = 5 V.
+Note 1:     Characterized; not 100% tested.
+     2:     Only MCP2562FD has VIO pin. For the MCP2561FD, VIO is internally connected to VDD.
+     3:     -12V to 12V is ensured by characterization, tested from -2V to 7V.
+
+
+
+
+DS20005284A-page 10                                                                 2014 Microchip Technology Inc.
+                                                                                  MCP2561/2FD
+2.3      DC Characteristics (Continued)
+Electrical Characteristics: Extended (E): TAMB = -40°C to +125°C and High (H): TAMB = -40°C to +150°C; 
+VDD = 4.5V to 5.5V, VIO = 1.8V to 5.5V (Note 2), RL = 60, CL = 100 pF; unless otherwise specified.
+          Characteristic            Sym          Min        Typ       Max       Units            Conditions
+
+COMMON MODE STABILIZATION OUTPUT (SPLIT)
+Output Voltage                       Vo        0.3VDD      0.5VDD   0.7VDD       V      Normal mode; 
+                                                                                        ISPLIT = -500 µA to +500 µA
+                                               0.45VDD 0.5VDD       0.55VDD      V      Normal mode; RL  1 M
+Leakage Current                       IL          -5         —         +5        µA     Standby mode; 
+                                                                                        VSPLIT = -24V to + 24V 
+                                                                                        (ISO 11898: -12V ~ +12V)
+DIGITAL INPUT PINS (TXD, STBY)
+High-Level Input Voltage             VIH        0.7VIO       —      VIO + 0.3    V
+Low-Level Input Voltage              VIL         -0.3        —       0.3VIO      V
+High-Level Input Current             IIH          -1         —         +1        µA
+TXD: Low-Level Input Current       IIL(TXD)      -270       -150      -30        µA
+STBY: Low-Level Input Current      IIL(STBY)     -30         —         -1        µA
+RECEIVE DATA (RXD) OUTPUT
+High-Level Output Voltage           VOH        VDD - 0.4     —         —         V      IOH = -2 mA (MCP2561FD);
+                                                                                        typical -4 mA
+                                               VIO - 0.4     —         —                IOH = -1 mA (MCP2562FD);
+                                                                                        typical -2 mA
+Low-Level Output Voltage             VOL          —          —        0.4        V      IOL = 4 mA; typical 8 mA
+THERMAL SHUTDOWN
+Shutdown                           TJ(SD)       165        175       185        °C     -12V < V(CANH, CANL) < +12V,
+Junction Temperature                                                                    (Note 1)
+Shutdown                          TJ(HYST)       20         —         30        °C     -12V < V(CANH, CANL) < +12V,
+Temperature Hysteresis                                                                  (Note 1)
+Note 1:     Characterized; not 100% tested.
+     2:     Only MCP2562FD has VIO pin. For the MCP2561FD, VIO is internally connected to VDD.
+     3:     -12V to 12V is ensured by characterization, tested from -2V to 7V.
+
+
+
+
+ 2014 Microchip Technology Inc.                                                                  DS20005284A-page 11
+MCP2561/2FD
+FIGURE 2-2:                         PHYSICAL BIT REPRESENTATION AND SIMPLIFIED BIAS IMPLEMENTATION
+
+                                                     Normal Mode                 Standby Mode
+
+                                                       CANH
+
+
+
+
+                CANH, CANL, SPLIT
+                                     SPLIT                                            SPLIT
+                                                                                     floating
+
+
+
+                                                        CANL
+
+                                      Recessive       Dominant     Recessive
+
+                                                                                                 Time
+
+
+                                                                               VDD
+
+                                         CANH
+
+
+                                             VDD/2       Normal                            RXD
+                                                         Standby
+                                                          Mode
+                                         CANL
+
+
+
+
+DS20005284A-page 12                                                                      2014 Microchip Technology Inc.
+                                                                                        MCP2561/2FD
+2.4         AC Characteristics
+Electrical Characteristics: Extended (E): TAMB = -40°C to +125°C and High (H): TAMB = -40°C to +150°C; 
+VDD = 4.5V to 5.5V, VIO = 1.8V to 5.5V (Note 2), RL = 60CL = 100 pF; unless otherwise specified.
+ Param.
+                 Sym                     Characteristic              Min   Typ    Max     Units           Conditions
+  No.
+      1           tBIT        Bit Time                               0.2   —      69.44    µs
+      2           fBIT        Bit Frequency                        14.4    —      5000    kHz
+      3       tTXD-BUSON      Delay TXD Low to Bus Dominant          —     65      —       ns      (Note 1)
+      4      tTXD-BUSOFF Delay TXD High to Bus Recessive             —     90      —       ns      (Note 1)
+      5       tBUSON-RXD      Delay Bus Dominant to RXD              —     60      —       ns      (Note 1)
+      6      tBUSOFF-RXD Delay Bus Recessive to RXD                  —     65      —       ns      (Note 1)
+      7       tTXD - RXD      Propagation Delay TXD to RXD           —     90     120      ns
+                                                                     —     120    180      ns      RL = 120CL = 200 pF,
+                                                                                                   (Note 1)
+   8a         tBIT(RXD),2M    Recessive bit time on RXD -            450   485    550      ns      tBIT(TXD) = 500 ns,
+                              2 Mbps, Loop Delay Symmetry                                          see Figure 2-10
+                                                                     400   460    550      ns      tBIT(TXD) = 500 ns,
+                                                                                                   see Figure 2-10, 
+                                                                                                   RL = 120CL = 200 pF,
+                                                                                                   (Note 1)
+   8b         tBIT(RXD),5M    Recessive bit time on RXD -            160   185    220      ns      tBIT(TXD) = 200 ns,
+                              5 Mbps, Loop Delay Symmetry                                          see Figure 2-10
+   8c         tBIT(RXD),8M    Recessive bit time on RXD -            85    105    140      ns      tBIT(TXD) = 120 ns,
+                              8 Mbps, Loop Delay Symmetry                                          see Figure 2-10
+                                                                                                   (Note 1)
+      9      tFLTR(WAKE) Delay Bus Dominant to RXD                  0.5    1      4       µs      Standby mode
+                         (Standby mode)
+   10           tWAKE         Delay Standby                          5    25      40      µs      Negative edge on STBY
+                              to Normal Mode
+   11            tPDT         Permanent Dominant Detect Time         —     1.25    —       ms      TXD = 0V
+   12            tPDTR        Permanent Dominant Timer Reset         —     100     —       ns      The shortest Recessive
+                                                                                                   pulse on TXD or CAN bus
+                                                                                                   to reset Permanent
+                                                                                                   Dominant Timer
+   Note 1: Characterized, not 100% tested.
+
+
+FIGURE 2-3:                  TEST LOAD CONDITIONS
+                                                Load Condition 1                                   Load Condition 2
+
+                                                             VDD/2
+
+
+                                                                   RL
+
+
+
+                                                                     CL                                               CL
+                                                Pin                                          Pin
+          RL = 464 
+          CL = 50 pF     for all digital pins                VSS                                               VSS
+
+
+
+
+ 2014 Microchip Technology Inc.                                                                       DS20005284A-page 13
+MCP2561/2FD
+FIGURE 2-4:           TEST CIRCUIT FOR ELECTRICAL CHARACTERISTICS
+
+                                       VDD                          0.1 µF
+
+                                                         CANH
+                        TXD
+
+                      SPLIT            CAN                 RL            CL
+                                    Transceiver
+                        RXD
+                15 pF                                      CANL
+                                GND               STBY
+
+
+
+
+       Note: On MCP2562FD, VIO is connected to VDD.
+
+
+FIGURE 2-5:           TEST CIRCUIT FOR AUTOMOTIVE TRANSIENTS
+
+                                                                CANH     500 pF
+                              TXD
+
+                          SPLIT            CAN                                    Transient
+                                                                       RL
+                                        Transceiver                               Generator
+                              RXD
+                                                                CANL     500 pF
+                                      GND              STBY
+
+
+
+
+      Note 1: On MCP2562FD, VIO is connected to VDD.
+           2: The wave forms of the applied transients shall be in accordance with ISO-7637,
+              Part 1, test pulses 1, 2, 3a and 3b.
+
+
+FIGURE 2-6:           HYSTERESIS OF THE RECEIVER
+
+
+              RXD (receive data
+                                                                                                         VOH
+              output voltage)
+                                      VDIFF (r)(i)                                      VDIFF (d)(i)
+
+                                                                                                         VOL
+
+                                                                  VDIFF (h)(i)
+
+
+
+                                                     0.5            VDIFF (V)     0.9
+
+
+
+
+DS20005284A-page 14                                                                            2014 Microchip Technology Inc.
+                                                                                  MCP2561/2FD
+2.5       Timing Diagrams and Specifications
+
+FIGURE 2-7:            TIMING DIAGRAM FOR AC CHARACTERISTICS
+
+                                                                                                         VDD
+        TXD (transmit data
+        input voltage)
+                                                                                                         0V
+
+        VDIFF (CANH,
+        CANL differential
+        voltage)
+
+
+        RXD (receive data
+        output voltage)                   3
+                                                  5
+                                              7                           4       6
+                                                                              7
+
+
+
+FIGURE 2-8:            TIMING DIAGRAM FOR WAKEUP FROM STANDBY
+
+      VSTBY                                                                                                   VDD
+      Input Voltage
+
+
+                                                                                                              0V
+                                                                                                           VDD/2
+      VCANH/VCANL
+
+
+                        0
+
+      VTXD = VDD                                              10
+
+
+
+FIGURE 2-9:            PERMANENT DOMINANT TIMER RESET DETECT
+
+                              Minimum pulse width until CAN bus goes to Dominant state after the falling edge.
+
+
+        TXD
+
+
+
+       VDIFF (VCANH-VCANL)
+                                                          Driver is off
+
+
+
+
+                                         11                        12
+
+
+
+
+ 2014 Microchip Technology Inc.                                                                DS20005284A-page 15
+MCP2561/2FD
+FIGURE 2-10:          TIMING DIAGRAM FOR LOOP DELAY SYMMETRY
+
+
+               TXD
+                                               5*tBIT(TXD)
+                                                                            tBIT(TXD)
+
+
+
+
+               RXD
+
+                                                                                           8
+                                                                                        tBIT(RXD)
+
+           Note:      The bit time of a recessive bit after five dominant bits is measured on the RXD pin. Due
+                      to asymmetry of the loop delay, and the CAN transceiver not being a push pull driver,
+                      the recessive bits tend to shorten.
+
+
+
+
+2.6     Thermal Specifications
+           Parameter                  Symbol         Min         Typ        Max          Units          Test Conditions
+Temperature Ranges
+Specified Temperature Range              TA          -40          —        +125            C
+                                                     -40          —        +150
+Operating Temperature Range              TA          -40          —        +150            C
+Storage Temperature Range                TA          -65          —        +155            C
+Thermal Package Resistances
+Thermal Resistance, 8L-DFN 3x3          JA           —          56.7        —           C/W
+Thermal Resistance, 8L-PDIP             JA           —          89.3        —           C/W
+Thermal Resistance, 8L-SOIC             JA           —         149.5        —           C/W
+
+
+
+
+DS20005284A-page 16                                                                             2014 Microchip Technology Inc.
+                                                                                   MCP2561/2FD
+3.0      PACKAGING INFORMATION
+3.1      Package Marking Information
+
+           8-Lead DFN (3x3 mm)                                                               Example:
+                                           Part Number               Code
+                                      MCP2561FD-E/MF                DADY
+                                      MCP2561FDT-E/MF               DADY                      DADY
+                                      MCP2561FD-H/MF                DADZ                      1307
+                                                                                               256
+                                      MCP2561FDT-H/MF               DADZ
+                                      MCP2562FD-E/MF                DAEA
+                                      MCP2562FDT-E/MF               DAEA
+                                      MCP2562FD-H/MF                DAEB
+                                      MCP2562FDT-H/MF               DAEB
+
+
+      8-Lead PDIP (300 mil)                                                       Example:
+
+
+
+        XXXXXXXX                                                    2561FD                             2561FD
+        XXXXXNNN                                                                     OR
+                                                                  E/P e^^256
+                                                                        3                            H/P e3
+                                                                                                         ^^256
+                                                                        1307                              1307
+                YYWW
+      8-Lead PDIP (300 mil)                                   Example:
+
+
+
+
+  8-Lead SOIC (150 mil)                                                              Example:
+
+
+
+                                                                     2561FDE                             2561FDH
+                                                                    SN e3
+                                                                       ^^1246           OR              SN e^^1246
+                                                                                                             3
+                                                                          256                                  256
+              NNN
+
+
+
+
+                Legend: XX...X     Customer-specific information
+                        Y          Year code (last digit of calendar year)
+                        YY         Year code (last 2 digits of calendar year)
+                        WW         Week code (week of January 1 is week ‘01’)
+                        NNN        Alphanumeric traceability code
+                            e3     Pb-free JEDEC designator for Matte Tin (Sn)
+                           *       This package is Pb-free. The Pb-free JEDEC designator (e3)
+                                   can be found on the outer packaging for this package.
+
+
+                Note:   In the event the full Microchip part number cannot be marked on one line, it will
+                        be carried over to the next line, thus limiting the number of available
+                        characters for customer-specific information.
+
+
+
+
+ 2014 Microchip Technology Inc.                                                                   DS20005284A-page 17
+MCP2561/2FD
+
+  Note:   For the most current package drawings, please see the Microchip Packaging Specification located at
+          http://www.microchip.com/packaging
+
+
+
+
+DS20005284A-page 18                                                                  2014 Microchip Technology Inc.
+                                                                               MCP2561/2FD
+
+  Note:    For the most current package drawings, please see the Microchip Packaging Specification located at
+           http://www.microchip.com/packaging
+
+
+
+
+ 2014 Microchip Technology Inc.                                                              DS20005284A-page 19
+MCP2561/2FD
+
+
+  Note:   For the most current package drawings, please see the Microchip Packaging Specification located at
+          http://www.microchip.com/packaging
+
+
+
+
+DS20005284A-page 20                                                                 2014 Microchip Technology Inc.
+                                                                                  MCP2561/2FD
+
+ 8-Lead Plastic Dual In-Line (P) - 300 mil Body [PDIP]
+
+  Note:     For the most current package drawings, please see the Microchip Packaging Specification located at
+            http://www.microchip.com/packaging
+
+
+
+
+                                                  D       A
+                                   N                             B
+
+
+
+
+                                                                 E1
+
+
+
+              NOTE 1
+                                   1          2
+                                         TOP VIEW
+
+
+
+
+                                                                                               E
+
+
+
+
+               C    A                                           A2
+
+
+     PLANE
+                                                           L                                         c
+                   A1
+
+
+                                                      e                                       eB
+                          8X b1
+                             8X b
+                                       .010       C
+
+                                         SIDE VIEW                                       END VIEW
+
+
+
+
+                                                               Microchip Technology Drawing No. C04-018D Sheet 1 of 2
+
+
+
+
+ 2014 Microchip Technology Inc.                                                                   DS20005284A-page 21
+MCP2561/2FD
+
+ 8-Lead Plastic Dual In-Line (P) - 300 mil Body [PDIP]
+
+  Note:    For the most current package drawings, please see the Microchip Packaging Specification located at
+           http://www.microchip.com/packaging
+
+
+
+
+                                                                               ALTERNATE LEAD DESIGN
+                                                                                (VENDOR DEPENDENT)
+
+                                             DATUM A                                                     DATUM A
+
+
+
+
+                                             b                                                           b
+                       e                                                           e
+                       2                                                           2
+
+                                  e                                                         e
+
+
+
+
+                                                          Units                  INCHES
+                                               Dimension Limits       MIN          NOM          MAX
+                      Number of Pins                       N                         8
+                      Pitch                                 e                   .100 BSC
+                      Top to Seating Plane                  A           -            -          .210
+                      Molded Package Thickness             A2         .115         .130         .195
+                      Base to Seating Plane                A1         .015           -            -
+                      Shoulder to Shoulder Width           E          .290         .310         .325
+                      Molded Package Width                 E1         .240         .250         .280
+                      Overall Length                       D          .348         .365         .400
+                      Tip to Seating Plane                  L         .115         .130         .150
+                      Lead Thickness                        c         .008         .010         .015
+                      Upper Lead Width                     b1         .040         .060         .070
+                      Lower Lead Width                      b         .014         .018         .022
+                      Overall Row Spacing        §         eB           -            -          .430
+     Notes:
+     1. Pin 1 visual index feature may vary, but must be located within the hatched area.
+     2. § Significant Characteristic
+     3. Dimensions D and E1 do not include mold flash or protrusions. Mold flash or
+        protrusions shall not exceed .010" per side.
+     4. Dimensioning and tolerancing per ASME Y14.5M
+            BSC: Basic Dimension. Theoretically exact value shown without tolerances.
+
+                                                                   Microchip Technology Drawing No. C04-018D Sheet 2 of 2
+
+
+
+
+DS20005284A-page 22                                                                              2014 Microchip Technology Inc.
+                                                                               MCP2561/2FD
+
+  Note:    For the most current package drawings, please see the Microchip Packaging Specification located at
+           http://www.microchip.com/packaging
+
+
+
+
+ 2014 Microchip Technology Inc.                                                              DS20005284A-page 23
+MCP2561/2FD
+
+
+  Note:   For the most current package drawings, please see the Microchip Packaging Specification located at
+          http://www.microchip.com/packaging
+
+
+
+
+DS20005284A-page 24                                                                 2014 Microchip Technology Inc.
+                                                                              MCP2561/2FD
+             !"#$%
+   &       ! "#  $% &"' ""    ($ )  %
+              *++&&&!    !+ $
+
+
+
+
+ 2014 Microchip Technology Inc.                                                             DS20005284A-page 25
+MCP2561/2FD
+NOTES:
+
+
+
+
+DS20005284A-page 26    2014 Microchip Technology Inc.
+                                          MCP2561/2FD
+APPENDIX A:            REVISION HISTORY
+
+Revision A (March 2014)
+Original Release of this Document.
+
+
+
+
+ 2014 Microchip Technology Inc.              DS20005284A-page 27
+MCP2561/2FD
+NOTES:
+
+
+
+
+DS20005284A-page 28    2014 Microchip Technology Inc.
+                                                                                                MCP2561/2FD
+PRODUCT IDENTIFICATION SYSTEM
+To order or obtain information, e.g., on pricing or delivery, contact the factory or one of the sales offices listed on the back page.
+ PART NO.               -X           /XX
+                                                                                    Examples:
+   Device       Temperature       Package                                           a)    MCP2561FD-E/MF:Extended Temperature,
+                  Range                                                                                  8LD 3x3 DFN package.
+                                                                                    b)    MCP2561FDT-E/MF:Tape and Reel,
+                                                                                                         Extended Temperature,
+  Device:           MCP2561FD:High-Speed CAN Transceiver with SPLIT
+                                                                                                         8LD 3x3 DFN package.
+                    MCP2561FDT:High-Speed CAN Transceiver with SPLIT
+                              (Tape and Reel) (DFN and SOIC only)                   c)    MCP2561FD-E/P: Extended Temperature,
+                    MCP2562FD:High-Speed CAN Transceiver with VIO                                        8LD PDIP package.
+                    MCP2562FDT:High-Speed CAN Transceiver with VIO                 d)    MCP2561FD-E/SN:Extended Temperature,
+                              (Tape and Reel) (DFN and SOIC only)                                        8LD SOIC package.
+                                                                                    e)    MCP2561FDT-E/SN:Tape and Reel,
+                                                                                                         Extended Temperature,
+  Temperature       E    =    -40°C to +125°C (Extended)                                                 8LD SOIC package.
+  Range:            H    =    -40°C to +150°C (High)
+                                                                                    a)    MCP2561FD-H/MF:High Temperature,
+  Package:          MF = Plastic Dual Flat, No Lead Package -                                            8LD 3x3 DFN package.
+                         3x3x0.9 mm Body, 8-lead                                    b)    MCP2561FDT-H/MF:Tape and Reel,
+                    P  = Plastic Dual In-Line - 300 mil Body, 8-lead                                     High Temperature,
+                    SN = Plastic Small Outline - Narrow, 3.90 mm Body,                                  8LD 3x3 DFN package.
+                         8-lead                                                     c)    MCP2561FD-H/P: High Temperature,
+                                                                                                         8LD PDIP package.
+                                                                                    d)    MCP2561FD-H/SN:High Temperature,
+                                                                                                         8LD SOIC package.
+                                                                                    e)    MCP2561FDT-H/SN:Tape and Reel,
+                                                                                                         High Temperature,
+                                                                                                         8LD SOIC package.
+
+
+
+
+ 2014 Microchip Technology Inc.                                                                                  DS20005284A-page 29
+MCP2561/2FD
+NOTES:
+
+
+
+
+DS20005284A-page 30    2014 Microchip Technology Inc.
+Note the following details of the code protection feature on Microchip devices:
+•    Microchip products meet the specification contained in their particular Microchip Data Sheet.
+
+•    Microchip believes that its family of products is one of the most secure families of its kind on the market today, when used in the
+     intended manner and under normal conditions.
+
+•    There are dishonest and possibly illegal methods used to breach the code protection feature. All of these methods, to our
+     knowledge, require using the Microchip products in a manner outside the operating specifications contained in Microchip’s Data
+     Sheets. Most likely, the person doing so is engaged in theft of intellectual property.
+
+•    Microchip is willing to work with the customer who is concerned about the integrity of their code.
+
+•    Neither Microchip nor any other semiconductor manufacturer can guarantee the security of their code. Code protection does not
+     mean that we are guaranteeing the product as “unbreakable.”
+
+Code protection is constantly evolving. We at Microchip are committed to continuously improving the code protection features of our
+products. Attempts to break Microchip’s code protection feature may be a violation of the Digital Millennium Copyright Act. If such acts
+allow unauthorized access to your software or other copyrighted work, you may have a right to sue for relief under that Act.
+
+
+
+Information contained in this publication regarding device               Trademarks
+applications and the like is provided only for your convenience          The Microchip name and logo, the Microchip logo, dsPIC,
+and may be superseded by updates. It is your responsibility to
+                                                                         FlashFlex, KEELOQ, KEELOQ logo, MPLAB, PIC, PICmicro,
+ensure that your application meets with your specifications.             PICSTART, PIC32 logo, rfPIC, SST, SST Logo, SuperFlash
+MICROCHIP MAKES NO REPRESENTATIONS OR                                    and UNI/O are registered trademarks of Microchip Technology
+WARRANTIES OF ANY KIND WHETHER EXPRESS OR
+                                                                         Incorporated in the U.S.A. and other countries.
+IMPLIED, WRITTEN OR ORAL, STATUTORY OR
+OTHERWISE, RELATED TO THE INFORMATION,                                   FilterLab, Hampshire, HI-TECH C, Linear Active Thermistor,
+INCLUDING BUT NOT LIMITED TO ITS CONDITION,                              MTP, SEEVAL and The Embedded Control Solutions
+QUALITY, PERFORMANCE, MERCHANTABILITY OR                                 Company are registered trademarks of Microchip Technology
+FITNESS FOR PURPOSE. Microchip disclaims all liability                   Incorporated in the U.S.A.
+arising from this information and its use. Use of Microchip              Silicon Storage Technology is a registered trademark of
+devices in life support and/or safety applications is entirely at        Microchip Technology Inc. in other countries.
+the buyer’s risk, and the buyer agrees to defend, indemnify and
+                                                                         Analog-for-the-Digital Age, Application Maestro, BodyCom,
+hold harmless Microchip from any and all damages, claims,
+                                                                         chipKIT, chipKIT logo, CodeGuard, dsPICDEM,
+suits, or expenses resulting from such use. No licenses are
+                                                                         dsPICDEM.net, dsPICworks, dsSPEAK, ECAN,
+conveyed, implicitly or otherwise, under any Microchip
+                                                                         ECONOMONITOR, FanSense, HI-TIDE, In-Circuit Serial
+intellectual property rights.
+                                                                         Programming, ICSP, Mindi, MiWi, MPASM, MPF, MPLAB
+                                                                         Certified logo, MPLIB, MPLINK, mTouch, Omniscient Code
+                                                                         Generation, PICC, PICC-18, PICDEM, PICDEM.net, PICkit,
+                                                                         PICtail, REAL ICE, rfLAB, Select Mode, SQI, Serial Quad I/O,
+                                                                         Total Endurance, TSHARC, UniWinDriver, WiperLock, ZENA
+                                                                         and Z-Scale are trademarks of Microchip Technology
+                                                                         Incorporated in the U.S.A. and other countries.
+                                                                         SQTP is a service mark of Microchip Technology Incorporated
+                                                                         in the U.S.A.
+                                                                         GestIC and ULPP are registered trademarks of Microchip
+                                                                         Technology Germany II GmbH & Co. KG, a subsidiary of
+                                                                         Microchip Technology Inc., in other countries.
+                                                                         All other trademarks mentioned herein are property of their
+                                                                         respective companies.
+                                                                         © 2014, Microchip Technology Incorporated, Printed in the
+                                                                         U.S.A., All Rights Reserved.
+                                                                              Printed on recycled paper.
+                                                                         ISBN: 978-1-63276-020-3
+
+QUALITY MANAGEMENT SYSTEM                                                Microchip received ISO/TS-16949:2009 certification for its worldwide
+                                                                         headquarters, design and wafer fabrication facilities in Chandler and
+      CERTIFIED BY DNV                                                   Tempe, Arizona; Gresham, Oregon and design centers in California
+                                                                         and India. The Company’s quality system processes and procedures
+                                                                         are for its PIC® MCUs and dsPIC® DSCs, KEELOQ® code hopping
+        == ISO/TS 16949 ==                                               devices, Serial EEPROMs, microperipherals, nonvolatile memory and
+                                                                         analog products. In addition, Microchip’s quality system for the design
+                                                                         and manufacture of development systems is ISO 9001:2000 certified.
+
+
+
+ 2014 Microchip Technology Inc.                                                                                    DS20005284A-page 31
+                            Worldwide Sales and Service
+AMERICAS                    ASIA/PACIFIC                 ASIA/PACIFIC                  EUROPE
+Corporate Office            Asia Pacific Office          India - Bangalore             Austria - Wels
+2355 West Chandler Blvd.    Suites 3707-14, 37th Floor   Tel: 91-80-3090-4444          Tel: 43-7242-2244-39
+Chandler, AZ 85224-6199     Tower 6, The Gateway         Fax: 91-80-3090-4123          Fax: 43-7242-2244-393
+Tel: 480-792-7200           Harbour City, Kowloon        India - New Delhi             Denmark - Copenhagen
+Fax: 480-792-7277           Hong Kong                                                  Tel: 45-4450-2828
+                                                         Tel: 91-11-4160-8631
+Technical Support:          Tel: 852-2943-5100                                         Fax: 45-4485-2829
+                                                         Fax: 91-11-4160-8632
+http://www.microchip.com/
+                            Fax: 852-2401-3431                                         France - Paris
+support                                                  India - Pune
+                            Australia - Sydney           Tel: 91-20-3019-1500          Tel: 33-1-69-53-63-20
+Web Address:
+                            Tel: 61-2-9868-6733                                        Fax: 33-1-69-30-90-79
+www.microchip.com                                        Japan - Osaka
+                            Fax: 61-2-9868-6755                                        Germany - Dusseldorf
+Atlanta                                                  Tel: 81-6-6152-7160
+                            China - Beijing                                            Tel: 49-2129-3766400
+Duluth, GA                                               Fax: 81-6-6152-9310
+                            Tel: 86-10-8569-7000                                       Germany - Munich
+Tel: 678-957-9614                                        Japan - Tokyo
+                            Fax: 86-10-8528-2104                                       Tel: 49-89-627-144-0
+Fax: 678-957-1455                                        Tel: 81-3-6880- 3770
+                            China - Chengdu                                            Fax: 49-89-627-144-44
+Austin, TX                                               Fax: 81-3-6880-3771
+                            Tel: 86-28-8665-5511                                       Germany - Pforzheim
+Tel: 512-257-3370                                        Korea - Daegu
+                            Fax: 86-28-8665-7889                                       Tel: 49-7231-424750
+Boston                                                   Tel: 82-53-744-4301
+Westborough, MA             China - Chongqing            Fax: 82-53-744-4302           Italy - Milan
+Tel: 774-760-0087           Tel: 86-23-8980-9588                                       Tel: 39-0331-742611
+                                                         Korea - Seoul
+Fax: 774-760-0088           Fax: 86-23-8980-9500                                       Fax: 39-0331-466781
+                                                         Tel: 82-2-554-7200
+Chicago                     China - Hangzhou             Fax: 82-2-558-5932 or         Italy - Venice
+Itasca, IL                  Tel: 86-571-8792-8115        82-2-558-5934                 Tel: 39-049-7625286
+Tel: 630-285-0071           Fax: 86-571-8792-8116                                      Netherlands - Drunen
+                                                         Malaysia - Kuala Lumpur
+Fax: 630-285-0075           China - Hong Kong SAR        Tel: 60-3-6201-9857           Tel: 31-416-690399
+Cleveland                   Tel: 852-2943-5100           Fax: 60-3-6201-9859           Fax: 31-416-690340
+Independence, OH            Fax: 852-2401-3431                                         Poland - Warsaw
+                                                         Malaysia - Penang
+Tel: 216-447-0464           China - Nanjing                                            Tel: 48-22-3325737
+                                                         Tel: 60-4-227-8870
+Fax: 216-447-0643           Tel: 86-25-8473-2460         Fax: 60-4-227-4068            Spain - Madrid
+Dallas                      Fax: 86-25-8473-2470                                       Tel: 34-91-708-08-90
+                                                         Philippines - Manila
+Addison, TX                                                                            Fax: 34-91-708-08-91
+                            China - Qingdao              Tel: 63-2-634-9065
+Tel: 972-818-7423
+                            Tel: 86-532-8502-7355        Fax: 63-2-634-9069            Sweden - Stockholm
+Fax: 972-818-2924
+                            Fax: 86-532-8502-7205                                      Tel: 46-8-5090-4654
+                                                         Singapore
+Detroit
+                            China - Shanghai             Tel: 65-6334-8870             UK - Wokingham
+Novi, MI
+                            Tel: 86-21-5407-5533         Fax: 65-6334-8850             Tel: 44-118-921-5800
+Tel: 248-848-4000
+                            Fax: 86-21-5407-5066                                       Fax: 44-118-921-5820
+                                                         Taiwan - Hsin Chu
+Houston, TX
+                            China - Shenyang             Tel: 886-3-5778-366
+Tel: 281-894-5983
+                            Tel: 86-24-2334-2829         Fax: 886-3-5770-955
+Indianapolis                Fax: 86-24-2334-2393
+Noblesville, IN                                          Taiwan - Kaohsiung
+Tel: 317-773-8323           China - Shenzhen             Tel: 886-7-213-7830
+Fax: 317-773-5453           Tel: 86-755-8864-2200        Taiwan - Taipei
+                            Fax: 86-755-8203-1760        Tel: 886-2-2508-8600
+Los Angeles
+                            China - Wuhan                Fax: 886-2-2508-0102
+Mission Viejo, CA
+Tel: 949-462-9523           Tel: 86-27-5980-5300         Thailand - Bangkok
+                            Fax: 86-27-5980-5118         Tel: 66-2-694-1351
+Fax: 949-462-9608
+                            China - Xian                 Fax: 66-2-694-1350
+New York, NY
+Tel: 631-435-6000           Tel: 86-29-8833-7252
+                            Fax: 86-29-8833-7256
+San Jose, CA
+Tel: 408-735-9110           China - Xiamen
+                            Tel: 86-592-2388138
+Canada - Toronto
+                            Fax: 86-592-2388130
+Tel: 905-673-0699
+Fax: 905-673-6509           China - Zhuhai
+                            Tel: 86-756-3210040
+                                                                                                        03/25/14
+                            Fax: 86-756-3210049
+
+
+
+DS20005284A-page 32                                                                 2014 Microchip Technology Inc.
+

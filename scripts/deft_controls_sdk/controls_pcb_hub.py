@@ -9,7 +9,7 @@
 Owns COM via link.Connection. Publishes TelemetryCache for scripts and
 debug_dashboard. Never imports debug_dashboard.
 
-hub.debug.* is DEBUG mode — see docs/api.md. Same Connection; plant apply may
+hub.debug.* is DEBUG mode — see docs/host-contract.md. Same Connection; plant apply may
 be gated (plant_block=BENCH_SESSION) while a lease is held.
 """
 from __future__ import annotations

@@ -8,8 +8,10 @@ import numpy as np
 import pytest
 
 _SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _SCRIPTS not in sys.path:
-    sys.path.insert(0, _SCRIPTS)
+_LEGACY = os.path.join(_SCRIPTS, "legacy")
+for _p in (_SCRIPTS, _LEGACY):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from deft_controls_sdk.vbeta.slots import yam_left_arm_rows, yam_product_rows  # noqa: E402
 from deft_controls_sdk.vbeta.yam_limits import (  # noqa: E402

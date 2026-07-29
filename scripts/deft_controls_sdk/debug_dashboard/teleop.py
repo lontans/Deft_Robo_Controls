@@ -9,7 +9,7 @@ the engine below just moves the target smoothly instead of requiring the
 operator to type intermediate points.
 
 Ranges/gains here mirror the bench-verified constants in
-``scripts/yam_continuous_all.py`` / ``deft_controls_sdk/vbeta/slots.py`` /
+``scripts/legacy/yam_continuous_all.py`` / ``deft_controls_sdk/vbeta/slots.py`` /
 ``deft_controls_sdk/vbeta/yam_bench_clear_left.py`` and the
 ``docs/peripherals/*.md`` pages they're sourced from (arm-damiao-ch1.md,
 base-robstride-mcp.md, base-damiao-ch6.md, dxl-neck.md). Keep this file's

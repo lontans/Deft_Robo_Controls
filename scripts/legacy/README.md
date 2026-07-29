@@ -1,27 +1,36 @@
 # scripts/legacy — frozen / pending retire
 
-**Do not extend.** Prefer [`../deft_controls_sdk/`](../deft_controls_sdk/README.md) and
-[`../../docs/api.md`](../../docs/api.md).
+**Do not extend.** Prefer [`../deft_controls_sdk/`](../deft_controls_sdk/README.md) and [`../../docs/`](../../docs/README.md). Near-term product path: PlantProxy + `pcb_lab` ([integration.md](../../docs/integration.md)).
 
-RobStride encoder calibrate is in the SDK: `hub.debug.calibrate_robstride(...)`.
-Retirement checklist: [`../../docs/scripts-hygiene.md`](../../docs/scripts-hygiene.md).
+This tree holds:
 
-This tree holds the pre-SDK host packages (`control_hub/`, `controls_pcb_host/`, …).
-After SDK-only prove-out + bringup examples rewritten, gitignore and
-`git rm -r --cached scripts/legacy`.
+1. **Pre-SDK packages** — `control_hub/`, `controls_pcb_host/`, `controls_hub_api/`, …
+2. **Former root CLIs** (moved 2026-07-29) — bringup, continuous, PDB prove, vbeta smoke wrappers, teleop helpers, Jetson utilities
 
-## Running a legacy CLI (until retired)
+After PlantProxy / `pcb_lab` prove-out, gitignore and `git rm -r --cached scripts/legacy`.
+
+## Run a legacy CLI
 
 ```powershell
 cd scripts
 $env:PYTHONPATH = "legacy;."
 python legacy/control_hub.py --help
+python legacy/vbeta_smoke.py arm --hold
+python legacy/yam_continuous_all.py --help
+python legacy/rs02_channel_bringup.py --bus 4
+python legacy/pdb_uart_sim.py --help
 ```
 
-Prefer SDK / `vbeta_smoke.py` / `yam_continuous_all.py` for new work.
+Jetson remote launches (dashboard / `launch_continuous.py`) still deploy selected files as **basenames** under remote `…/scripts/` so existing `pkill` / `cd` paths keep working.
 
-### Archived from scripts/ root (2026-07-24 streamline)
+## Inventory (high level)
 
-`yam_rig_smoke_suite.py`, `yam_base_rotate_prove.py`, `dxl_servo_clear_range.py`,
-`yam_arm_clear_teleop.py` — superseded by continuous / product prove / bus56 lab /
-`yam_arm_clear_range.py` / `yam_dxl_clear_teleop.py`.
+| Cluster | Examples |
+|---------|----------|
+| Soft-realtime cruise | `yam_continuous_all.py`, `launch_continuous.py`, `stop_can.py` |
+| Channel / product prove | `rs02_channel_bringup.py`, `damiao_channel_bringup.py`, `vbeta_smoke*.py`, `vbeta_product_prove.py`, `bench_load_matrix.py` |
+| PDB | `pdb_uart_sim.py`, `pdb_*_prove.py`, `pdb_plant_integ_test.py` |
+| Teleop / Quest / mouse | `mouse_*.py`, `quest_*.py`, `yam_*_clear_*.py`, `mission_impossible.py` |
+| Jetson helpers | `jetson_*.py`, `lift_canopen_discover.py`, `base_bus56_lab.py`, `dxl_one.py` |
+| Old hub packages | `control_hub*`, `controls_pcb_host*`, `controls_hub_*` |
+| Scratch | `_tmp_*`, `tmp_runners/` |

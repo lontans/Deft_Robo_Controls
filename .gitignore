@@ -34,12 +34,14 @@ venv/
 .deft_session/
 scripts/.deft_session/
 
-# Bench / agent run logs and dump text (keep useful .py helpers)
+# Bench / agent run logs and dump text (keep useful .py helpers only under legacy/)
 scripts/_tmp_*_run.log
 scripts/_tmp_*.log
 scripts/_tmp_*.txt
-scripts/_tmp_mi_*.py
-scripts/_tmp_*_jetson*.py
+scripts/_tmp_*.py
+scripts/legacy/_tmp_*.log
+scripts/legacy/_tmp_*.txt
+scripts/legacy/_tmp_*_run.log
 
 # Local agent / IDE scratch (not product source)
 .claude/
@@ -54,9 +56,9 @@ scripts/_tmp_*_jetson*.py
 # Dated agent handoffs (durable notes live in bringup/lessons/bench docs)
 docs/handoff-*.md
 
-# Vendor GUI apps (not documentation) — keep PDFs/source samples only
-External_Documentation/RobStride/motor_toolV14L/
+# Vendor docs: keep stub README tracked; ignore bulk PDFs/EDS/SDK trees
+External_Documentation/**
+!External_Documentation/README.md
 
 # Working checkout of gitlab deft_vbeta — own .git, not this repo's source.
-# Read-only reference stays at docs/deft_vbeta_ref/.
 /deft_vbeta/

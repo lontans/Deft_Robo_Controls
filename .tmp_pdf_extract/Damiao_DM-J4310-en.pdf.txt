@@ -1,0 +1,468 @@
+DM-J4310-2EC V1.1 Gear Motor Instruction Manual
+                    V1.0
+
+
+
+
+              DAMIAO | Damiao Technology
+                    Issue Date: 2023.11.16
+
+
+
+
+ Date               Version                  Change Content
+
+ 2023.11.16         V1.0                     Initial version
+
+
+
+
+                               1
+Disclaimer
+Thank you for purchasing the Damiao Technology DM-J4310-2EC V1.1 gear motor
+(hereinafter referred to as the "motor"). Before using this product, please carefully read and
+follow this document and all safety guidelines provided by Damiao Technology. Failure to do
+so may cause harm to you and those around you, or damage this product or other
+surrounding items. By using this product, you acknowledge that you have carefully read this
+document and understand, approve of, and accept all terms and content of this document
+and all related documents of this product. You undertake to use this product only for
+legitimate purposes and to assume full responsibility for the use of this product and any
+consequences that may arise. Damiao Technology shall not be liable for any damage, injury,
+or legal liability arising directly or indirectly from the use of this product.
+"DAMIAO" is a trademark of Shenzhen Damiao Technology Co., Ltd. Product names, brands,
+etc. appearing in this document are trademarks of their respective companies. This product
+and manual are copyrighted by Shenzhen Damiao Technology Co., Ltd. No part of this
+document may be reproduced or reprinted in any form without permission. The final
+interpretation right of this document and all related documents of this product belongs to
+Shenzhen Damiao Technology Co., Ltd. Updates may be made without prior notice.
+
+
+Notes
+1. Please use the motor strictly in accordance with the specified working environment and
+   the maximum allowable temperature range of the winding, otherwise permanent and
+   irreversible damage to the product will be caused.
+2. Avoid foreign objects from entering the rotor interior, otherwise the rotor will run
+   abnormally.
+3. Check whether all components are in good condition before use. If any components are
+   missing, aged, or damaged, stop using immediately.
+4. Ensure correct wiring and proper and stable installation of the motor.
+5. Do not touch the electronic rotor part during use to avoid accidents. When the motor
+   outputs high torque, it will generate heat. Please pay attention to avoid burns.
+6. Users are not allowed to disassemble the motor privately, otherwise the control accuracy
+   of the motor will be affected, and even the motor will run abnormally.
+
+
+Motor Features
+1. Dual encoders, absolute position of the output shaft in a single turn, no fear of losing the
+   absolute position of the output shaft due to power failure.
+2. Integrated design of motor and driver, compact structure and high integration.
+3. Support for upper computer visual debugging and firmware upgrading.
+4. Can feedback motor speed, position, torque, motor temperature and other information
+   through CAN bus.
+
+
+
+                                                2
+5. With dual temperature protection function.
+6. Support trapezoidal acceleration and deceleration in position mode.
+
+
+Item List
+1. Motor (with driver) × 1
+2. Power supply (with CAN communication terminal) connection cable: XT30(2+2)-F plug
+   connection cable × 1
+3. Debugging serial port signal cable: GH1.25 connection cable - 3pin × 1
+
+
+
+
+                                                3
+Interface and Wiring Sequence Instructions
+
+
+Specific Name - Serial      Interface Label       Description
+Number
+
+Power Interface with CAN                          1. Connect the power
+Communication Terminal                            supply through the
+-1                                                XT30(2+2)-F plug power
+                                                  connection cable. The
+                                                  rated voltage is 24V to
+                                                  supply power to the
+                                                  motor.
+                                                  2. Connect to external
+                                                  control equipment
+                                                  through CAN
+                                                  communication terminals
+Power Interface with CAN
+                                                  to receive CAN control
+Communication Terminal
+                                                  commands and feedback
+-2
+                                                  motor status information.
+                                                  3. The motor has two
+                                                  power interfaces, either
+                                                  of which can be used
+                                                  alone or multiple motors
+                                                  can be connected in
+                                                  series for convenient
+                                                  cabling.
+
+Debugging Serial Port - 3                         Connect to a PC through
+                                                  a GH1.25 connection
+                                                  cable - 3pin using a USB-
+                                                  to-CAN debugging tool
+                                                  (or a universal USB-to-
+                                                  serial port module) to set
+                                                  parameters and upgrade
+                                                  firmware for the motor
+                                                  through the Damiao
+                                                  Technology debugging
+                                                  assistant.
+
+
+
+
+                                              4
+Motor Dimensions and Installation
+Please refer to the motor mounting hole dimensions and positions to install the motor on the
+corresponding equipment.
+
+
+
+
+                                              5
+Indicator Light Status
+
+
+Status             Indicator Light          Description
+
+Normal Status      Green light always on    Enable mode, normal
+                                            working status
+
+                   Red light always on      Disable mode
+
+Abnormal Status    Red light flashing       Indicates a fault, with the
+                                            corresponding fault types
+                                            being:
+                                            8 -- Overvoltage;
+                                            9 -- Undervoltage;
+                                            A -- Overcurrent;
+                                            B -- MOS
+                                            overtemperature;
+                                            C -- Motor coil
+                                            overtemperature;
+                                            D -- Communication loss;
+                                            E -- Overload;
+                                            The fault type can be
+                                            viewed through the
+                                            feedback frame or the
+                                            display interface of the
+                                            Damiao Technology
+                                            debugging assistant.
+
+
+
+
+                                        6
+Working Modes
+
+MIT Mode
+The MIT mode is designed to be compatible with the original MIT mode, enabling seamless
+switching while allowing flexible setting of the control range (P_MAX, V_MAX, T_MAX). The
+electronic speed controller converts the received CAN data into control variables for
+calculation to obtain the torque value as the current reference of the current loop, and the
+current loop finally reaches the given torque current according to its adjustment law. Its
+control schematic diagram is as follows:
+
+
+
+
+Multiple control modes can be derived from the MIT mode. For example, when kp = 0 and
+kd is not 0, giving v_des can realize uniform speed rotation; when kp = 0 and Kd = 0 ,
+giving t_ff can realize given torque output.
+Note: When controlling the position, kd cannot be set to 0, otherwise the motor will oscillate
+or even lose control.
+
+Position-Speed Mode
+The position cascade mode is a mode using three-loop series control. The position loop is
+the outermost loop, whose output is used as the given value of the speed loop, and the
+output of the speed loop is used as the given value of the inner current loop to control the
+actual current output. Its control schematic diagram is as follows:
+
+
+
+
+ p_des is the target position for control, and v_des is used to limit the maximum absolute
+speed during movement.
+
+
+
+
+                                               7
+If the control parameters recommended by the debugging assistant are used in the position
+cascade mode, good control accuracy can be achieved, and the control process is relatively
+smooth, but the response time is relatively long. In addition to v_des , the relevant
+parameters that can be configured also include acceleration/deceleration. If additional
+oscillations occur during the control process, the acceleration/deceleration can be increased.
+
+
+Note: The units of p_des and v_des are rad and rad/s respectively, and the data type is
+float. The damping factor must be set to a non-zero positive number, and the notes of the
+speed mode can be referred to.
+
+
+
+Speed Mode
+The speed mode can make the motor run stably at the set speed, and its control schematic
+diagram is as follows:
+
+
+
+
+Note: The unit of v_des is rad/s, and the data type is float. If you need to use the
+debugging assistant to automatically calculate parameters, you need to set the damping
+factor to a non-zero positive number. Usually, the value is between 2.0 and 10.0. Too small
+a damping factor will cause speed oscillation and large overshoot, while too large a damping
+factor will result in a longer rise time. The recommended setting value is 4.0.
+
+
+
+
+                                              8
+Usage
+Control uses the CAN standard frame format with a fixed baud rate of 1 Mbps, and can be
+divided into receive frames and feedback frames according to functions. The receive frame
+is the received control data used to realize command control of the motor; the feedback
+frame is the motor's status data sent to the upper controller. According to different modes
+selected by the motor, the frame format definition and frame ID of the receive frame are
+different, but the feedback frames under various modes are the same.
+
+Feedback Frame
+The feedback frame ID is set by the debugging assistant (Master ID), with a default of 0,
+mainly feeding back the motor's position, speed, and torque information. Its frame format
+definition is as follows:
+
+
+
+Feed     D[0]     D[1]     D[2]          D[3]        D[4]        D[5]       D[6]      D[7]
+back
+Mess
+age
+
+MST      ID|ER    POS[     POS[7:0]      VEL[11:4    VEL[3:0]|   T[7:0]     T_MO      T_Rot
+_ID      R << 4   15:8]                  ]           T[11:8]                S         or
+
+
+
+Where:
+• ID represents the controller ID, taking the lower 8 bits of CAN_ID.
+• ERR represents the fault, with the corresponding fault types being:
+    ◦ 8 -- Overvoltage;
+    ◦ 9 -- Undervoltage;
+    ◦ A -- Overcurrent;
+    ◦ B -- MOS overtemperature;
+    ◦ C -- Motor coil overtemperature;
+    ◦ D -- Communication loss;
+    ◦ E -- Overload;
+• POS represents the motor's position information.
+• VEL represents the motor's speed information.
+• T represents the motor's torque information.
+• T_MOS represents the average temperature of the MOS on the driver, in ℃.
+
+• T_Rotor represents the average temperature of the motor's internal coil, in ℃.
+
+
+
+                                                9
+Position, speed, and torque use a linear mapping relationship to convert floating-point data
+into signed fixed-point data, where position uses 16-bit data, and speed and torque both use
+12-bit data.
+
+
+
+Control Frame in MIT Mode
+
+
+Control      D[0]      D[1]     D[2]       D[3]          D[4]      D[5]       D[6]         D[7]
+Message
+
+ID           p_des     p_des    v_des      v_des[3:0]    Kp[7:0]   Kd[11:4]   Kd[3:0] |    t_ff[7:0]
+                       [7:0]               |                                  t_ff[11:8]
+             [15:8]             [11:4]
+                                           Kp[11:8]
+
+
+Frame ID is equal to the set CAN ID value.
+• P_des: Position given value.
+• V_des: Speed given value.
+• Kp: Position proportional coefficient.
+• Kd: Position differential coefficient.
+• T_ff: Torque given value.
+Each parameter conforms to the mapping relationship in the previous section, where the
+ranges of p_des, v_des, and t_ff can be set by the debugging assistant. The range of Kp is
+[0, 500], and the range of Kd is [0, 5].
+A standard CAN data frame has only 8 bytes. The MIT control command format combines
+five parameters: Position, Velocity, Kp, Kd, and Torque into 8 bytes by bit. Among them,
+Position occupies 2 bytes (16 bits), and Velocity, Kp, and Kd each occupy 12 bits.
+
+Control Frame in Position-Speed Mode
+
+
+Control        D[0]      D[1]          D[2]       D[3]     D[4]       D[5]      D[6]       D[7]
+Message
+
+0x100 + ID                      p_des                                     v_des
+
+
+
+Frame ID is the set CAN ID value plus an offset of 0x100.
+• P_des: Position given value, floating-point type, with lower bits first and higher bits later.
+• V_des: Speed given value, floating-point type, with lower bits first and higher bits later.
+
+
+
+                                                  10
+Here, the CAN ID for sending commands is 0x100 + ID. The speed given value is the
+highest speed under trapezoidal acceleration and deceleration operation, that is, the speed
+value in the uniform speed segment.
+
+
+
+Control Frame in Speed Mode
+
+
+Control Message      D[0]                D[1]               D[2]                D[3]
+
+0x200 + ID                                             v_des
+
+• Frame ID is the set CAN ID value plus an offset of 0x200.
+• V_des: Speed given value, floating-point type, with lower bits first and higher bits later.
+Here, the CAN ID for sending commands is 0x200 + ID.
+
+
+Using Damiao Technology Debugging Assistant
+Use the Damiao Technology USB-to-CAN debugging tool to connect the computer and the
+motor, and set parameters and upgrade firmware for the motor through the Damiao
+Technology assistant.
+Connect the motor's debugging serial port to the PC through a GH1.25 connection cable -
+3pin, and connect the CAN communication terminal in the motor's power interface to the
+USB-to-CAN debugging tool through an XT30(2+2)-F plug connection cable. Then, set
+parameters and upgrade firmware for the motor through the Damiao Technology debugging
+assistant.
+After the motor's serial port, CAN port, and power interface are connected, open the Damiao
+Technology debugging assistant on the computer, select the corresponding serial port
+device, and open the serial port. Then, power on the motor, and the serial port will print
+information, with "Control Mode" indicating the current driving mode.
+For detailed debugging procedures, refer to the Debugging Assistant Instruction Manual
+(Damiao Drive Control Protocol) V1.3.pdf.Download link:
+http://www.dmbot.cn/forum.php?mod=viewthread&tid=364&extra=page%3D1
+
+
+
+
+                                                11
+Motor Parameters
+Performance curve measured at a constant speed of 120 rpm and room temperature of 25℃:
+
+
+
+
+                                         12
+Characteristic Parameters
+
+
+   Category                Parameter                          Value
+
+                  Rated Voltage                 24V
+
+                  Rated Current                 2.5A
+
+                  Peak Current                  7.5A
+Motor
+                  Rated Torque                  3NM
+Parameters
+                  Peak Torque                   7NM
+
+                  Rated Speed                   120rpm
+
+                  No-Load Maximum Speed         200rpm
+
+                  Gear Ratio                    10:1
+
+                  Number of Pole Pairs          14
+Motor
+Characteristics
+                  Phase Inductance              340uH
+
+                  Phase Resistance              650mΩ
+
+                  Outer Diameter                56mm
+Mechanical
+Dimensions &      Height                        46mm
+Weight
+                  Motor Weight                  Approximately 300g
+
+                  Encoder Resolution            14 bits
+
+Encoders          Number of Encoders            2
+
+                  Encoder Type                  Magnetic (Single-turn)
+
+                  Control Interface             CAN@1Mbps
+Communication
+                  Parameter Adjustment
+                                                UART@921600bps
+                  Interface
+
+                                                MIT Mode, Speed Mode, Position
+                  Control Modes
+                                                Mode
+Control &
+Protection
+                  Driver Overtemperature        Protection Temperature: 120°C,
+                  Protection                    the motor will exit "Enable Mode"
+
+
+
+                                           13
+Category            Parameter                            Value
+
+                                          when overheated
+
+                                          Set according to usage
+                                          requirements, recommended not
+           Motor Overtemperature
+                                          to exceed 100°C; the motor will
+           Protection
+                                          exit "Enable Mode" when
+                                          overheated
+
+                                          Set according to usage
+                                          requirements, recommended not
+           Motor Overvoltage Protection
+                                          to exceed 32V; the motor will exit
+                                          "Enable Mode" under overvoltage
+
+                                          Automatically exit "Enable Mode"
+           Communication Loss
+                                          if no CAN commands are received
+           Protection
+                                          within the set period
+
+                                          Set according to usage
+                                          requirements, recommended not
+           Motor Overcurrent Protection
+                                          to exceed 9.8A; the motor will exit
+                                          "Enable Mode" under overcurrent
+
+                                          Exit "Enable Mode" if the power
+           Motor Undervoltage             voltage is lower than the set value;
+           Protection                     recommended power voltage not
+                                          lower than 15V
+
+
+
+
+                                   14
+
