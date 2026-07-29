@@ -11,17 +11,17 @@ Soft-DFU flash.
 
 ## 0. What "board optimize" already covers — do not re-litigate
 
-A prior offline pass ([`legacy/act-lap-bloat-deepdive-2026-07-23.md`](legacy/act-lap-bloat-deepdive-2026-07-23.md))
+A prior offline pass ([`legacy/act-lap-bloat-deepdive-2026-07-23.md`](../act-lap-bloat-deepdive-2026-07-23.md))
 already identified and ranked the plant/MCP/host optimization candidates, and
-— per [`decisions.md`](decisions.md) / [`rfc-stagger-robstride-maintain.md`](rfc-stagger-robstride-maintain.md)
+— per [`decisions.md`](../../decisions.md) / [`rfc-stagger-robstride-maintain.md`](../rfc/rfc-stagger-robstride-maintain.md)
 — the top two are **already applied and matrixed**:
 
 | # | Candidate | Status | Evidence |
 |---|---|---|---|
-| 1 | Release build (`-Os` vs `-O0`) | **Applied** — `Release/DeftRoboticsControlsPCB.elf` exists; Soft-DFU's `default_firmware_elf()` prefers it | [`rfc-release-build.md`](rfc-release-build.md), [`legacy/bench-load-matrix-release-2026-07-23.md`](legacy/bench-load-matrix-release-2026-07-23.md) |
-| 2 | Per-bus RX-dispatch slot index (`actuator_dispatch_bus_rx`, was O(frames×25) scan) | **Applied** | [`rfc-per-bus-rx-index.md`](rfc-per-bus-rx-index.md), [`legacy/bench-load-matrix-release-rxindex-2026-07-23.md`](legacy/bench-load-matrix-release-rxindex-2026-07-23.md), [`legacy/bench-load-matrix-release-rxindex-real-2026-07-23.md`](legacy/bench-load-matrix-release-rxindex-real-2026-07-23.md) |
-| 3 | Stagger `robstride_maintain_enable` re-arm phase | **Applied** | [`rfc-stagger-robstride-maintain.md`](rfc-stagger-robstride-maintain.md), [`legacy/bench-load-matrix-release-stagger-2026-07-23.md`](legacy/bench-load-matrix-release-stagger-2026-07-23.md), [`legacy/bench-load-matrix-release-maintain-budget-2026-07-23.md`](legacy/bench-load-matrix-release-maintain-budget-2026-07-23.md) |
-| — | `PlantTask` → `osPriorityHigh` | **Tried, reverted** — cut act_lap peak 11→3 ms but blew up `cmd_seq_lag` p95 (12–122) at 200/500 Hz and ballooned `periph_lap` (DXL fragmented under preemption) | [`legacy/bench-load-matrix-release-plant-high-2026-07-23.md`](legacy/bench-load-matrix-release-plant-high-2026-07-23.md) |
+| 1 | Release build (`-Os` vs `-O0`) | **Applied** — `Release/DeftRoboticsControlsPCB.elf` exists; Soft-DFU's `default_firmware_elf()` prefers it | [`rfc-release-build.md`](../rfc/rfc-release-build.md), [`legacy/bench-load-matrix-release-2026-07-23.md`](../bench-load-matrix-release-2026-07-23.md) |
+| 2 | Per-bus RX-dispatch slot index (`actuator_dispatch_bus_rx`, was O(frames×25) scan) | **Applied** | [`rfc-per-bus-rx-index.md`](../rfc/rfc-per-bus-rx-index.md), [`legacy/bench-load-matrix-release-rxindex-2026-07-23.md`](../bench-load-matrix-release-rxindex-2026-07-23.md), [`legacy/bench-load-matrix-release-rxindex-real-2026-07-23.md`](../bench-load-matrix-release-rxindex-real-2026-07-23.md) |
+| 3 | Stagger `robstride_maintain_enable` re-arm phase | **Applied** | [`rfc-stagger-robstride-maintain.md`](../rfc/rfc-stagger-robstride-maintain.md), [`legacy/bench-load-matrix-release-stagger-2026-07-23.md`](../bench-load-matrix-release-stagger-2026-07-23.md), [`legacy/bench-load-matrix-release-maintain-budget-2026-07-23.md`](../bench-load-matrix-release-maintain-budget-2026-07-23.md) |
+| — | `PlantTask` → `osPriorityHigh` | **Tried, reverted** — cut act_lap peak 11→3 ms but blew up `cmd_seq_lag` p95 (12–122) at 200/500 Hz and ballooned `periph_lap` (DXL fragmented under preemption) | [`legacy/bench-load-matrix-release-plant-high-2026-07-23.md`](../bench-load-matrix-release-plant-high-2026-07-23.md) |
 
 Net effect on the all×25 hold (40 Hz host, RX-sim on): `act_lap` mean dropped
 from **~3.6–4.2 ms** (Debug baseline, 07-23) to **~1.0–2.0 ms**
@@ -61,7 +61,7 @@ sanity check before trusting the board for anything else:
 ### 1c. Explicitly not board optimization (do not fold into this checklist)
 
 - Repo bloat (`External_Documentation/`, `docs/deft_vbeta_ref/`) —
-  already tracked in [`legacy/act-lap-bloat-deepdive-2026-07-23.md`](legacy/act-lap-bloat-deepdive-2026-07-23.md) §2/§3
+  already tracked in [`legacy/act-lap-bloat-deepdive-2026-07-23.md`](../act-lap-bloat-deepdive-2026-07-23.md) §2/§3
   as a separate, non-runtime concern (git history size, not plant timing).
 - CubeMars scaling/feedback-ID P0s ([`lessons.md`](lessons.md)) — protocol
   correctness, not bandwidth.
@@ -88,7 +88,7 @@ CLI shape:
 cd scripts
 python bench_load_matrix.py --port COM5 --hz 40,100,200,500 --scenario all
 python bench_load_matrix.py --port COM5 --hz 40 --scenario idle
-python bench_load_matrix.py --port COM5 --hz 40,500 --scenario ch1 --trials 3 --seconds 8 --report ../docs/bench-load-matrix-<date>.md
+python bench_load_matrix.py --port COM5 --hz 40,500 --scenario ch1 --trials 3 --seconds 8 --report bench-load-matrix-<date>.md
 ```
 
 - `--hz`: comma list, default `40,100,200,500` (matches bringup §7a and the
@@ -114,7 +114,7 @@ python bench_load_matrix.py --port COM5 --hz 40,500 --scenario ch1 --trials 3 --
 | `mcp` (CH4–6 together) | RX-sim on all CH4–6 slots simultaneously | **Apply-accumulate footgun**: per `docs/api.md` — "Holds accumulate per slot — leaving many CH4–6 slots non-blank at once is expensive on the MCU." Blank MCP slots skip SPI entirely; this scenario is the one that actually exercises that cost, so it must never be silently merged into a "cheap" idle-style baseline |
 | `all` | RX-sim on every enabled product-CFG slot (arms 0–13 + base 14–19; `yam_product_rows()` — 20 of 26 slots, lift/spare 20–25 stay disabled) | Product-realistic worst case, matches `9_all_CH1-6_x25`/`x26` in prior bench docs |
 
-**Open question this plan does not resolve:** `docs/bench-pdb-sdk-contract-2026-07-24.md`
+**Open question this plan does not resolve:** `bench-pdb-sdk-contract-2026-07-24.md`
 records a `9_all_CH1-6_x26` run with **CH3×4** enabled, but
 [`vbeta/slots.py`](../scripts/deft_controls_sdk/vbeta/slots.py)'s
 `yam_product_rows()` currently disables all of CH3 (lift slot 20 + 5 spares
@@ -157,11 +157,11 @@ updated the same way.
 
 ## 3. Live-run readiness (for whoever runs this next, when CDC is free)
 
-1. Announce COM ownership per the sprint's collision rule (`docs/rfc-release-build.md`
+1. Announce COM ownership per the sprint's collision rule (`../rfc/rfc-release-build.md`
    §"Matrix checklist": "Leave COM5 idle before/after — announce `COM5: Cursor`
    while running").
 2. Confirm no Claudistic dashboard / Claude-Vbeta smoke has the port open.
-3. `python bench_load_matrix.py --port COM5 --scenario all --report ../docs/bench-load-matrix-<date>.md`
+3. `python bench_load_matrix.py --port COM5 --scenario all --report bench-load-matrix-<date>.md`
    as the baseline re-check (§1a), then targeted scenarios only if something
    regressed.
 4. If §1a's "confirm-still-true" checklist fails (act_lap mean back above

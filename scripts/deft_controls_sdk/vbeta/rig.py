@@ -33,7 +33,7 @@ from deft_controls_sdk.vbeta.session import PcbRobotSession
 from deft_controls_sdk.vbeta.slots import DEFAULT_STEER_KD, DEFAULT_STEER_KP
 
 # RS02 canonical bench slot for bus 6 under layout v3 — Track B bench notes
-# (docs/bench-pdb-plant-integ-2026-07-23.md: "RS slot=24 id=0x70"; was 23
+# (docs/legacy/bench/bench-pdb-plant-integ-2026-07-23.md: "RS slot=24 id=0x70"; was 23
 # under v2). This slot is CFG-disabled/spare in yam_product_rows() — driving
 # it requires a bench/rig CFG override, not the YAM product CFG.
 RIG_RS02_BUS6_SLOT = 24

@@ -40,7 +40,7 @@ Date: 2026-07-24
 
 ### Plant integ (DXL + RS02 + kill phases)
 
-`python scripts/_tmp_pdb_plant_integ_test.py --port COM5` → `docs/bench-pdb-plant-integ-2026-07-24.md`
+`python scripts/_tmp_pdb_plant_integ_test.py --port COM5` → `bench-pdb-plant-integ-2026-07-24.md`
 
 | Phase | kill | led | motion | result |
 |-------|-----:|----:|--------|--------|

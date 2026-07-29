@@ -6,6 +6,21 @@ Host SDK for the Deft Robotics controls PCB (USB CDC). Canonical call surface:
 
 Does **not** import `scripts/legacy/`.
 
+## Install (editable)
+
+From this repo root (or from a `deft_vbeta` checkout that vendors this repo as
+`external/controls_pcb`):
+
+```powershell
+pip install -e .
+# from deft_vbeta:
+# pip install -e .\external\controls_pcb
+```
+
+Then `from deft_controls_sdk` / `from deft_controls_sdk.vbeta` work without
+putting `scripts/` on `PYTHONPATH`. Day-to-day CLIs that already manipulate
+`sys.path` keep working either way.
+
 ## Quick start
 
 ```python
@@ -57,4 +72,3 @@ bench/                  # discover, CFG, calibrate, soft_dfu, metrics
 telemetry/              # snapshot / record
 debug_dashboard/        # localhost UI
 ```
-

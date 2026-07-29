@@ -1,5 +1,9 @@
 # Architecture
 
+**Post-dual-YAM gaps** (optimizations, mixed protocol, CubeMars/ZeroErr, PDB kill, Soft-DFU/NVM, lean script map): [mental-model-post-2a35cfe.md](mental-model-post-2a35cfe.md) — start there if you already know the CAN router / polling / 694 B plant contract.
+
+**SDK / vbeta / i2rt vertical study** (Damiao hold/jog call chains, Q&A labs): [study-sdk-damiao-vertical.md](study-sdk-damiao-vertical.md).
+
 ## Overview
 
 Two execution contexts share data through **staging buffers** under bare-metal; under RTOS there are three tasks. No malloc on the hot path.

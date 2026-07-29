@@ -1,7 +1,7 @@
 # vbeta live-prove plan (Claude-Vbeta, four-agent next pass)
 
 **Status (2026-07-24 evening):** Live ladder executed on Jetson — see
-[`docs/bench-vbeta-live-prove-2026-07-24.md`](bench-vbeta-live-prove-2026-07-24.md).
+[`bench-vbeta-live-prove-2026-07-24.md`](bench-vbeta-live-prove-2026-07-24.md).
 Left hold+jog PASS; right/base/neck logged as HW blockers. Claudistic GUI
 untouched.
 
@@ -50,7 +50,7 @@ python -m pytest scripts/tests/test_deft_controls_sdk_vbeta.py -q
 ```
 
 Expect the full fake-hub suite green (19 passed as of the last recorded run,
-`docs/bench-vbeta-arm-2026-07-24.md`) including `test_platform_neck_cmd_no_double_offset`,
+`bench-vbeta-arm-2026-07-24.md`) including `test_platform_neck_cmd_no_double_offset`,
 `test_robstride_soft_hold_*`, `test_neck_hold_present_*`, `test_pdb_poll_*`,
 `test_rig_components_tick_*`. Do not proceed to hardware if this fails —
 fix or revert first. This is a no-board gate; run it from a laptop with no
@@ -75,7 +75,7 @@ not-found probe is the correct, honest result. This bit the team once
 already: the base's physical RobStride/Damiao drives answer bench-spare IDs
 (`0x70`/`0x74`/`0x75`/`0x06`), not the product map's `0x01`(steer)/`0x02`(drive)
 — see the "Base ID remap gap" in `docs/vbeta-pcb-adapter.md` and
-`docs/bench-vbeta-product-cfg-2026-07-24.md`. Treat that as a hardware/CFG
+`bench-vbeta-product-cfg-2026-07-24.md`. Treat that as a hardware/CFG
 mismatch to log, not something to patch around by pointing `yam_product_rows()`
 at bench IDs.
 
@@ -109,7 +109,7 @@ skipping ahead.
    servo strip isn't on the bench this session; do not fabricate a pass.
 
 Log every HW blocker (right arm absent, base remap gap, neck absent) in a
-dated `docs/bench-vbeta-*.md` entry, same format as the existing
+dated `docs/legacy/bench/bench-vbeta-*.md` entry, same format as the existing
 `bench-vbeta-arm-2026-07-24.md` / `bench-vbeta-product-cfg-2026-07-24.md` —
 future sessions need "not present this session" distinguished from
 "adapter broken."

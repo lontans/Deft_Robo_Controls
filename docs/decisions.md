@@ -121,7 +121,7 @@ NORMAL → SOFT_KILL_REQ → (controls safe pose) → SOFT_KILL_READY → HARD_E
 **Note (2026-07-24):** layout has since moved past v2/672 B — plant is now on
 **v3, 694 B, 26 actuator slots** ([host-exchange-v3.md](host-exchange-v3.md)),
 landed as part of the PDU–Controls SDK contract work
-([bench-pdb-sdk-contract-2026-07-24.md](bench-pdb-sdk-contract-2026-07-24.md)).
+([bench-pdb-sdk-contract-2026-07-24.md](legacy/bench/bench-pdb-sdk-contract-2026-07-24.md)).
 This ADR's byte counts above describe the v2 decision as made; not rewritten
 here to preserve the historical record.
 

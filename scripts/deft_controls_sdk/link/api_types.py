@@ -61,7 +61,7 @@ class ServoDesire:
     operating_mode: int = 3  # position control
 
 
-# host_led_command_t.mode (5-bit). See docs/rfc-led-factory-patterns.md.
+# host_led_command_t.mode (5-bit). See docs/legacy/rfc/rfc-led-factory-patterns.md.
 LED_MODE_OFF = 0
 LED_MODE_TEST = 1  # single-pixel chase (snake)
 LED_MODE_FLASH = 2  # ~2 Hz full-strip red blink (bringup)
