@@ -4,17 +4,25 @@ on the same Connection plant streaming already uses. No second serial port.
     with ControlsPcbHub.connect("COM5") as hub:
         hit = hub.debug.discover_robstride(bus=2)
         table = hub.debug.cfg_get_table()
+
+Plant CFG / LED / scan CLI suite (HostProxy)::
+
+    python -m deft_controls_sdk.debug.suite --port COM5 show --pcb
+    python -m pcb_lab.debug --port COM5 show --pcb   # lab alias
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional, Sequence
+from typing import TYPE_CHECKING, List, Mapping, Optional, Sequence, Tuple
 
 from . import config as _config
 from . import damiao as _damiao
+from . import discover as _discover
+from . import inventory as _inventory
 from . import robstride as _robstride
 from . import robstride_calibrate as _robstride_calibrate
 from . import soft_dfu as _soft_dfu
 from . import zeroerr as _zeroerr
+from .inventory import run_inventory
 from .lease import lease
 
 if TYPE_CHECKING:
@@ -24,6 +32,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DebugAPI",
     "lease",
+    "run_inventory",
     "PROTO_ZEROERR",
     "find_cdc_port",
     "list_cdc_ports",
@@ -50,9 +59,13 @@ class DebugAPI:
         self._connection = connection
         self._telemetry = telemetry
 
+    def _require_debug(self, op: str) -> None:
+        self._connection.require_debug_mode(op)
+
     def lease(self, *, bus: int = 1):
         """RS2 session_begin/end bracket — plant apply may be gated
         (plant_block=BENCH_SESSION) while held. See bench/lease.py."""
+        self._require_debug("hub.debug.lease")
         return lease(self._connection, self._telemetry, bus=bus)
 
     # -- RobStride (RS2) -----------------------------------------------------------
@@ -63,15 +76,47 @@ class DebugAPI:
         Full range is always scanned (see :meth:`discover_robstride_all`). Manages
         its own lease — do not also wrap this call in `with hub.debug.lease():`.
         """
+        self._require_debug("hub.debug.discover_robstride")
         return _robstride.discover(self._connection, self._telemetry, bus=bus, start=start, end=end)
 
     def discover_robstride_all(
-        self, *, bus: int, start: int = 0x40, end: int = 0x80
+        self,
+        *,
+        bus: int = 1,
+        buses: Optional[Sequence[int]] = None,
+        start: int = 0x40,
+        end: int = 0x80,
     ) -> List[int]:
-        """Sweep start..end; return every unique responding RobStride id in
-        discovery order. Light enable+promisc only — no deep wake spam."""
+        """Sweep start..end; return every unique responding RobStride id.
+
+        Pass ``buses=[1,5,6]`` for overlapping multi-bus discover (one lease,
+        FW round-robin listen). Light enable+promisc only.
+        """
+        self._require_debug("hub.debug.discover_robstride_all")
         return _robstride.discover_all(
-            self._connection, self._telemetry, bus=bus, start=start, end=end
+            self._connection,
+            self._telemetry,
+            bus=bus,
+            buses=buses,
+            start=start,
+            end=end,
+        )
+
+    def discover_robstride_by_bus(
+        self,
+        *,
+        buses: Sequence[int],
+        start: int = 0x40,
+        end: int = 0x80,
+    ) -> dict:
+        """Multi-bus RobStride discover → ``{bus: [ids…]}``."""
+        self._require_debug("hub.debug.discover_robstride_by_bus")
+        return _robstride.discover_all_by_bus(
+            self._connection,
+            self._telemetry,
+            buses=buses,
+            start=start,
+            end=end,
         )
 
     def probe_robstride(
@@ -82,6 +127,7 @@ class DebugAPI:
         timeout_s: float = 0.55,
         reset: bool = True,
     ) -> Optional[dict]:
+        self._require_debug("hub.debug.probe_robstride")
         return _robstride.probe(
             self._connection,
             self._telemetry,
@@ -105,6 +151,7 @@ class DebugAPI:
         Shaft must spin freely; supply 24–60 V. Manages its own lease.
         Returns True when mechPos verify is near zero.
         """
+        self._require_debug("hub.debug.calibrate_robstride")
         return _robstride_calibrate.calibrate(
             self._connection,
             self._telemetry,
@@ -128,6 +175,7 @@ class DebugAPI:
     ) -> Optional[int]:
         """ID_SWEEP then REG_SCAN fallback. Leave known_ids empty unless you
         already know ESC IDs on this bus (wrong hints just waste REG_SCAN)."""
+        self._require_debug("hub.debug.discover_damiao")
         return _damiao.discover(
             self._connection,
             self._telemetry,
@@ -148,6 +196,7 @@ class DebugAPI:
         known_ids: Sequence[int] = (),
     ) -> List[int]:
         """Like discover_damiao but returns every unique hit (discovery order)."""
+        self._require_debug("hub.debug.discover_damiao_all")
         return _damiao.discover_all(
             self._connection,
             self._telemetry,
@@ -158,10 +207,65 @@ class DebugAPI:
             known_ids=known_ids,
         )
 
+    def discover_queued(
+        self,
+        *,
+        buses: Sequence[int],
+        protocols: Sequence[str] = ("robstride", "damiao"),
+        ranges: Optional[Mapping[str, Tuple[int, int]]] = None,
+        listen_ms: int = 40,
+    ) -> List[dict]:
+        """Queue single-bus discover across buses × protocols (sequential).
+
+        Not parallel — FW one session bus at a time. Same DEBUG DBGC/DBGF
+        path as :meth:`discover_robstride_all` / :meth:`discover_damiao_all`.
+        """
+        self._require_debug("hub.debug.discover_queued")
+        return _discover.discover_queued(
+            self._connection,
+            self._telemetry,
+            buses=buses,
+            protocols=protocols,
+            ranges=ranges,
+            listen_ms=listen_ms,
+        )
+
+    def inventory(
+        self,
+        *,
+        buses: Sequence[int] = (1, 2, 3, 4, 5, 6),
+        protocols: Sequence[str] = ("robstride", "damiao"),
+        ranges: Optional[Mapping[str, Tuple[int, int]]] = None,
+        preset: Optional[str] = None,
+        listen_ms: int = 40,
+        print_report: bool = True,
+    ) -> dict:
+        """Actuators-only smoke (DEBUG lanes discover).
+
+        **Requires** ``ranges=`` or ``preset='bench'|'product'|'full'`` — no
+        silent wide ID sweep. For servos + PDU as well, use
+        ``run_inventory(proxy, …)`` / ``python -m pcb_lab inventory``.
+        """
+        self._require_debug("hub.debug.inventory")
+        return _inventory.inventory_smoke(
+            self._connection,
+            self._telemetry,
+            buses=buses,
+            protocols=protocols,
+            ranges=ranges,
+            preset=preset,
+            listen_ms=listen_ms,
+            print_report=print_report,
+        )
+
+    # alias for discoverers / CLI copy
+    smoke = inventory
+
     # -- Config (CFG PDU — actuator table get/set/save) -------------------------------
 
     def cfg_get_table(self, *, timeout_s: float = 1.5) -> List[dict]:
         """Read the MCU's actuator_table[] (paged)."""
+        self._require_debug("hub.debug.cfg_get_table")
         return _config.fetch_table(self._connection, timeout_s=timeout_s)
 
     def cfg_set_slot(
@@ -180,6 +284,7 @@ class DebugAPI:
 
         Needs firmware with the G4 BKER NVM erase fix. A raised exception after
         persist=True means RAM applied but flash did not — reboot would revert."""
+        self._require_debug("hub.debug.cfg_set_slot")
         return _config.set_slot(
             self._connection,
             self._telemetry,
@@ -195,10 +300,12 @@ class DebugAPI:
 
     def cfg_save_nvm(self, *, timeout_s: float = 8.0) -> dict:
         """Flash-persist the full NVM v2 image (actuators + periph + flags)."""
+        self._require_debug("hub.debug.cfg_save_nvm")
         return _config.save_nvm(self._connection, timeout_s=timeout_s)
 
     def cfg_get_periph(self, *, timeout_s: float = 1.5) -> dict:
         """Read neck servos + LED defaults + listen_pdu flag (RAM)."""
+        self._require_debug("hub.debug.cfg_get_periph")
         return _config.get_periph(self._connection, timeout_s=timeout_s)
 
     def cfg_set_periph(
@@ -209,6 +316,7 @@ class DebugAPI:
         timeout_s: float = 1.5,
     ) -> dict:
         """Write peripheral block to RAM; ``persist=True`` runs CFG SAVE (NVM v2)."""
+        self._require_debug("hub.debug.cfg_set_periph")
         return _config.set_periph(
             self._connection,
             self._telemetry,

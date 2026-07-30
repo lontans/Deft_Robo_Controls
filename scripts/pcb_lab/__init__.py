@@ -1,16 +1,15 @@
-"""pcb_lab — plant lab app on HostProxy (not the YAM/vbeta product path).
+"""pcb_lab — board toolkit (Soft-DFU / scan / health) + HostProxy doctor.
 
-    python -m pcb_lab --port COM5 doctor
-    python -m pcb_lab --port COM5 demux --profile bench
-    python -m pcb_lab --port COM5 hold --component left_arm
+    python -m pcb_lab              # interactive menu
+    python -m pcb_lab -h
+    python -m pcb_lab scan|status|leave|flash|images|build
+    python -m pcb_lab show defaults|health
+    python -m pcb_lab doctor
     python -m pcb_lab.continuous --port COM5 --duration 20
-    python -m pcb_lab.debug scan
-    python -m pcb_lab.debug --port COM5 show --cfg --bandwidth --status
-    python -m pcb_lab.debug --port COM5 set --cfg
-    python -m pcb_lab.debug --port COM5 set --cfg --slot 22 --bus 5 \\
-        --protocol robstride --motor-id 0x70 --persist
+    python -m pcb_lab.debug --port COM5 show --pcb
 
-Owns COM exclusively — disconnect the debug dashboard first.
+``pcb_lab.debug`` is a thin alias of ``deft_controls_sdk.debug.suite``
+(always ``mode=debug``). Owns COM exclusively — disconnect the dashboard first.
 """
 from __future__ import annotations
 

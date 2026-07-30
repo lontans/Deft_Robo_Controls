@@ -39,6 +39,7 @@ SYNC_FILES = (
     ("pcb_lab/legacy/pdb_uart_sim.py", "pdb_uart_sim.py"),
     ("pcb_lab/legacy/stop_can.py", "stop_can.py"),
     ("deft_controls_sdk/debug/robstride.py", "deft_controls_sdk/debug/robstride.py"),
+    ("deft_controls_sdk/debug/robstride_motion.py", "deft_controls_sdk/debug/robstride_motion.py"),
     ("deft_controls_sdk/debug/rs02_motion.py", "deft_controls_sdk/debug/rs02_motion.py"),
     ("deft_controls_sdk/vbeta/slots.py", "deft_controls_sdk/vbeta/slots.py"),
     ("deft_controls_sdk/vbeta/session.py", "deft_controls_sdk/vbeta/session.py"),

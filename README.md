@@ -24,6 +24,7 @@ cd scripts
 pip install -r requirements.txt
 
 python soft_dfu_flash.py
+python -m pcb_lab
 python -m deft_controls_sdk.debug_dashboard
 ```
 

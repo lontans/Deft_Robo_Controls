@@ -16,6 +16,8 @@ extern volatile bool g_probe_progress_push;
 extern uint32_t g_probe_started_ms;
 extern uint8_t g_rs2_motor_id;
 extern can_bus_id_t g_rs2_can_bus;
+/* Bit i set ⇒ FW bus i (CH1+i) in the active RS2 bench session. 0 = legacy single. */
+extern uint8_t g_rs2_bus_mask;
 extern uint32_t g_rs2_quiet_until_ms;
 extern bool g_dxl_feedback_active;
 extern volatile bool g_dxl_probe_pending;
@@ -42,5 +44,6 @@ extern uint16_t g_dm_pending_listen_ms;
 extern can_bus_id_t g_dm_pending_bus;
 extern volatile bool g_dm_session_active;
 extern can_bus_id_t g_dm_can_bus;
+extern uint8_t g_dm_bus_mask;
 extern uint8_t g_dm_feedback_ttl;
 extern uint32_t g_dm_quiet_until_ms;

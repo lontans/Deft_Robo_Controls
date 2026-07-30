@@ -76,6 +76,8 @@ typedef struct {
 	float velocity;
 	float torque;
 	float temperature;
+	/* Host bus 1..6 when multi-bus discover attributed a hit; 0 = unset. */
+	uint8_t can_bus;
 } robstride_probe_result_t;
 
 plugin_status_t robstride_set_run_mode(const actuator_config_t *cfg,
@@ -125,3 +127,8 @@ bool robstride_probe_id(can_bus_id_t bus,
                         uint16_t param_index,
                         uint32_t param_raw_value,
                         robstride_probe_result_t *out);
+/* ENABLE_ONLY / PROMISC across bus_mask (bit0=CH1…): TX all, one RR listen. */
+bool robstride_probe_id_buses(uint8_t bus_mask,
+                              uint8_t motor_id,
+                              uint8_t probe_kind,
+                              robstride_probe_result_t *out);

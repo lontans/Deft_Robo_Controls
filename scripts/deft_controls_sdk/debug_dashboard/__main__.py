@@ -34,7 +34,7 @@ def _status_block(snap) -> str:
         f"poll={snap.stream_poll_ms or 0:.1f}  "
         f"credit_wait={snap.stream_credit_wait_ms or 0:.1f}  "
         f"pub={snap.stream_publish_ms or 0:.1f}  "
-        f"(blank MCP: fb~1000 + ack_lag~0. MCP Apply should stay near that after plant MCP non-block fix.)\n"
+        f"(idle: fb flood + ack_lag~0. MCP Apply should stay near that after plant MCP non-block fix.)\n"
         f"  mcu    act_lap={snap.lap_ms}  act_peak={snap.lap_max_ms}  "
         f"periph_lap={snap.periph_lap_ms}  periph_peak={snap.periph_lap_max_ms}  "
         f"pend={snap.ticks_pending}  svd={snap.svd_present}\n"
@@ -71,9 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"plant TX {args.hz:.0f} Hz · telemetry publish {args.telemetry_hz:.0f} Hz (latest-wins)")
 
     if args.port:
-        print(f"Connecting {args.port} in observe mode (DIAG_ONLY, no auto soft-kill)...")
+        print(f"Connecting {args.port} in observe mode (plant_apply=0, no auto soft-kill)...")
         state.connect(args.port, mode="observe")
-        print("Connected (observe). Use Enable control in the UI for NORMAL plant apply.")
+        print("Connected (observe). Use Enable control in the UI for plant_apply.")
     else:
         sp = state.telemetry.state_path
         print(

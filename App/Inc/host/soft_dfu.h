@@ -13,7 +13,8 @@
  * nBOOT0 option byte (nSWBOOT0 stays 0) and resets:
  *
  * Flow:
- *   1. Host sends the DFU backdoor PDU (SOFT_DFU_TAG0..3 = "DFU!").
+ *   1. Preferred: host sends plant/DEBUG with stm32_mode=SOFT_DFU (ADR-004).
+ *      Legacy: DEBUG mailbox tag SOFT_DFU_TAG0..3 = "DFU!".
  *   2. soft_dfu_on_command() drops USB D+, programs nBOOT0=0, OBL_LAUNCH.
  *      MCU resets into system memory → host sees 0483:DF11.
  *   3. Host programs flash (CubeProg USB DFU or dfu-util).
@@ -35,6 +36,7 @@
  * nBOOT0=1 then resets. See .soft_dfu_leave_vt in the linker script. */
 #define SOFT_DFU_LEAVE_VT_ADDR 0x0803F800u
 
+/* Legacy DEBUG mailbox tag "DFU!" — prefer stm32_mode=SOFT_DFU. */
 bool soft_dfu_is_command(const host_command_image_t *cmd);
 
 /* Triggers option-byte boot into ROM DFU. Does not return on success. */

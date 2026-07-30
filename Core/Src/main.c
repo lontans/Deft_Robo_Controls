@@ -43,9 +43,7 @@
 /* USER CODE BEGIN PD */
 #define CPU_ACTIVITY_PORT            GPIOC
 #define CPU_ACTIVITY_PIN             GPIO_PIN_2
-#define CPU_BOOT_PULSE_DELAY_LOOPS   4000000u   /* ~visible flash @ 170 MHz PLL */
 #define CPU_ACTIVITY_DELAY_LOOPS     4000000u   /* Error_Handler blink period */
-#define CPU_ACTIVITY_BOOT_PULSES     3u
 /* Bring-up milestone on PC1 (unused LED): HIGH = past USB init, LOW = past app_init. */
 #define BRINGUP_DIAG_PORT            GPIOC
 #define BRINGUP_DIAG_PIN             GPIO_PIN_1
@@ -67,7 +65,6 @@ void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 static void cpu_activity_delay(uint32_t loops);
-static void cpu_activity_boot_pulses(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -76,16 +73,6 @@ static void cpu_activity_boot_pulses(void);
 static void cpu_activity_delay(uint32_t loops)
 {
 	for (volatile uint32_t d = 0; d < loops; d++) {
-	}
-}
-
-static void cpu_activity_boot_pulses(void)
-{
-	for (uint32_t n = 0; n < CPU_ACTIVITY_BOOT_PULSES; n++) {
-		HAL_GPIO_WritePin(CPU_ACTIVITY_PORT, CPU_ACTIVITY_PIN, GPIO_PIN_SET);
-		cpu_activity_delay(CPU_BOOT_PULSE_DELAY_LOOPS);
-		HAL_GPIO_WritePin(CPU_ACTIVITY_PORT, CPU_ACTIVITY_PIN, GPIO_PIN_RESET);
-		cpu_activity_delay(CPU_BOOT_PULSE_DELAY_LOOPS);
 	}
 }
 

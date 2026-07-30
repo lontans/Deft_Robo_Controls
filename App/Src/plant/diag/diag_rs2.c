@@ -89,17 +89,8 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 		if (motor_id != 0u)
 			g_rs2_motor_id = motor_id;
 		g_rs2_can_bus = bus;
-		can_router_discard_pending_tx();
-		if (bus < CAN_BUS_CH4)
-			can_router_restart_fdcan(bus);
-		for (uint8_t b = 0; b < (uint8_t)CAN_BUS_CH4; b++)
-			can_rx_drain((can_bus_id_t)b);
-		if (bus >= CAN_BUS_CH4) {
-			/* Always full rail reinit on bench session — plant TXQ CFG reclaim
-			 * can leave RX FIFO/filters wedged (TX ACKs, probe raw=0). */
-			(void)mcp2518_reinit_rail(bus);
-			mcp2518_reset_tx_stats(bus);
-		}
+		g_rs2_bus_mask = diag_pdu_bus_mask_at(&cmd->pdu, PLANT_DIAG_RS2_PDU_BUS_MASK, bus);
+		diag_session_prepare_buses(g_rs2_bus_mask, bus);
 		actuator_desire_clear();
 		memset(&g_last_probe, 0, sizeof(g_last_probe));
 		g_last_probe.probe_kind = kind;
@@ -112,6 +103,7 @@ void plant_diag_on_command(const host_command_image_t *cmd)
 		uint8_t last_kind = g_last_probe.probe_kind;
 
 		g_rs2_session_active = false;
+		g_rs2_bus_mask = 0u;
 		g_rs2_quiet_until_ms = HAL_GetTick() + PLANT_DIAG_RS2_QUIET_MS;
 		/* Plant teleop uses ENABLE_ONLY then SESSION_END — do not reset the drive
 		 * we just armed; plant maintain_enable + MIT stream keeps it running. */
@@ -177,16 +169,36 @@ void diag_run_rs2_pending(void)
 		return;
 	}
 
-	if (bus >= CAN_BUS_CH4)
-		mcp2518_prepare_tx(bus);
+	{
+		uint8_t mask = g_rs2_bus_mask;
+		bool multi = false;
+		uint8_t bits = 0u;
 
-	const actuator_desire_t *desire = g_rs2_pending_has_desire ?
-	                                  &g_rs2_pending_desire : NULL;
-	bool got = robstride_probe_id(bus, motor_id, kind, desire,
-	                              g_rs2_pending_param_index,
-	                              g_rs2_pending_param_raw,
-	                              &g_last_probe);
-	diag_finalize_probe(kind, motor_id, got);
+		if (mask == 0u && bus < CAN_BACKEND_COUNT)
+			mask = (uint8_t)(1u << (unsigned)bus);
+		for (uint8_t i = 0u; i < (uint8_t)CAN_BACKEND_COUNT; i++) {
+			if ((mask & (uint8_t)(1u << i)) != 0u)
+				bits++;
+		}
+		multi = (bits > 1u) &&
+		        (kind == PLANT_DIAG_PROBE_ENABLE_ONLY ||
+		         kind == PLANT_DIAG_PROBE_PROMISC);
+
+		bool got;
+		if (multi) {
+			got = robstride_probe_id_buses(mask, motor_id, kind, &g_last_probe);
+		} else {
+			if (bus >= CAN_BUS_CH4)
+				mcp2518_prepare_tx(bus);
+			const actuator_desire_t *desire = g_rs2_pending_has_desire ?
+			                                  &g_rs2_pending_desire : NULL;
+			got = robstride_probe_id(bus, motor_id, kind, desire,
+			                         g_rs2_pending_param_index,
+			                         g_rs2_pending_param_raw,
+			                         &g_last_probe);
+		}
+		diag_finalize_probe(kind, motor_id, got);
+	}
 
 	g_probe_in_progress = false;
 	g_probe_started_ms = 0u;

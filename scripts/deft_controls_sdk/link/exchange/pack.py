@@ -40,6 +40,28 @@ def patch_system_rx_sim_mask(buf: bytearray, mask: int) -> None:
     struct.pack_into("<I", buf, SYSTEM_CMD_OFF, word)
 
 
+def patch_system_stm32_mode(buf: bytearray, mode: int) -> None:
+    """system.reserved bits4..5 (wire bits9..10): plant/debug/soft_dfu."""
+    from .wire_layout import STM32_MODE_MASK, STM32_MODE_SHIFT
+
+    word, = struct.unpack_from("<I", buf, SYSTEM_CMD_OFF)
+    word = (word & ~(STM32_MODE_MASK << STM32_MODE_SHIFT)) | (
+        (int(mode) & STM32_MODE_MASK) << STM32_MODE_SHIFT
+    )
+    struct.pack_into("<I", buf, SYSTEM_CMD_OFF, word)
+
+
+def patch_system_plant_apply(buf: bytearray, enable: bool) -> None:
+    """system wire bit11: plant_apply arm (1=apply, 0=observe)."""
+    from .wire_layout import PLANT_APPLY_MASK, PLANT_APPLY_SHIFT
+
+    word, = struct.unpack_from("<I", buf, SYSTEM_CMD_OFF)
+    word &= ~(PLANT_APPLY_MASK << PLANT_APPLY_SHIFT)
+    if enable:
+        word |= PLANT_APPLY_MASK << PLANT_APPLY_SHIFT
+    struct.pack_into("<I", buf, SYSTEM_CMD_OFF, word)
+
+
 def patch_servo_command(
     buf: bytearray,
     slot: int,

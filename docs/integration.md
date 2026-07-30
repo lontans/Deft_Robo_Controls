@@ -20,7 +20,7 @@ i2rt pcb:              →  bridge                        → HostProxy → Hub 
 
 ## Stacks
 
-**Lab:** `python -m pcb_lab doctor|hold|step|blank` → HostProxy  
+**Lab:** `python -m pcb_lab` (menu) / `scan|status|flash|…` → board; `doctor` → HostProxy; CFG → `pcb_lab.debug`  
 
 **YAM:** `PcbArmDriver` → `PcbRobotSession` → HostProxy → Hub  
 

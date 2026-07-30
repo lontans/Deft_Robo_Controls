@@ -36,6 +36,7 @@ from deft_controls_sdk.link.exchange import (
     SESSION_BEGIN,
     SESSION_END,
     build_rs2_probe_command,
+    extract_rs2_mailbox,
 )
 from deft_controls_sdk.link.exchange.bench import (
     PROBE_CALI,
@@ -108,18 +109,20 @@ def test_build_rs2_probe_packs_param_bytes() -> None:
     assert len(frame) == IMAGE_BYTES
     magic, = struct.unpack_from("<I", frame, 0)
     assert magic == HOST_DEBUG_COMMAND_MAGIC
-    assert frame[PDU_OFF : PDU_OFF + 5] == bytes([ord("R"), ord("S"), ord("2"), 0x70, PROBE_PARAWRITE])
-    assert frame[PDU_OFF + 5] == 0x2D
-    assert frame[PDU_OFF + 6] == 0x70
-    assert frame[PDU_OFF + 7] == 1
-    assert frame[PDU_OFF + 11] == 4  # bus
+    pdu = extract_rs2_mailbox(frame)
+    assert pdu[:5] == bytes([ord("R"), ord("S"), ord("2"), 0x70, PROBE_PARAWRITE])
+    assert pdu[5] == 0x2D
+    assert pdu[6] == 0x70
+    assert pdu[7] == 1
+    assert pdu[11] == 4  # bus
 
 
 def test_build_rs2_cali_listen_seconds() -> None:
     frame = build_rs2_probe_command(0x70, PROBE_CALI, 1, 28, bus=2)
-    assert frame[PDU_OFF + 4] == PROBE_CALI
-    assert frame[PDU_OFF + 5] == 28
-    assert frame[PDU_OFF + 11] == 2
+    pdu = extract_rs2_mailbox(frame)
+    assert pdu[4] == PROBE_CALI
+    assert pdu[5] == 28
+    assert pdu[11] == 2
 
 
 def test_decode_ext_id_mms() -> None:
@@ -191,7 +194,7 @@ def test_pararead_accepts_zero_index_echo_from_hardware(monkeypatch: pytest.Monk
     can = _pararead_can_data_zero_echo(value)
 
     def responder(frame: bytes):
-        pdu = frame[PDU_OFF : PDU_OFF + 32]
+        pdu = extract_rs2_mailbox(frame)
         assert pdu[4] == PROBE_PARAREAD
         assert (pdu[5] | (pdu[6] << 8)) == PARAM_MECH_POS
         return _rs2_feedback(
@@ -255,7 +258,7 @@ def test_calibrate_succeeds_with_zero_echo_pararead_verify(
         )
 
     def responder(frame: bytes):
-        pdu = frame[PDU_OFF : PDU_OFF + 32]
+        pdu = extract_rs2_mailbox(frame)
         kind = pdu[4]
         param_index = pdu[5] | (pdu[6] << 8)
 
@@ -316,7 +319,7 @@ def test_calibrate_partial_pararead_does_not_crash_on_none_mechpos(
         )
 
     def responder(frame: bytes):
-        pdu = frame[PDU_OFF : PDU_OFF + 32]
+        pdu = extract_rs2_mailbox(frame)
         kind = pdu[4]
         param_index = pdu[5] | (pdu[6] << 8)
 

@@ -39,6 +39,12 @@ _DEFAULT_TIMEOUT_S = 1.5
 def _parse_cfg_frame(frame: bytes) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
+    from deft_controls_sdk.link.exchange.debug_lanes import extract_cfg_mailbox
+
+    pdu = extract_cfg_mailbox(frame)
+    parsed = parse_cfg_feedback(pdu)
+    if parsed is not None:
+        return parsed
     return parse_cfg_feedback(frame[PDU_OFF : PDU_OFF + 32])
 
 

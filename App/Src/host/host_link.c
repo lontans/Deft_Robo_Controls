@@ -135,7 +135,10 @@ void host_link_poll_rx(void)
 		/* Stage mount for TIM6 (control_loop_service) — do not remount 25
 		 * slots on every HostTask spin. Advance last_command_seq here so FB
 		 * last_command_seq / cmd_rx_seq = command received (USB RX);
-		 * cmd_applied_seq advances later in host_link_apply_pending_plant. */
+		 * cmd_applied_seq advances later in host_link_apply_pending_plant.
+		 * Update stm32_mode echo on RX (not wait for TIM6) so reconnect
+		 * after debug/soft_dfu does not leave sticky mode in HBHF. */
+		plant_command_observe_stm32_mode(&plant_hold);
 		plant_crit_enter();
 		g_plant_pending_image = plant_hold;
 		g_plant_pending = true;
@@ -261,14 +264,20 @@ static void host_feedback_fill_system(host_feedback_image_t *out)
 	out->system.kill_state = pdb_link_kill_state();
 	out->system.kill_reason = pdb_link_kill_reason();
 	out->system.estop_sense = pdb_link_estop_sense();
+	/* Always echo stm32_mode in reserved0[1:0] (ADR-004). Host status
+	 * and mode gates depend on this; do not let UART4 bring-up steal it. */
+	out->system.reserved0 =
+		(uint8_t)(plant_command_stm32_mode_readback() & HOST_STM32_MODE_MASK);
 #if UART4_BRINGUP_DIAG
 	/* Temporary CDC overlay — remove once UART4 link is proven.
-	 * reserved0        = clk_src (1=HSI,2=PCLK) | (err_sticky<<4)
-	 * reserved[0..1]   = BRR LE
-	 * usb_rx_drop      = RX bytes stored
-	 * can_rx_drop      = RX events | (valid<<8)
-	 * cmd_rx_seq       = last RX word (first 4 B of last 64 B attempt)
-	 * cmd_applied_seq  = crc_fail | (tx_complete<<16) */
+	 * reserved0[1:0]  = stm32_mode (kept above)
+	 * reserved0[3:2]  = clk_src (1=HSI,2=PCLK)
+	 * reserved0[7:4]  = err_sticky
+	 * reserved[0..1]  = BRR LE
+	 * usb_rx_drop     = RX bytes stored
+	 * can_rx_drop     = RX events | (valid<<8)
+	 * cmd_rx_seq      = last RX word
+	 * cmd_applied_seq = crc_fail | (tx_complete<<16) */
 	{
 		uint16_t brr = pdb_link_uart_brr();
 		uint32_t err = pdb_link_uart_err_sticky();
@@ -278,7 +287,8 @@ static void host_feedback_fill_system(host_feedback_image_t *out)
 		uint32_t fail = pdb_link_rx_crc_fail_count();
 		uint32_t txc = pdb_link_tx_complete_count();
 		out->system.reserved0 =
-			(uint8_t)((pdb_link_uart_clk_src() & 0x0Fu) |
+			(uint8_t)((out->system.reserved0 & HOST_STM32_MODE_MASK) |
+			          ((pdb_link_uart_clk_src() & 0x03u) << 2) |
 			          ((err & 0x0Fu) << 4));
 		out->system.reserved[0] = (uint8_t)(brr & 0xFFu);
 		out->system.reserved[1] = (uint8_t)((brr >> 8) & 0xFFu);
@@ -315,9 +325,16 @@ static void host_feedback_image_fetch_debug(host_feedback_image_t *out)
 	out->header.magic          = HOST_DEBUG_FEEDBACK_MAGIC;
 	out->header.layout_version = HOST_LAYOUT_VERSION;
 	out->header.byte_size      = HOST_FEEDBACK_IMAGE_BYTES;
-	host_feedback_fill_system(out);
-	plant_feedback_image_fetch_plant(out);
-	plant_feedback_image_fetch_debug_mailbox(&out->pdu);
+	if (plant_command_debug_lanes_pending()) {
+		/* Debug-lanes map replaces system+actuator region with DL header + lanes.
+		 * Plant HBHF still carries timing / PDU mirror on the plant pipe. */
+		plant_feedback_image_fetch_debug_lanes(out);
+		plant_command_debug_lanes_clear_pending();
+	} else {
+		host_feedback_fill_system(out);
+		plant_feedback_image_fetch_plant(out);
+		plant_feedback_image_fetch_debug_mailbox(&out->pdu);
+	}
 }
 
 void host_link_poll_tx(void)

@@ -103,15 +103,66 @@ SESSION_BEGIN = 254
 SESSION_END = 255
 
 
-def build_rs2_scan_command(motor_id: int, probe_kind: int, seq: int, bus: int = 1) -> bytes:
-    buf = _blank_command(seq)
-    buf[PDU_OFF + 0] = RS2_TAG0
-    buf[PDU_OFF + 1] = RS2_TAG1
-    buf[PDU_OFF + 2] = RS2_TAG2
-    buf[PDU_OFF + 3] = motor_id & 0xFF
-    buf[PDU_OFF + 4] = probe_kind & 0xFF
-    _patch_pdu_bus(buf, bus)
-    return bytes(buf)
+def host_bus_mask(buses) -> int:
+    """Bit0=host CH1 … bit5=CH6 (matches FW ``PLANT_DIAG_PDU_BUS_MASK``)."""
+    mask = 0
+    for b in buses:
+        bi = int(b)
+        if 1 <= bi <= 6:
+            mask |= 1 << (bi - 1)
+    return mask & 0x3F
+
+
+def _rs2_mailbox(
+    motor_id: int,
+    probe_kind: int,
+    bus: int,
+    *,
+    param_index: int = 0,
+    param_raw_value: int = 0,
+    bus_mask: int = 0,
+) -> bytearray:
+    mbox = bytearray(32)
+    mbox[0] = RS2_TAG0
+    mbox[1] = RS2_TAG1
+    mbox[2] = RS2_TAG2
+    mbox[3] = motor_id & 0xFF
+    mbox[4] = probe_kind & 0xFF
+    # SESSION_BEGIN: data[5]=bus_mask. Other kinds: param_index low (legacy).
+    if bus_mask:
+        mbox[5] = bus_mask & 0x3F
+        mbox[6] = 0
+    else:
+        mbox[5] = param_index & 0xFF
+        mbox[6] = (param_index >> 8) & 0xFF
+    mbox[7] = param_raw_value & 0xFF
+    mbox[8] = (param_raw_value >> 8) & 0xFF
+    mbox[9] = (param_raw_value >> 16) & 0xFF
+    mbox[10] = (param_raw_value >> 24) & 0xFF
+    mbox[11] = normalize_can_bus(bus) & 0xFF
+    return mbox
+
+
+def build_rs2_scan_command(
+    motor_id: int,
+    probe_kind: int,
+    seq: int,
+    bus: int = 1,
+    *,
+    bus_mask: int = 0,
+) -> bytes:
+    """RS2 session/scan on debug lane 0 (legacy mailbox still accepted by FW).
+
+    ``bus_mask``: optional multi-bus SESSION_BEGIN (bit0=CH1 … bit5=CH6).
+    """
+    from .debug_lanes import wrap_mailbox_as_debug_lanes
+    from .wire_layout import DEBUG_LANE_RS
+
+    return wrap_mailbox_as_debug_lanes(
+        seq,
+        _rs2_mailbox(motor_id, probe_kind, bus, bus_mask=bus_mask),
+        DEBUG_LANE_RS,
+    )
 
 
 def build_rs2_probe_command(
@@ -127,32 +178,42 @@ def build_rs2_probe_command(
     kd: float = 0.0,
     bus: int = 1,
 ) -> bytes:
-    """Scan command + optional param bytes + optional actuator desire.
+    """RS2 probe on debug lane 0.
 
-    ``param_index`` / ``param_raw_value`` map to pdu[5..10] (pararead/write, cali
-    listen seconds, etc.). Desire is mounted for PROBE_ENABLE_CTRL / CTRL_ONLY /
-    FULL when kp/kd/position are non-zero.
+    ``param_index`` / ``param_raw_value`` → lane[5..10]. Optional MIT desire is
+    packed as five floats at lane[12..31] (debug_lanes overlaps plant actuator[0],
+    so desire cannot live at ACTUATOR0_OFF).
     """
-    buf = bytearray(build_rs2_scan_command(motor_id, probe_kind, seq, bus=bus))
+    from .debug_lanes import wrap_mailbox_as_debug_lanes
+    from .wire_layout import DEBUG_LANE_RS
+
+    mbox = _rs2_mailbox(
+        motor_id,
+        probe_kind,
+        bus,
+        param_index=param_index,
+        param_raw_value=param_raw_value,
+    )
     if position != 0.0 or velocity != 0.0 or kp != 0.0 or kd != 0.0:
-        patch_actuator_desire(buf, position=position, velocity=velocity, kp=kp, kd=kd)
-    buf[PDU_OFF + 5] = param_index & 0xFF
-    buf[PDU_OFF + 6] = (param_index >> 8) & 0xFF
-    buf[PDU_OFF + 7] = param_raw_value & 0xFF
-    buf[PDU_OFF + 8] = (param_raw_value >> 8) & 0xFF
-    buf[PDU_OFF + 9] = (param_raw_value >> 16) & 0xFF
-    buf[PDU_OFF + 10] = (param_raw_value >> 24) & 0xFF
-    return bytes(buf)
+        struct.pack_into("<fffff", mbox, 12, position, velocity, kp, kd, 0.0)
+    return wrap_mailbox_as_debug_lanes(seq, mbox, DEBUG_LANE_RS)
 
 
 def parse_probe_pdu(frame: bytes) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
-    pdu = frame[PDU_OFF : PDU_OFF + 32]
+    from .debug_lanes import extract_rs2_mailbox
+
+    pdu = extract_rs2_mailbox(frame)
     if pdu[0] != RS2_RESP_TAG:
-        return None
+        # Dual-path: also accept legacy mailbox if lane empty
+        pdu = frame[PDU_OFF : PDU_OFF + 32]
+        if pdu[0] != RS2_RESP_TAG:
+            return None
     ext_id, = struct.unpack_from("<I", pdu, 4)
     temperature, position = struct.unpack_from("<ff", pdu, 16)
+    bus_byte = int(pdu[27])
+    bus = bus_byte if 1 <= bus_byte <= 6 else None
     return {
         "probe_id": pdu[1],
         "found": pdu[2] != 0,
@@ -164,6 +225,7 @@ def parse_probe_pdu(frame: bytes) -> Optional[dict]:
         "discovered_id": pdu[24],
         "probe_kind": pdu[25],
         "raw_frames": pdu[26],
+        "bus": bus,
     }
 
 
@@ -206,27 +268,33 @@ def build_dm_probe_command(
     param_rid: int = DM_REG_ESC_ID,
     end_id: int = 0,
 ) -> bytes:
-    buf = _blank_command(seq)
-    patch_system_mcu_state(buf, PLANT_MCU_STATE_DIAG_ONLY)
-    buf[PDU_OFF + 0] = DM_TAG0
-    buf[PDU_OFF + 1] = DM_TAG1
-    buf[PDU_OFF + 2] = DM_TAG2
-    buf[PDU_OFF + 3] = motor_id & 0xFF
-    buf[PDU_OFF + 4] = probe_kind & 0xFF
-    buf[PDU_OFF + 5] = master_id & 0xFF
-    buf[PDU_OFF + 6] = listen_ms & 0xFF
-    buf[PDU_OFF + 7] = param_rid & 0xFF
-    buf[PDU_OFF + 8] = end_id & 0xFF
-    _patch_pdu_bus(buf, bus)
-    return bytes(buf)
+    from .debug_lanes import wrap_mailbox_as_debug_lanes
+    from .wire_layout import DEBUG_LANE_DM
+
+    mbox = bytearray(32)
+    mbox[0] = DM_TAG0
+    mbox[1] = DM_TAG1
+    mbox[2] = DM_TAG2
+    mbox[3] = motor_id & 0xFF
+    mbox[4] = probe_kind & 0xFF
+    mbox[5] = master_id & 0xFF
+    mbox[6] = listen_ms & 0xFF
+    mbox[7] = param_rid & 0xFF
+    mbox[8] = end_id & 0xFF
+    mbox[11] = normalize_can_bus(bus) & 0xFF
+    return wrap_mailbox_as_debug_lanes(seq, mbox, DEBUG_LANE_DM)
 
 
 def parse_dm_probe_pdu(frame: bytes) -> Optional[dict]:
     if len(frame) != IMAGE_BYTES:
         return None
-    pdu = frame[PDU_OFF : PDU_OFF + 32]
+    from .debug_lanes import extract_dm_mailbox
+
+    pdu = extract_dm_mailbox(frame)
     if pdu[0] != DM_RESP_TAG:
-        return None
+        pdu = frame[PDU_OFF : PDU_OFF + 32]
+        if pdu[0] != DM_RESP_TAG:
+            return None
     rx_can_id, = struct.unpack_from("<I", pdu, 4)
     param_value, = struct.unpack_from("<I", pdu, 16)
     position, = struct.unpack_from("<f", pdu, 20)
@@ -336,49 +404,52 @@ def build_cfg_command(
     mcu_state: int = PLANT_MCU_STATE_NORMAL,
     periph: Optional[dict] = None,
 ) -> bytes:
-    buf = _blank_command(seq)
-    patch_system_mcu_state(buf, mcu_state)
-    buf[PDU_OFF + 0] = CFG_TAG0
-    buf[PDU_OFF + 1] = CFG_TAG1
-    buf[PDU_OFF + 2] = CFG_TAG2
-    buf[PDU_OFF + 3] = op & 0xFF
-    buf[PDU_OFF + 4] = slot & 0xFF
+    """CFG on debug lane 7 (legacy pdb mailbox still accepted by FW)."""
+    from .debug_lanes import wrap_mailbox_as_debug_lanes
+    from .wire_layout import DEBUG_LANE_CFG
+
+    mbox = bytearray(32)
+    mbox[0] = CFG_TAG0
+    mbox[1] = CFG_TAG1
+    mbox[2] = CFG_TAG2
+    mbox[3] = op & 0xFF
+    mbox[4] = slot & 0xFF
     if op == CFG_OP_SET_PERIPH and periph is not None:
-        # Mirror App plant_config_on_command SET_PERIPH layout at p[8..].
         flags = int(periph.get("flags", 0)) & 0xFF
         if "listen_pdu" in periph:
             if periph["listen_pdu"]:
                 flags |= CFG_FLAG_LISTEN_PDU
             else:
                 flags &= ~CFG_FLAG_LISTEN_PDU
-        buf[PDU_OFF + 8] = flags & 0xFF
+        mbox[8] = flags & 0xFF
         servos = periph.get("servos") or []
         for i in range(2):
             s = servos[i] if i < len(servos) else {}
-            off = PDU_OFF + 9 + i * 8
-            buf[off + 0] = int(s.get("model", 0)) & 0xFF
-            buf[off + 1] = int(s.get("id", 0)) & 0xFF
-            buf[off + 2] = 1 if s.get("enabled", False) else 0
+            off = 9 + i * 8
+            mbox[off + 0] = int(s.get("model", 0)) & 0xFF
+            mbox[off + 1] = int(s.get("id", 0)) & 0xFF
+            mbox[off + 2] = 1 if s.get("enabled", False) else 0
             pmin = int(s.get("pos_min", 0)) & 0xFFFF
             pmax = int(s.get("pos_max", 0)) & 0xFFFF
-            buf[off + 4] = pmin & 0xFF
-            buf[off + 5] = (pmin >> 8) & 0xFF
-            buf[off + 6] = pmax & 0xFF
-            buf[off + 7] = (pmax >> 8) & 0xFF
+            mbox[off + 4] = pmin & 0xFF
+            mbox[off + 5] = (pmin >> 8) & 0xFF
+            mbox[off + 6] = pmax & 0xFF
+            mbox[off + 7] = (pmax >> 8) & 0xFF
         led = periph.get("led") or {}
-        off = PDU_OFF + 9 + 16
+        off = 9 + 16
         count = int(led.get("default_count", 300)) & 0xFFFF
-        buf[off + 0] = count & 0xFF
-        buf[off + 1] = (count >> 8) & 0xFF
-        buf[off + 2] = int(led.get("default_mode", 8)) & 0xFF
-        buf[off + 3] = int(led.get("default_brightness", 8)) & 0xFF
+        mbox[off + 0] = count & 0xFF
+        mbox[off + 1] = (count >> 8) & 0xFF
+        mbox[off + 2] = int(led.get("default_mode", 8)) & 0xFF
+        mbox[off + 3] = int(led.get("default_brightness", 8)) & 0xFF
     else:
-        buf[PDU_OFF + 8] = bus & 0xFF
-        buf[PDU_OFF + 9] = protocol & 0xFF
-        buf[PDU_OFF + 10] = motor_id & 0xFF
-        buf[PDU_OFF + 11] = master_id & 0xFF
-        buf[PDU_OFF + 12] = 1 if enabled else 0
-    return bytes(buf)
+        mbox[8] = bus & 0xFF
+        mbox[9] = protocol & 0xFF
+        mbox[10] = motor_id & 0xFF
+        mbox[11] = master_id & 0xFF
+        mbox[12] = 1 if enabled else 0
+    _ = mcu_state  # debug-lanes RPC is observe (plant_apply off) on FW; kept for call-site compat
+    return wrap_mailbox_as_debug_lanes(seq, mbox, DEBUG_LANE_CFG)
 
 
 def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:

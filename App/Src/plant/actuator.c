@@ -295,17 +295,12 @@ void actuator_apply_desire(void)
 		desire = &actuator_desire_live[i];
 		bus = actuator_table[i].bus;
 
-		/* Uncommanded MCP slots: skip SPI entirely (5df1f04 never ran CH4–6 here). */
-		if (bus >= CAN_BUS_CH4 && actuator_desire_is_blank(desire))
-			continue;
-
-		/* Blank FDCAN on a bus with no commanded slot — skip unless all-idle sync.
-		 * Damiao (CH3) is exempt: enable-latch clear-fault/enable must run every
-		 * cycle while idle, and RX must drain for feedback before host raises kp.
-		 * CubeMars is exempt for the same reason — cubemars_apply_cycle streams
-		 * a continuous MIT frame + one-time enable latch every tick regardless
-		 * of blank desire (Damiao-shaped, not ZeroErr-shaped; see cubemars.c). */
-		if (bus < CAN_BUS_CH4 && actuator_table[i].protocol != PROTO_DAMIAO &&
+		/* Blank on a bus with no commanded slot — skip unless all-idle sync.
+		 * Same policy for FDCAN (CH1–3) and MCP (CH4–6): true blank (p=0,
+		 * idle gains) is not applied when another bus is active. Damiao /
+		 * CubeMars stay exempt so enable-latch / MIT keep running while idle.
+		 * Idle-anchor (p!=0, kp=0) is non-blank and keeps MCP in the path. */
+		if (actuator_table[i].protocol != PROTO_DAMIAO &&
 		    actuator_table[i].protocol != PROTO_CUBEMARS &&
 		    actuator_desire_is_blank(desire) &&
 		    commanded_buses != 0u &&
@@ -347,7 +342,7 @@ void actuator_apply_desire(void)
 	/* One prepare_tx + flush per MCP bus that enqueued this tick. */
 	robstride_mcp_flush_pending();
 
-	/* Poll every commanded bus each tick. Idle MCP pays 0 SPI (INT-gated);
+	/* Poll every commanded bus each tick. MCP RX is INT-gated when idle;
 	 * busy-path SPI was cut via batched RAM + TXQ STA dedupe — RR≤3 was a
 	 * workaround when empty FIFOSTA + multi-rail SPI starved USB FB. */
 	{

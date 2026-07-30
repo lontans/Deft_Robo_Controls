@@ -76,7 +76,12 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 	pdu->data[24] = g_last_probe.discovered_id;
 	pdu->data[25] = g_last_probe.probe_kind;
 	pdu->data[26] = g_last_probe.raw_frames_seen;
-	pdu->data[27] = mcp2518_init_mask();
+	/* Multi-bus discover: host bus 1..6. Else legacy mcp init mask. */
+	if (g_last_probe.can_bus >= 1u &&
+	    g_last_probe.can_bus <= (uint8_t)CAN_BACKEND_COUNT)
+		pdu->data[PLANT_DIAG_RS2_PDU_RESP_BUS] = g_last_probe.can_bus;
+	else
+		pdu->data[PLANT_DIAG_RS2_PDU_RESP_BUS] = mcp2518_init_mask();
 	{
 		uint8_t mcp_rail = 0u;
 

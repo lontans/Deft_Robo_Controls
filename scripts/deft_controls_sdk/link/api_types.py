@@ -22,14 +22,20 @@ from .exchange import (
     patch_system_rx_sim,
     patch_system_rx_sim_mask,
 )
+from .exchange.pack import patch_system_plant_apply, patch_system_stm32_mode
 
 
 class McuState(IntEnum):
-    """system.mcu_state (host_system_command_t bits 1-3)."""
+    """system.mcu_state (host_system_command_t bits 1-3) — safety/lifecycle.
+
+    Observe vs control is ``plant_apply`` (wire bit 11), not mcu_state.
+    ``DIAG_ONLY`` remains as a deprecated int value (2); prefer
+    ``Connection.set_plant_apply(False)``.
+    """
 
     NORMAL = 0
     RECOVERY = 1
-    DIAG_ONLY = 2
+    DIAG_ONLY = 2  # deprecated — FW maps to plant_apply=0
     ESTOP = 3
 
 
@@ -238,16 +244,24 @@ def validate_slot(slot: int) -> None:
 class CommandImage:
     """Mutable builder for one 694 B command frame."""
 
-    def __init__(self, seq: int = 0, mcu_state: McuState = McuState.NORMAL) -> None:
+    def __init__(
+        self,
+        seq: int = 0,
+        mcu_state: McuState = McuState.NORMAL,
+        *,
+        plant_apply: bool = True,
+    ) -> None:
         self._buf = bytearray(IMAGE_BYTES)
         struct.pack_into(
             "<IHHI", self._buf, 0, HOST_COMMAND_MAGIC, HOST_LAYOUT_VERSION, IMAGE_BYTES, seq & 0xFFFFFFFF
         )
         patch_system_mcu_state(self._buf, int(mcu_state))
+        patch_system_plant_apply(self._buf, bool(plant_apply))
         self._desires: Dict[int, ActuatorDesire] = {}
         self._servos: Dict[int, ServoDesire] = {}
         self._led: Optional[LedDesire] = None
         self._rx_sim_mask = 0
+        self._plant_apply = bool(plant_apply)
 
     @property
     def seq(self) -> int:
@@ -262,6 +276,12 @@ class CommandImage:
         patch_system_mcu_state(self._buf, int(state))
         return self
 
+    def set_plant_apply(self, enable: bool) -> "CommandImage":
+        """Wire bit11: True = apply desires; False = observe (no plant mount)."""
+        self._plant_apply = bool(enable)
+        patch_system_plant_apply(self._buf, self._plant_apply)
+        return self
+
     def set_rx_sim(self, enable: bool) -> "CommandImage":
         """True → ACTUATOR rx_sim only (bit0). Prefer set_rx_sim_mask for children."""
         return self.set_rx_sim_mask(0x1 if enable else 0)
@@ -270,6 +290,11 @@ class CommandImage:
         """system.reserved bits0..3: ACTUATOR|SERVO|LED|PDU."""
         self._rx_sim_mask = int(mask) & 0xF
         patch_system_rx_sim_mask(self._buf, self._rx_sim_mask)
+        return self
+
+    def set_stm32_mode(self, mode: int) -> "CommandImage":
+        """system wire bits9..10: plant/debug/soft_dfu (ADR-004)."""
+        patch_system_stm32_mode(self._buf, int(mode) & 0x3)
         return self
 
     def set_actuator(self, slot: int, desire: ActuatorDesire) -> "CommandImage":
@@ -337,9 +362,12 @@ class PlantBlockReason(IntEnum):
     BENCH_SESSION = 1
     PROBE_BUSY = 2
     QUIET_PERIOD = 3
-    DIAG_ONLY = 4
+    APPLY_OFF = 4  # plant_apply=0 (legacy name DIAG_ONLY)
     HOST_STALE = 5
     SERVO_SESSION = 6
+
+    # Back-compat alias
+    DIAG_ONLY = 4
 
 
 @dataclass(frozen=True)

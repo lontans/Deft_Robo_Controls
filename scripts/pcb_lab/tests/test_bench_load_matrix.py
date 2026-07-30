@@ -1,29 +1,23 @@
-"""Offline tests for bench_load_matrix.py's pure-Python pieces (no hardware,
-no Connection) — scenario→slot mapping, hz-list parsing, report rendering."""
+"""Offline tests for suite bandwidth_matrix helpers (no hardware)."""
 from __future__ import annotations
 
 import os
 import sys
 
-_PCB_LAB = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_SCRIPTS = os.path.abspath(os.path.join(_PCB_LAB, ".."))
-_LEGACY = os.path.join(_PCB_LAB, "legacy")
-for _p in (_LEGACY, _SCRIPTS):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
 
 import pytest
 
-from bench_load_matrix import parse_hz_list, render_report, scenario_slots
+from deft_controls_sdk.debug.suite.bandwidth_matrix import (
+    PRODUCT_BY_BUS,
+    parse_hz_list,
+    render_report,
+    scenario_slots,
+)
 
-BY_BUS = {
-    1: [0, 1, 2, 3, 4, 5, 6],
-    2: [7, 8, 9, 10, 11, 12, 13],
-    3: [],
-    4: [14, 17],
-    5: [15, 18],
-    6: [16, 19],
-}
+BY_BUS = PRODUCT_BY_BUS
 
 
 def test_parse_hz_list_splits_and_casts() -> None:

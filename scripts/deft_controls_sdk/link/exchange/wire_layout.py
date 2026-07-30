@@ -33,7 +33,7 @@ PDU_BUS_OFF = PDU_OFF + 11
 
 PLANT_MCU_STATE_NORMAL = 0
 PLANT_MCU_STATE_RECOVERY = 1
-PLANT_MCU_STATE_DIAG_ONLY = 2
+PLANT_MCU_STATE_DIAG_ONLY = 2  # deprecated host alias; FW forces plant_apply=0
 PLANT_MCU_STATE_ESTOP = 3
 
 DEFAULT_BAUD = 115200
@@ -43,3 +43,46 @@ STM32_STLINK_VCP_PID = 0x3754
 
 MIN_CAN_BUS = 1
 MAX_CAN_BUS = 6
+
+# Link mode (ADR-004) — system.reserved bits4..5 / wire bits9..10
+STM32_MODE_BANDWIDTH = 0  # plant CMDH/HBHF only; no debug lanes
+STM32_MODE_DEBUG = 1
+STM32_MODE_SOFT_DFU = 2
+STM32_MODE_SHIFT = 9  # absolute wire bit position in system u32
+STM32_MODE_MASK = 0x3
+STM32_MODE_NAMES = {
+    STM32_MODE_BANDWIDTH: "bandwidth",
+    STM32_MODE_DEBUG: "debug",
+    STM32_MODE_SOFT_DFU: "soft_dfu",
+}
+
+# Plant apply arm — system.reserved bit6 / wire bit11 (observe vs control)
+PLANT_APPLY_SHIFT = 11  # absolute wire bit in system u32
+PLANT_APPLY_MASK = 0x1
+
+# Debug lanes (DBGC/DBGF) — docs/host-contract.md
+DEBUG_LANES_TAG0 = ord("D")
+DEBUG_LANES_TAG1 = ord("L")
+DEBUG_LANES_VER = 1
+DEBUG_LANES_HDR_OFF = 12
+DEBUG_LANES_HDR_BYTES = 6
+DEBUG_LANE0_OFF = 18
+DEBUG_LANE_BYTES = 32
+DEBUG_LANE_COUNT = 10
+DEBUG_LANE_RS = 0
+DEBUG_LANE_CM = 1
+DEBUG_LANE_ZE = 2
+DEBUG_LANE_DM = 3
+DEBUG_LANE_LED = 4
+DEBUG_LANE_SERVO = 5
+DEBUG_LANE_PDU = 6
+DEBUG_LANE_CFG = 7
+DEBUG_LANE_R8 = 8
+DEBUG_LANE_R9 = 9
+
+# connect(mode=) aliases → stm32_mode
+LINK_MODE_ALIASES = {
+    "bandwidth": STM32_MODE_BANDWIDTH,
+    "debug": STM32_MODE_DEBUG,
+    "soft_dfu": STM32_MODE_SOFT_DFU,
+}

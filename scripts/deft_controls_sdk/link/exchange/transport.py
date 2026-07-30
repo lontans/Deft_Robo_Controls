@@ -68,6 +68,17 @@ class FrameReader:
         with self._lock:
             return self._frames.popleft() if self._frames else None
 
+    def push_front(self, frames: List[bytes]) -> None:
+        """Re-queue frames at the head (oldest first) for another waiter.
+
+        Used when the plant stream drain must not drop DBGF probe/CFG replies.
+        """
+        if not frames:
+            return
+        with self._lock:
+            for frame in reversed(frames):
+                self._frames.appendleft(frame)
+
     def drain(self) -> List[bytes]:
         with self._lock:
             out = list(self._frames)

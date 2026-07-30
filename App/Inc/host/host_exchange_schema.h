@@ -11,8 +11,43 @@
 #define HOST_EXCHANGE_ACTUATOR_SLOTS 26u
 #define HOST_EXCHANGE_SERVO_SLOTS    2u
 #define HOST_EXCHANGE_LED_SLOTS      1u
-#define HOST_PDU_PAYLOAD_BYTES       32u /* DEBUG mailbox = pdb[0..31] */
+#define HOST_PDU_PAYLOAD_BYTES       32u /* DEBUG mailbox = pdb[0..31] (legacy) */
 #define HOST_PDB_PAYLOAD_BYTES       64u
+
+/* Link role (ADR-004) — distinct from mcu_state (apply/safety).
+ * Packed in system.reserved field bits 4..5 ⇒ wire bits 9..10. */
+#define HOST_STM32_MODE_BANDWIDTH 0u /* plant CMDH/HBHF only; no debug lanes */
+#define HOST_STM32_MODE_DEBUG     1u
+#define HOST_STM32_MODE_SOFT_DFU  2u
+#define HOST_STM32_MODE_SHIFT     4u /* within system.reserved bitfield */
+#define HOST_STM32_MODE_MASK      0x3u
+
+/* Plant apply arm — system.reserved bit 6 ⇒ wire bit 11.
+ * 1 = mount/apply actuator desires (subject to lease/probe/stale gates).
+ * 0 = observe: stream OK, do not mount or tear down bench lease.
+ * Replaces mcu_state=DIAG_ONLY as the observe/control toggle. */
+#define HOST_PLANT_APPLY_SHIFT    6u /* within system.reserved bitfield */
+#define HOST_PLANT_APPLY_MASK     0x1u
+
+/* Debug lanes (DBGC/DBGF) — ADR-004 / docs/host-contract.md */
+#define HOST_DEBUG_LANES_TAG0      'D'
+#define HOST_DEBUG_LANES_TAG1      'L'
+#define HOST_DEBUG_LANES_VER       1u
+#define HOST_DEBUG_LANES_HDR_OFF   12u
+#define HOST_DEBUG_LANES_HDR_BYTES 6u
+#define HOST_DEBUG_LANE0_OFF 18u
+#define HOST_DEBUG_LANE_BYTES 32u
+#define HOST_DEBUG_LANE_COUNT 10u
+#define HOST_DEBUG_LANE_RS    0u
+#define HOST_DEBUG_LANE_CM    1u
+#define HOST_DEBUG_LANE_ZE    2u
+#define HOST_DEBUG_LANE_DM    3u
+#define HOST_DEBUG_LANE_LED   4u
+#define HOST_DEBUG_LANE_SERVO 5u
+#define HOST_DEBUG_LANE_PDU   6u
+#define HOST_DEBUG_LANE_CFG   7u /* reserved→CFG during migration */
+#define HOST_DEBUG_LANE_R8    8u
+#define HOST_DEBUG_LANE_R9    9u
 
 /* Plant debug bytes (using DEBUG mailbox / pdb[0..31]) */
 #define PLANT_DXL_PROBE_SCAN         1u
@@ -38,6 +73,15 @@ typedef struct __attribute__((packed)) {
 	uint16_t meta;
 } host_actuator_feedback_t;
 
+/*
+ * system command word0:
+ *   bit0      e_stop_ack
+ *   bits1..3  mcu_state (NORMAL/RECOVERY/ESTOP; 2=legacy DIAG_ONLY → apply off)
+ *   bit4      heartbeat
+ *   bits5..8  rx_sim mask  → reserved field bits 0..3
+ *   bits9..10 stm32_mode   → reserved field bits 4..5
+ *   bit11     plant_apply  → reserved field bit 6
+ */
 typedef struct __attribute__((packed)) {
 	uint32_t e_stop_ack : 1;
 	uint32_t mcu_state  : 3;
@@ -45,6 +89,14 @@ typedef struct __attribute__((packed)) {
 	uint32_t reserved   : 27;
 	uint8_t  pad[28];
 } host_system_command_t;
+
+typedef struct __attribute__((packed)) {
+	uint8_t tag0;     /* 'D' */
+	uint8_t tag1;     /* 'L' */
+	uint8_t ver;      /* 1 */
+	uint8_t flags;
+	uint16_t arm_mask; /* bit i = lane i armed */
+} host_debug_lanes_header_t;
 
 typedef struct __attribute__((packed)) {
 	/* Word0 — same bit meaning as layout v1 system u32 */

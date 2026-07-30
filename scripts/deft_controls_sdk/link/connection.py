@@ -29,6 +29,12 @@ from .exchange import (
     open_serial,
     parse_feedback_header,
 )
+from .exchange.wire_layout import (
+    LINK_MODE_ALIASES,
+    STM32_MODE_BANDWIDTH,
+    STM32_MODE_DEBUG,
+    STM32_MODE_SOFT_DFU,
+)
 from .api_types import ActuatorDesire, CommandImage, FeedbackImage, LedDesire, McuState, ServoDesire, validate_slot
 
 if TYPE_CHECKING:
@@ -80,9 +86,16 @@ class Connection:
     """Sole serial owner: held desires (pdu=0 plant path) + optional background
     streaming loop that publishes TelemetryCache."""
 
-    def __init__(self, port: str, *, baud: int = DEFAULT_BAUD) -> None:
+    def __init__(
+        self,
+        port: str,
+        *,
+        baud: int = DEFAULT_BAUD,
+        stm32_mode: int = STM32_MODE_BANDWIDTH,
+    ) -> None:
         self.port = port
         self.baud = baud
+        self._stm32_mode = int(stm32_mode) & 0x3
         self._ser = None
         self._reader = FrameReader()
         self._pump: Optional[SerialRxPump] = None
@@ -100,6 +113,7 @@ class Connection:
         different threads without this can interleave on the wire and corrupt
         the frame the MCU sees."""
         self._mcu_state = McuState.NORMAL
+        self._plant_apply = True  # wire bit11; False = observe (no plant mount)
         self._rx_sim_mask = 0
         self._desires: Dict[int, ActuatorDesire] = {}
         self._servos: Dict[int, ServoDesire] = {}
@@ -128,10 +142,48 @@ class Connection:
         self._pre_plant_send = None
 
     @classmethod
-    def connect(cls, port: str, *, baud: int = DEFAULT_BAUD) -> "Connection":
-        sess = cls(port, baud=baud)
+    def connect(
+        cls,
+        port: str,
+        *,
+        baud: int = DEFAULT_BAUD,
+        stm32_mode: int = STM32_MODE_BANDWIDTH,
+        mode: Optional[str] = None,
+    ) -> "Connection":
+        """Open CDC. ``mode`` is ``bandwidth``/``debug``/``soft_dfu``;
+        ``stm32_mode`` is the raw wire value. Change mode only via reconnect.
+        """
+        if mode is not None:
+            key = str(mode).strip().lower()
+            if key not in LINK_MODE_ALIASES:
+                raise ValueError(
+                    f"unknown link mode {mode!r}; expected one of "
+                    f"{sorted(LINK_MODE_ALIASES)}"
+                )
+            stm32_mode = LINK_MODE_ALIASES[key]
+        sess = cls(port, baud=baud, stm32_mode=stm32_mode)
         sess.open()
         return sess
+
+    @property
+    def stm32_mode(self) -> int:
+        return self._stm32_mode
+
+    @property
+    def link_mode_name(self) -> str:
+        if self._stm32_mode == STM32_MODE_DEBUG:
+            return "debug"
+        if self._stm32_mode == STM32_MODE_SOFT_DFU:
+            return "soft_dfu"
+        return "bandwidth"
+
+    def require_debug_mode(self, op: str = "debug RPC") -> None:
+        if self._stm32_mode != STM32_MODE_DEBUG:
+            raise RuntimeError(
+                f"{op} requires connect(mode='debug'); "
+                f"current link mode is {self.link_mode_name!r}. "
+                "Disconnect and reconnect to change mode."
+            )
 
     def open(self) -> None:
         describe_open_port(self.port)
@@ -211,14 +263,52 @@ class Connection:
             time.sleep(0.005)
         return None
 
+    def exchange_raw_collect(
+        self,
+        frame: bytes,
+        parse_fn: Callable[[bytes], Optional[dict]],
+        *,
+        timeout_s: float,
+        predicate: Optional[Callable[[dict], bool]] = None,
+    ) -> List[dict]:
+        """Like exchange_raw but keep every matching frame until timeout.
+
+        Used by multi-bus discover: FW pushes progress hits mid-probe, then a
+        final DBGF — host must not stop at the first found.
+        """
+        self.write_raw(frame, drain=True)
+        hits: List[dict] = []
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            raw = self._reader.pop()
+            while raw is not None:
+                parsed = parse_fn(raw)
+                if parsed is not None and (predicate is None or predicate(parsed)):
+                    hits.append(parsed)
+                raw = self._reader.pop()
+            time.sleep(0.005)
+        return hits
+
     def set_mcu_state(self, state: McuState, *, send: bool = True) -> None:
         state = McuState(state)
         with self._state_lock:
             self._mcu_state = state
+            # Deprecated observe path: mcu_state=DIAG_ONLY ⇒ plant_apply off.
+            if state == McuState.DIAG_ONLY:
+                self._plant_apply = False
             if state in (McuState.RECOVERY, McuState.ESTOP):
                 self._desires.clear()
                 self._servos.clear()
                 self._led = LedDesire(mode="follow", master_brightness=0, led_count=0)
+        if send and self._ser is not None:
+            self.send_once()
+
+    def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
+        """Arm (True) or observe-gate (False) plant actuator apply on CMDH."""
+        with self._state_lock:
+            self._plant_apply = bool(enable)
+            if enable and self._mcu_state == McuState.DIAG_ONLY:
+                self._mcu_state = McuState.NORMAL
         if send and self._ser is not None:
             self.send_once()
 
@@ -236,6 +326,10 @@ class Connection:
         return self._mcu_state
 
     @property
+    def plant_apply(self) -> bool:
+        return bool(self._plant_apply)
+
+    @property
     def led_desire(self) -> Optional[LedDesire]:
         """Last host LED command held for plant TX (may be None)."""
         return self._led
@@ -244,21 +338,29 @@ class Connection:
         self.set_mcu_state(McuState.RECOVERY)
         time.sleep(0.05)
         self.set_mcu_state(McuState.NORMAL)
+        self.set_plant_apply(True)
 
     def build_command(self) -> CommandImage:
         with self._state_lock:
             mcu_state = self._mcu_state
+            plant_apply = bool(self._plant_apply)
             desires = dict(self._desires)  # snapshot — don't hold the lock during CommandImage packing
             servos = dict(self._servos)
             led = self._led
             rx_sim_mask = getattr(self, "_rx_sim_mask", 0)
-        img = CommandImage(seq=self._next_seq(), mcu_state=mcu_state)
+            stm32_mode = self._stm32_mode
+        img = CommandImage(
+            seq=self._next_seq(),
+            mcu_state=mcu_state,
+            plant_apply=plant_apply,
+        )
         img.set_actuators(desires)
         if servos:
             img.set_servos(servos)
         if led is not None:
             img.set_led(led)
         img.set_rx_sim_mask(rx_sim_mask)
+        img.set_stm32_mode(stm32_mode)
         return img
 
     def write_command(self, image: CommandImage) -> None:
@@ -385,13 +487,23 @@ class Connection:
         return hdr is not None and not hdr.get("is_debug")
 
     def _drain_latest_plant_feedback(self) -> Optional[bytes]:
-        """Newest HBHF only — DBGF (DEBUG mailbox replies) do not update plant FB."""
+        """Newest HBHF only — do not drop DBGF (probe/CFG replies).
+
+        The plant stream thread shares ``reader`` with ``exchange_raw``. Popping
+        and discarding DBGF here made RobStride/Damiao discover miss hits while
+        streaming (CFG already pauses the stream for the same reason).
+        """
         latest: Optional[bytes] = None
+        debug_hold: list[bytes] = []
         frame = self._reader.pop()
         while frame is not None:
             if self._is_plant_feedback(frame):
                 latest = frame
+            else:
+                debug_hold.append(frame)
             frame = self._reader.pop()
+        if debug_hold:
+            self._reader.push_front(debug_hold)
         return latest
 
     def poll_feedback(self) -> Optional[FeedbackImage]:

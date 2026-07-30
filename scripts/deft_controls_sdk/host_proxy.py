@@ -5,142 +5,59 @@ One COM owner. Apps (pcb_lab, vbeta, i2rt bridge) talk in *components*
 
 Demux is **not** runtime auto-detect. Two layers decide where packets go:
 
-1. **Profile (host, at HostProxy construction)** — name → ordered actuator
-   slots. Default ``yam_product_profile()``. Callers then use
-   ``proxy.component("left_arm")``; that only packs desires into those slots.
+1. **Profile (``config.Profile``, at HostProxy construction)** — name → slots.
+   ``proxy.component("left_arm")`` returns ``actions.ComponentAction``.
 2. **CFG (MCU flash, via hub.debug / ensure_*_cfg)** — each slot's
-   ``{bus, protocol, motor_id, master_id, enabled}``. Plugins on the board
-   use CFG every control tick; HostProxy never invents IDs.
+   ``{bus, protocol, motor_id, master_id, enabled}``.
 
-Neck DXL uses **servo** slots (0/1), outside ``Profile.components``.
-Bench continuous maps CH5/CH6 motors onto spare actuator slots 22–25
-(``bench_continuous_profile``); product ``base`` remains slots 14–19.
+Profiles / slot maps live in ``deft_controls_sdk.config``; plant commands in
+``deft_controls_sdk.actions``. This module re-exports slot constants for
+back-compat.
 """
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
+from deft_controls_sdk.actions import ComponentAction, ComponentView, LedAction, ServoAction
+from deft_controls_sdk.config import (
+    BASE_DRIVE_SLOTS,
+    BASE_SLOTS,
+    BASE_STEER_SLOTS,
+    BENCH_BASE_SLOTS,
+    LEFT_ARM_SLOTS,
+    LIFT_SLOT,
+    NECK_PITCH_SERVO_SLOT,
+    NECK_YAW_SERVO_SLOT,
+    Profile,
+    RIGHT_ARM_SLOTS,
+    SPARE_SLOTS,
+    bench_continuous_profile,
+    yam_product_profile,
+)
 from deft_controls_sdk.controls_pcb_hub import ControlsPcbHub
 from deft_controls_sdk.link import ActuatorDesire, FeedbackImage, LedDesire, McuState, ServoDesire
 from deft_controls_sdk.link.api_types import infer_effective_led
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD
 
-# --- product slot map (platform truth; vbeta.slots re-exports) ---------------
-
-LEFT_ARM_SLOTS: Tuple[int, ...] = tuple(range(0, 7))
-RIGHT_ARM_SLOTS: Tuple[int, ...] = tuple(range(7, 14))
-BASE_STEER_SLOTS: Dict[str, int] = {"BwC": 14, "BwR": 15, "BwL": 16}
-BASE_DRIVE_SLOTS: Dict[str, int] = {"BpC": 17, "BpR": 18, "BpL": 19}
-BASE_SLOTS: Tuple[int, ...] = (14, 15, 16, 17, 18, 19)
-LIFT_SLOT = 20
-SPARE_SLOTS: Tuple[int, ...] = (21, 22, 23, 24, 25)
-# Continuous / bus56 lab: CH5+CH6 motors on spare slots (not product base 14–19).
-BENCH_BASE_SLOTS: Tuple[int, ...] = (22, 23, 24, 25)
-NECK_PITCH_SERVO_SLOT = 0
-NECK_YAW_SERVO_SLOT = 1
-
-
-@dataclass(frozen=True)
-class Profile:
-    """Named groups of actuator slots (host demux layer 1)."""
-
-    name: str
-    components: Mapping[str, Tuple[int, ...]]
-
-    def slots(self, component: str) -> Tuple[int, ...]:
-        try:
-            return self.components[component]
-        except KeyError as exc:
-            known = ", ".join(sorted(self.components))
-            raise KeyError(f"unknown component {component!r}; known: {known}") from exc
-
-    def all_slots(self) -> Tuple[int, ...]:
-        seen: List[int] = []
-        for slots in self.components.values():
-            for s in slots:
-                if s not in seen:
-                    seen.append(s)
-        return tuple(seen)
-
-
-def yam_product_profile() -> Profile:
-    return Profile(
-        name="yam_product",
-        components={
-            "left_arm": LEFT_ARM_SLOTS,
-            "right_arm": RIGHT_ARM_SLOTS,
-            "base": BASE_SLOTS,
-            "lift": (LIFT_SLOT,),
-        },
-    )
-
-
-def bench_continuous_profile() -> Profile:
-    """Host demux for continuous / bus56 bench (spare-slot base).
-
-    ``base`` here is slots 22–25 (CFG IDs set by continuous BASE_ROWS).
-    Product drivetrain map stays available as ``base_product`` (14–19).
-    """
-    return Profile(
-        name="yam_bench_continuous",
-        components={
-            "left_arm": LEFT_ARM_SLOTS,
-            "right_arm": RIGHT_ARM_SLOTS,
-            "base": BENCH_BASE_SLOTS,
-            "base_product": BASE_SLOTS,
-            "lift": (LIFT_SLOT,),
-        },
-    )
-
-
-class ComponentView:
-    """MIT desire/FB for one named component (ordered slots)."""
-
-    def __init__(self, proxy: "HostProxy", name: str) -> None:
-        self._proxy = proxy
-        self.name = name
-        self.slots = proxy.profile.slots(name)
-
-    def set_desires(self, desires: Sequence[ActuatorDesire], *, send: bool = False) -> None:
-        if len(desires) != len(self.slots):
-            raise ValueError(
-                f"{self.name}: expected {len(self.slots)} desires, got {len(desires)}"
-            )
-        batch = {slot: desire for slot, desire in zip(self.slots, desires)}
-        self._proxy.set_actuators(batch, send=send)
-
-    def blank(self, *, send: bool = False) -> None:
-        self.set_desires([ActuatorDesire() for _ in self.slots], send=send)
-
-    def hold(
-        self,
-        positions: Sequence[float],
-        *,
-        kp: float = 8.0,
-        kd: float = 0.5,
-        send: bool = False,
-    ) -> None:
-        if len(positions) != len(self.slots):
-            raise ValueError(
-                f"{self.name}: expected {len(self.slots)} positions, got {len(positions)}"
-            )
-        desires = [
-            ActuatorDesire(position=float(p), kp=float(kp), kd=float(kd)) for p in positions
-        ]
-        self.set_desires(desires, send=send)
-
-    def positions(self) -> Optional[List[float]]:
-        """Latest FB positions for this component, or None if no feedback yet."""
-        fb = self._proxy.latest_feedback()
-        if fb is None:
-            return None
-        out: List[float] = []
-        for slot in self.slots:
-            st = fb.actuator(slot)
-            out.append(float(st.position) if st is not None else 0.0)
-        return out
+__all__ = [
+    "BASE_DRIVE_SLOTS",
+    "BASE_SLOTS",
+    "BASE_STEER_SLOTS",
+    "BENCH_BASE_SLOTS",
+    "ComponentAction",
+    "ComponentView",
+    "HostProxy",
+    "LEFT_ARM_SLOTS",
+    "LIFT_SLOT",
+    "NECK_PITCH_SERVO_SLOT",
+    "NECK_YAW_SERVO_SLOT",
+    "Profile",
+    "RIGHT_ARM_SLOTS",
+    "SPARE_SLOTS",
+    "bench_continuous_profile",
+    "yam_product_profile",
+]
 
 
 class HostProxy:
@@ -178,8 +95,12 @@ class HostProxy:
         apply_yam_cfg: bool = False,
         force_cfg: bool = False,
         listen_pdu: bool = False,
+        mode: str = "bandwidth",
     ) -> "HostProxy":
         """Connect. ``listen_pdu`` default False (bench): ignore stale PDU kill.
+
+        ``mode`` defaults to ``bandwidth`` (timing-safe, no hub.debug RPC).
+        Pass ``mode="debug"`` for CFG / discover / pcb_lab.debug.
 
         Pass ``listen_pdu=True`` when a real PDB/PDU peer is on UART4 so
         soft-kill park + status LED traffic-light use kill bytes. MCU may
@@ -187,7 +108,11 @@ class HostProxy:
         firmware stale failsafe, not host policy.
         """
         hub = ControlsPcbHub.connect(
-            port, serial=serial, baud=baud, persist_telemetry=persist_telemetry
+            port,
+            serial=serial,
+            baud=baud,
+            persist_telemetry=persist_telemetry,
+            mode=mode,
         )
         proxy = cls(
             hub,
@@ -198,13 +123,15 @@ class HostProxy:
         )
         proxy._stream_hz = float(stream_hz)
         if idle_first:
-            # Idle-anchor (p=1e-6, kp=0), not true blank p=0: firmware skips
-            # MCP SPI on buses 4–6 for blank desires, so a later NORMAL observe
-            # would only TX FDCAN 1–3 (CubeMars/Damiao keep streaming).
+            # Idle-anchor (p=1e-6, kp=0), not true blank p=0: keeps every bus
+            # (incl. CH4-6 / MCP) in the plant apply path when only some slots
+            # are actively held. True blank on an uncommanded bus is still
+            # skipped by the shared blank-bus policy (same for FDCAN and MCP).
             anchored = {
                 s: ActuatorDesire(position=1e-6) for s in range(ACTUATOR_COUNT)
             }
-            hub.set_mcu_state(McuState.DIAG_ONLY, send=False)
+            hub.set_mcu_state(McuState.NORMAL, send=False)
+            hub.set_plant_apply(False, send=False)
             proxy.set_actuators(anchored, send=False)
             # follow (wire mode 0): MCU uses NVM default / listen_pdu traffic-light.
             # Do not force debug cornflower — that masks listen_pdu LED policy.
@@ -273,8 +200,15 @@ class HostProxy:
     def profile(self) -> Profile:
         return self._profile
 
-    def component(self, name: str) -> ComponentView:
-        return ComponentView(self, name)
+    def component(self, name: str) -> ComponentAction:
+        """Named plant component — shared ``actions.ComponentAction`` type."""
+        return ComponentAction(self, self._profile, name)
+
+    def led(self) -> LedAction:
+        return LedAction(self)
+
+    def servo(self) -> ServoAction:
+        return ServoAction(self)
 
     def close(self) -> None:
         if self._closed:
@@ -283,7 +217,8 @@ class HostProxy:
         try:
             blank = {s: ActuatorDesire() for s in range(ACTUATOR_COUNT)}
             self.set_actuators(blank, send=False)
-            self._hub.set_mcu_state(McuState.DIAG_ONLY, send=False)
+            self._hub.set_mcu_state(McuState.NORMAL, send=False)
+            self._hub.set_plant_apply(False, send=False)
             # Do not overwrite LedDesire here — ``set --led-mode`` / debug
             # patterns must survive process exit until the next host session.
             # Soft-DFU post_flash stages listen_pdu + follow explicitly.
