@@ -49,8 +49,14 @@
 #define PLANT_DIAG_SESSION_BEGIN     254u
 #define PLANT_DIAG_SESSION_END       255u
 #define PLANT_DIAG_PDU_CAN_BUS       11u
+/* SESSION_BEGIN bus_mask (bit0=CH1 … bit5=CH6). 0 → single primary bus.
+ * RS2: data[5] (param_index unused on session). DM: data[9] (data[5]=master). */
+#define PLANT_DIAG_RS2_PDU_BUS_MASK  5u
+#define PLANT_DIAG_DM_PDU_BUS_MASK   9u
 #define PLANT_DIAG_RS2_QUIET_MS      3000u
 #define PLANT_DIAG_DM_QUIET_MS       3000u
+/* RS2 DBGF: host bus 1..6 when multi-bus discover stamped a hit (was mcp init mask). */
+#define PLANT_DIAG_RS2_PDU_RESP_BUS  27u
 
 /* Why 500 Hz actuator apply was skipped (stamped in feedback system.plant_block). */
 typedef enum {
@@ -58,10 +64,13 @@ typedef enum {
 	PLANT_BLOCK_BENCH_SESSION = 1,
 	PLANT_BLOCK_PROBE_BUSY = 2,
 	PLANT_BLOCK_QUIET_PERIOD = 3,
-	PLANT_BLOCK_DIAG_ONLY = 4,
+	PLANT_BLOCK_APPLY_OFF = 4, /* plant_apply=0 (or legacy mcu_state=DIAG_ONLY) */
 	PLANT_BLOCK_HOST_STALE = 5,
 	PLANT_BLOCK_SERVO_SESSION = 6,
 } plant_block_reason_t;
+
+/* Back-compat alias — same code as PLANT_BLOCK_APPLY_OFF. */
+#define PLANT_BLOCK_DIAG_ONLY PLANT_BLOCK_APPLY_OFF
 
 void plant_diag_release_actuator_can(void);
 bool plant_diag_bench_session_active(void);

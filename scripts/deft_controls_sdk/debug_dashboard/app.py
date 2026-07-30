@@ -9,7 +9,7 @@ Run:
     # same UI, auto-connects in observe mode at launch
 
 Connect defaults to **observe**: plant stream clears HOST_STALE, MCU stays
-DIAG_ONLY, and soft-kill auto-park hooks are off — so opening the dashboard
+plant_apply=0 (observe), and soft-kill auto-park hooks are off — so opening the dashboard
 does not latch ESTOP / yellow-red PDU LEDs from a residual soft-kill or V/I
 check. Opt into plant control explicitly (Enable control → NORMAL + hooks).
 
@@ -103,9 +103,9 @@ class AppState:
     ) -> None:
         """Open CDC and start the plant stream.
 
-        Default ``mode="observe"``: DIAG_ONLY + no auto soft-kill park — safe
+        Default ``mode="observe"``: plant_apply=0 + no auto soft-kill park — safe
         telemetry without faulting the board on Connect. Pass ``mode="control"``
-        only when the operator wants NORMAL plant apply + park hooks.
+        only when the operator wants plant_apply + park hooks.
         """
         if mode not in ("observe", "control"):
             raise ValueError("mode must be 'observe' or 'control'")
@@ -119,7 +119,8 @@ class AppState:
                 telemetry_hz=self._telemetry_hz,
                 auto_soft_kill=False,
             )
-            hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
+            hub.set_mcu_state(McuState.NORMAL, send=False)
+            hub.set_plant_apply(False, send=True)
             self.hub = hub
             self.control_mode = "observe"
             if mode == "control":
@@ -139,25 +140,28 @@ class AppState:
                 hub.set_auto_soft_kill(False)
                 for slot in range(ACTUATOR_COUNT):
                     hub.set_actuator(slot, ActuatorDesire(), send=False)
-                hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
+                hub.set_mcu_state(McuState.NORMAL, send=False)
+                hub.set_plant_apply(False, send=True)
                 self.control_mode = "observe"
 
     def _enter_control_locked(self) -> None:
         hub = self.hub
         assert hub is not None
         hub.set_auto_soft_kill(True)
-        hub.set_mcu_state(McuState.NORMAL, send=True)
+        hub.set_mcu_state(McuState.NORMAL, send=False)
+        hub.set_plant_apply(True, send=True)
         self.control_mode = "control"
 
     def disconnect(self) -> None:
         with self._lock:
             self.teleop.disengage_all()
             if self.hub is not None:
-                # Leave MCU in DIAG_ONLY so disconnect does not freeze an ESTOP
+                # Leave plant_apply off so disconnect does not freeze an ESTOP
                 # latch from a soft-kill park that happened while connected.
                 try:
                     self.hub.set_auto_soft_kill(False)
-                    self.hub.set_mcu_state(McuState.DIAG_ONLY, send=True)
+                    self.hub.set_mcu_state(McuState.NORMAL, send=False)
+                    self.hub.set_plant_apply(False, send=True)
                     time.sleep(0.05)
                 except Exception:
                     pass
@@ -176,11 +180,9 @@ class AppState:
         # already write()s the plant image at stream_hz — a second write+flush
         # from this HTTP thread contended on the serial lock and stalled fb_hz.
         #
-        # HOME_POS_EPS: legacy plant teleop never sends position==0 on an active
-        # slot — firmware treats blank MCP desires (pos=0 and idle gains) as
-        # "skip SPI entirely", so a hold at true 0 with kp>0 is fine, but a
-        # hold at 0 with kp=0 would go silent on CH4–6. Match legacy eps when
-        # the operator leaves pos at 0 but raises kp/kd.
+        # HOME_POS_EPS: avoid true blank (pos=0, kp=0) when the operator raises
+        # gains — shared blank-bus skip drops uncommanded buses (FDCAN and MCP).
+        # Match legacy eps when pos stays at 0 but kp/kd are non-zero.
         pos = position
         if abs(pos) < 1e-6 and (abs(kp) > 1e-9 or abs(kd) > 1e-9):
             pos = 1e-6
@@ -202,6 +204,9 @@ class AppState:
 
     def set_mcu_state(self, state: int) -> None:
         self._require_hub().set_mcu_state(McuState(state))
+
+    def set_plant_apply(self, enable: bool) -> None:
+        self._require_hub().set_plant_apply(bool(enable), send=True)
 
     def recover(self) -> None:
         self._require_hub().recover()
@@ -528,11 +533,11 @@ _HTML = """<!DOCTYPE html>
       <select id="portSelect"></select>
       <button id="connectBtn" onclick="connect()">Connect (observe)</button>
       <button id="enableCtrlBtn" onclick="enableControl()" disabled title="Switch MCU to NORMAL and arm soft-kill auto-park">Enable control</button>
-      <button id="observeBtn" onclick="toObserve()" disabled title="Blank desires, DIAG_ONLY, no auto-park">Back to observe</button>
+      <button id="observeBtn" onclick="toObserve()" disabled title="Blank desires, plant_apply=0, no auto-park">Back to observe</button>
       <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
       <span class="meta" id="connMeta">not connected</span>
     </div>
-    <p class="banner ok" id="modeBanner">Idle — not owning COM. Connect opens observe mode (DIAG_ONLY); plant motors stay gated until Enable control.</p>
+    <p class="banner ok" id="modeBanner">Idle — not owning COM. Connect opens observe mode (plant_apply=0); plant motors stay gated until Enable control.</p>
     <p class="err" id="connError"></p>
     <p class="meta" id="sessionMeta"></p>
   </section>
@@ -567,7 +572,8 @@ _HTML = """<!DOCTYPE html>
       <div class="row" style="margin-top:0.75rem">
         <button id="mcuNormal" onclick="setMcuState(0)">NORMAL</button>
         <button id="mcuRecovery" onclick="setMcuState(1)">RECOVERY</button>
-        <button id="mcuDiag" onclick="setMcuState(2)" title="Blocks plant apply per firmware">DIAG_ONLY</button>
+        <button id="mcuApplyOff" onclick="setPlantApply(false)" title="plant_apply=0 — observe, no actuator mount">APPLY_OFF</button>
+        <button id="mcuApplyOn" onclick="setPlantApply(true)" title="plant_apply=1 — arm plant apply">APPLY_ON</button>
         <button id="mcuEstop" class="estop" onclick="setMcuState(3)"
           title="Control-only latch — needs Control mode (Enable control) to be armed. Not the same as Soft-kill Park, which works without Control mode.">ESTOP</button>
         <button id="recoverBtn" onclick="recover()">Recover</button>
@@ -705,6 +711,7 @@ function disconnect() {
 function enableControl() { postAction("/api/control_mode", { mode: "control" }, setConnError); }
 function toObserve() { postAction("/api/control_mode", { mode: "observe" }, setConnError); }
 function setMcuState(n) { postAction("/api/mcu_state", { state: n }, setCtrlError); }
+function setPlantApply(on) { postAction("/api/plant_apply", { enable: !!on }, setCtrlError); }
 function recover() { postAction("/api/recover", {}, setCtrlError); }
 async function softKillPark() {
   const resultEl = document.getElementById("pdbResult");
@@ -999,13 +1006,13 @@ async function tick() {
     const banner = document.getElementById("modeBanner");
     if (!s.connected && !s.following_state_file) {
       banner.className = "banner ok";
-      banner.textContent = "Idle — not owning COM. Connect opens observe (DIAG_ONLY, no auto soft-kill). PDU sim panel uses :8765; this UI defaults to :8766.";
+      banner.textContent = "Idle — not owning COM. Connect opens observe (plant_apply=0, no auto soft-kill). PDU sim panel uses :8765; this UI defaults to :8766.";
     } else if (!s.connected && s.following_state_file) {
       banner.className = "banner ok";
       banner.textContent = "Follow mode — reading state.json only. Soft-kill Park signals the peer; do not Connect while continuous owns CDC.";
     } else if (inObserve) {
       banner.className = "banner";
-      banner.textContent = "Observe — streaming telemetry, MCU DIAG_ONLY, auto soft-kill off. Board will not ESTOP from PDU V/I on connect. Enable control when ready to command. Soft-kill Park works right now regardless — it does not need Control mode.";
+      banner.textContent = "Observe — streaming telemetry, plant_apply=0, auto soft-kill off. Board will not ESTOP from PDU V/I on connect. Enable control when ready to command. Soft-kill Park works right now regardless — it does not need Control mode.";
     } else {
       banner.className = "banner warn";
       banner.textContent = "Control — MCU NORMAL + soft-kill auto-park armed. Idle all / Back to observe before Disconnect if you parked. Soft-kill Park ≠ Enable control: Park is the always-available kill; Enable control is what arms the ESTOP button and Apply.";
@@ -1013,7 +1020,7 @@ async function tick() {
 
     // Plant control gating — ESTOP only when we own COM (follow mode uses Soft-kill Park)
     const plantLive = inControl;
-    for (const id of ["mcuNormal", "mcuRecovery", "mcuDiag", "recoverBtn", "idleAllBtn", "mcuEstop"]) {
+    for (const id of ["mcuNormal", "mcuRecovery", "mcuApplyOff", "mcuApplyOn", "recoverBtn", "idleAllBtn", "mcuEstop"]) {
       document.getElementById(id).disabled = !plantLive;
     }
 
@@ -1273,6 +1280,12 @@ def make_handler(state: AppState):
                     if state.control_mode != "control":
                         raise RuntimeError("Enable control first (observe mode is read-only)")
                     state.set_mcu_state(int(body["state"]))
+                elif path == "/api/plant_apply":
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    if state.control_mode != "control":
+                        raise RuntimeError("Enable control first (observe mode is read-only)")
+                    state.set_plant_apply(bool(body.get("enable", False)))
                 elif path == "/api/actuator/idle_all":
                     if not state.connected:
                         raise RuntimeError("not connected")

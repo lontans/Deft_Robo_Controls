@@ -2,9 +2,8 @@
 
 Firmware: App/Src/host/soft_dfu.c / App/Inc/host/soft_dfu.h.
 
-Enter: plant CMD with PDU tag DFU! → MCU resets into system memory BL.
-Leave: AN3156 Leave DFU — Set Address Pointer then zero-length DFU_DNLOAD
-(requires GETSTATUS after SET_ADDRESS so the command actually executes).
+Enter: plant CMD with ``stm32_mode=SOFT_DFU`` (ADR-004); legacy DEBUG tag
+``DFU!`` still accepted by firmware. Leave: AN3156 Leave DFU.
 
 One-shot: ``python scripts/soft_dfu_flash.py``. If soft-enter drops CDC but
 ``0483:DF11`` never appears, CubeProg ST-Link SWD is used automatically when
@@ -28,8 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
-from deft_controls_sdk.link.exchange import PDU_OFF
-from deft_controls_sdk.link.exchange.bench import build_debug_command
 from deft_controls_sdk.link.exchange.wire_layout import (
     STM32_USB_CDC_PID,
     STM32_VID,
@@ -37,8 +34,6 @@ from deft_controls_sdk.link.exchange.wire_layout import (
 
 if TYPE_CHECKING:
     from deft_controls_sdk.link import Connection
-
-_TAG = b"DFU!"  # must match SOFT_DFU_TAG0..3 in App/Inc/host/soft_dfu.h
 
 # STM32 ROM USB DFU (AN2606 / AN3156)
 _DFU_VID = 0x0483
@@ -291,7 +286,7 @@ def enter_bootloader(
     port: Optional[str] = None,
     serial: Optional[str] = None,
 ) -> str:
-    """Send DFU! over app CDC. Auto-picks the CDC port if ``connection`` is None.
+    """Enter ROM DFU via stm32_mode=SOFT_DFU (preferred) or legacy DFU! tag.
 
     Returns the device path used. Requires confirm=True.
     """
@@ -301,10 +296,19 @@ def enter_bootloader(
             "into the ROM bootloader (CDC will drop)"
         )
 
+    from deft_controls_sdk.link.exchange.pack import (
+        build_plant_command,
+        patch_system_stm32_mode,
+    )
+    from deft_controls_sdk.link.exchange.wire_layout import STM32_MODE_SOFT_DFU
+
+    def _soft_dfu_frame(seq: int) -> bytes:
+        buf = bytearray(build_plant_command(seq))
+        patch_system_stm32_mode(buf, STM32_MODE_SOFT_DFU)
+        return bytes(buf)
+
     if connection is not None:
-        frame = bytearray(build_debug_command(connection.next_seq()))
-        frame[PDU_OFF : PDU_OFF + len(_TAG)] = _TAG
-        connection.write_raw(bytes(frame))
+        connection.write_raw(_soft_dfu_frame(connection.next_seq()))
         return getattr(connection, "port", port or "")
 
     # Standalone path: find CDC, open briefly, send, close.
@@ -313,9 +317,7 @@ def enter_bootloader(
     device = find_cdc_port(port=port, serial=serial)
     conn = Connection.connect(device)
     try:
-        frame = bytearray(build_debug_command(conn.next_seq()))
-        frame[PDU_OFF : PDU_OFF + len(_TAG)] = _TAG
-        conn.write_raw(bytes(frame))
+        conn.write_raw(_soft_dfu_frame(conn.next_seq()))
     finally:
         try:
             conn.close()
@@ -1041,8 +1043,14 @@ def post_flash_listen_pdu(port: str, *, hold_s: float = 0.35) -> None:
     from deft_controls_sdk.vbeta.cfg import pause_plant_stream
 
     print(f"staging listen_pdu on {port}…", flush=True)
+    # mode=debug required for CFG; do not Soft-DFU from this path.
     with HostProxy.connect(
-        port, stream_hz=200.0, telemetry_hz=200.0, idle_first=True, listen_pdu=True
+        port,
+        stream_hz=50.0,
+        telemetry_hz=20.0,
+        idle_first=True,
+        listen_pdu=True,
+        mode="debug",
     ) as proxy:
         proxy.set_led(LedDesire(mode="follow", master_brightness=8), send=True)
         try:

@@ -27,10 +27,11 @@ from deft_controls_sdk.debug.soft_dfu import (
 )
 from deft_controls_sdk.link import Connection
 from deft_controls_sdk.link.exchange import (
-    HOST_DEBUG_COMMAND_MAGIC,
+    HOST_COMMAND_MAGIC,
     IMAGE_BYTES,
-    PDU_OFF,
+    STM32_MODE_SOFT_DFU,
 )
+from deft_controls_sdk.link.exchange.wire_layout import SYSTEM_CMD_OFF
 import struct
 
 
@@ -53,7 +54,7 @@ def test_enter_bootloader_requires_confirm() -> None:
     assert sent == []
 
 
-def test_enter_bootloader_sends_dfu_tag_at_pdu_offset() -> None:
+def test_enter_bootloader_sends_stm32_mode_soft_dfu() -> None:
     sent: list = []
     conn = _fake_connection(sent)
     enter_bootloader(conn, confirm=True)
@@ -61,8 +62,9 @@ def test_enter_bootloader_sends_dfu_tag_at_pdu_offset() -> None:
     frame = sent[0]
     assert len(frame) == IMAGE_BYTES
     magic, = struct.unpack_from("<I", frame, 0)
-    assert magic == HOST_DEBUG_COMMAND_MAGIC
-    assert frame[PDU_OFF : PDU_OFF + 4] == b"DFU!"
+    assert magic == HOST_COMMAND_MAGIC
+    word, = struct.unpack_from("<I", frame, SYSTEM_CMD_OFF)
+    assert (word >> 9) & 3 == STM32_MODE_SOFT_DFU
 
 
 def test_debug_api_enter_bootloader_wires_through() -> None:
@@ -73,7 +75,8 @@ def test_debug_api_enter_bootloader_wires_through() -> None:
         debug.enter_bootloader()
     debug.enter_bootloader(confirm=True)
     assert len(sent) == 1
-    assert sent[0][PDU_OFF : PDU_OFF + 4] == b"DFU!"
+    word, = struct.unpack_from("<I", sent[0], SYSTEM_CMD_OFF)
+    assert (word >> 9) & 3 == STM32_MODE_SOFT_DFU
 
 
 def test_leave_bootloader_requires_dfu_device(monkeypatch: pytest.MonkeyPatch) -> None:

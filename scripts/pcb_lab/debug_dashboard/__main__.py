@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.port:
-        print(f"Connecting {args.port} in observe mode (DIAG_ONLY, no auto soft-kill)...")
+        print(f"Connecting {args.port} in observe mode (plant_apply=0, no auto soft-kill)...")
         state.connect(args.port, mode="observe")
         print("Connected (observe). Use Enable control in the UI for NORMAL plant apply.")
     else:

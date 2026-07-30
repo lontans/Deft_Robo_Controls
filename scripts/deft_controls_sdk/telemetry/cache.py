@@ -114,12 +114,12 @@ _PLANT_BLOCK_HINTS = {
     1: ("BENCH_SESSION", "debug/bench lease active — plant CAN apply gated until lease ends"),
     2: ("PROBE_BUSY", "a blocking probe is in progress"),
     3: ("QUIET_PERIOD", "post-session quiet window — wait or recover"),
-    4: ("DIAG_ONLY", "mcu_state=DIAG_ONLY — plant will not apply"),
+    4: ("APPLY_OFF", "plant_apply=0 (observe) — plant will not apply"),
     5: ("HOST_STALE", "no fresh host command >500 ms — keep streaming (send_once / start_streaming)"),
     6: ("SERVO_SESSION", "servo host session is holding the plant path"),
 }
 
-_MCU_STATE_NAMES = {0: "NORMAL", 1: "RECOVERY", 2: "DIAG_ONLY", 3: "ESTOP"}
+_MCU_STATE_NAMES = {0: "NORMAL", 1: "RECOVERY", 2: "DIAG_ONLY(legacy)", 3: "ESTOP"}
 
 
 def _grade_and_context(state: SessionState) -> None:

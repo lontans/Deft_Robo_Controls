@@ -12,15 +12,15 @@ _SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
-from deft_controls_sdk.host_proxy import (  # noqa: E402
+from deft_controls_sdk.actions import ComponentAction, ComponentView  # noqa: E402
+from deft_controls_sdk.config import (  # noqa: E402
     BENCH_BASE_SLOTS,
     LEFT_ARM_SLOTS,
-    ComponentView,
-    HostProxy,
     Profile,
     bench_continuous_profile,
     yam_product_profile,
 )
+from deft_controls_sdk.host_proxy import HostProxy  # noqa: E402
 from deft_controls_sdk.link import ActuatorDesire  # noqa: E402
 from deft_controls_sdk.vbeta.session import PcbRobotSession  # noqa: E402
 
@@ -45,7 +45,8 @@ class _FakeHub:
         self.is_streaming = True
         self.port = "FAKE"
         self.debug = SimpleNamespace(cfg_get_table=lambda: [None] * 26)
-        self._mcu_state = McuState.DIAG_ONLY
+        self._mcu_state = McuState.NORMAL
+        self._plant_apply = False
         self._led_desire = None
         self._listen_pdu = False
         self._stream_hz = 200.0
@@ -81,9 +82,16 @@ class _FakeHub:
     def set_mcu_state(self, state, *, send: bool = False) -> None:
         self._mcu_state = state
 
+    def set_plant_apply(self, enable: bool, *, send: bool = False) -> None:
+        self._plant_apply = bool(enable)
+
     @property
     def mcu_state(self):
         return self._mcu_state
+
+    @property
+    def plant_apply(self):
+        return self._plant_apply
 
     @property
     def led_desire(self):
@@ -138,12 +146,50 @@ def test_component_hold_writes_slots():
     hub = _FakeHub()
     proxy = HostProxy.wrap(hub, profile=yam_product_profile())
     view = proxy.component("left_arm")
+    assert isinstance(view, ComponentAction)
+    assert ComponentView is ComponentAction
     view.hold([0.1 * i for i in range(7)], kp=9.0, kd=0.4, send=False)
     for i, slot in enumerate(LEFT_ARM_SLOTS):
         d = hub._connection.actuators[slot]
         assert d.position == pytest.approx(0.1 * i)
         assert d.kp == pytest.approx(9.0)
         assert d.kd == pytest.approx(0.4)
+
+
+def test_component_action_hub_sink():
+    """Same ComponentAction type works with ControlsPcbHub-shaped sink."""
+    hub = _FakeHub()
+
+    def set_actuators(desires, *, send: bool = False) -> None:
+        hub._connection.set_actuators(desires, send=send)
+
+    def latest_feedback():
+        return None
+
+    hub.set_actuators = set_actuators  # type: ignore[method-assign]
+    hub.latest_feedback = latest_feedback  # type: ignore[method-assign]
+    action = ComponentAction(hub, yam_product_profile(), "base")
+    action.blank(send=False)
+    assert set(hub._connection.actuators) == set(yam_product_profile().slots("base"))
+
+
+def test_lab_robot_component_matches_proxy():
+    from pcb_lab.lab import LabRobot
+
+    hub = _FakeHub()
+    proxy = HostProxy.wrap(hub, profile=yam_product_profile())
+    lab = LabRobot(proxy)
+    a = lab.component("left_arm")
+    b = lab.proxy.component("left_arm")
+    assert type(a) is type(b) is ComponentAction
+    assert a.slots == b.slots == LEFT_ARM_SLOTS
+
+
+def test_telemetry_package_exports_cache():
+    from deft_controls_sdk import TelemetryCache as TopCache
+    from deft_controls_sdk.telemetry import TelemetryCache
+
+    assert TopCache is TelemetryCache
 
 
 def test_session_wraps_host_proxy():
@@ -171,7 +217,7 @@ def test_doctor_offline():
     assert report["profile"] == "yam_product"
     assert report["cfg_ok"] is True
     assert report["streaming"] is True
-    assert report["mcu"]["host_command_name"] == "DIAG_ONLY"
+    assert report["mcu"]["host_command_name"] == "NORMAL"
     assert report["led"]["effective_mode_name"] == "idle_cornflower"
     assert report["led"]["source"] == "host_debug"
     assert report["led"]["host_policy"] == "debug"

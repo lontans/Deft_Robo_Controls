@@ -7,17 +7,20 @@ session.py:133-141). While held, firmware gates the 500 Hz plant apply
 
 This does not open a second serial port: it borrows the caller's Connection
 under the single-writer-lease model (docs/architecture.md#host-api-modes).
+
+``bus_mask`` (optional): bit0=CH1 … bit5=CH6 for multi-bus discover sessions.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Generator, Optional
+from typing import TYPE_CHECKING, Generator, Optional, Sequence
 
 from deft_controls_sdk.link.exchange import (
     SESSION_BEGIN,
     SESSION_END,
     build_rs2_scan_command,
     can_bus_label,
+    host_bus_mask,
     parse_probe_pdu,
 )
 
@@ -28,11 +31,21 @@ if TYPE_CHECKING:
 _SESSION_TIMEOUT_S = 2.0
 
 
-def rs2_session_begin(connection: "Connection", bus: int = 1) -> Optional[dict]:
+def rs2_session_begin(
+    connection: "Connection",
+    bus: int = 1,
+    *,
+    bus_mask: int = 0,
+) -> Optional[dict]:
     connection.reader.drain()
-    frame = build_rs2_scan_command(0, SESSION_BEGIN, connection.next_seq(), bus=bus)
+    frame = build_rs2_scan_command(
+        0, SESSION_BEGIN, connection.next_seq(), bus=bus, bus_mask=bus_mask
+    )
     return connection.exchange_raw(
-        frame, parse_probe_pdu, timeout_s=_SESSION_TIMEOUT_S, predicate=lambda p: p["probe_kind"] == SESSION_BEGIN
+        frame,
+        parse_probe_pdu,
+        timeout_s=_SESSION_TIMEOUT_S,
+        predicate=lambda p: p["probe_kind"] == SESSION_BEGIN,
     )
 
 
@@ -40,7 +53,10 @@ def rs2_session_end(connection: "Connection", bus: int = 1) -> Optional[dict]:
     connection.reader.drain()
     frame = build_rs2_scan_command(0, SESSION_END, connection.next_seq(), bus=bus)
     return connection.exchange_raw(
-        frame, parse_probe_pdu, timeout_s=_SESSION_TIMEOUT_S, predicate=lambda p: p["probe_kind"] == SESSION_END
+        frame,
+        parse_probe_pdu,
+        timeout_s=_SESSION_TIMEOUT_S,
+        predicate=lambda p: p["probe_kind"] == SESSION_END,
     )
 
 
@@ -50,19 +66,33 @@ def lease(
     telemetry: Optional["TelemetryCache"],
     *,
     bus: int = 1,
+    buses: Optional[Sequence[int]] = None,
 ) -> Generator[None, None, None]:
-    """RS2 session_begin/end bracket. Publishes mode="debug_lease" to telemetry
-    (if attached) so the dashboard shows *why* plant_block is non-zero instead
-    of just going quiet, then restores streaming-vs-idle mode on exit."""
+    """RS2 session_begin/end bracket.
+
+    Pass ``buses=[1,5,6]`` for multi-bus discover (one SESSION_BEGIN mask).
+    ``bus`` is the primary (reinit order / fallback); defaults to first of
+    ``buses`` when that list is set.
+    """
+    mask = 0
+    primary = int(bus)
+    if buses:
+        blist = [int(b) for b in buses]
+        if not blist:
+            raise ValueError("empty buses")
+        mask = host_bus_mask(blist)
+        primary = blist[0]
     if telemetry is not None:
         telemetry.set_connected(True, mode="debug_lease")
-    rs2_session_begin(connection, bus)
+    rs2_session_begin(connection, primary, bus_mask=mask)
     try:
         yield
     finally:
-        rs2_session_end(connection, bus)
+        rs2_session_end(connection, primary)
         if telemetry is not None:
-            telemetry.set_connected(True, mode="plant_stream" if connection.is_streaming else "idle")
+            telemetry.set_connected(
+                True, mode="plant_stream" if connection.is_streaming else "idle"
+            )
 
 
 def describe_bus(bus: int) -> str:

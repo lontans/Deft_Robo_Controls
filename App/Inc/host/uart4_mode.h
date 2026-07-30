@@ -12,8 +12,9 @@
 
 #define UART4_MODE  UART4_MODE_PDB
 
-/* Temporary: overlay RX/TX health on system feedback for CDC prove. */
-#define UART4_BRINGUP_DIAG  1
+/* Temporary: overlay UART4 RX/TX health on system feedback for CDC prove.
+ * reserved0[1:0] always remains stm32_mode (ADR-004) — see host_link.c. */
+#define UART4_BRINGUP_DIAG  0
 
 /* When 1: after init, send one PDBC and expect it back on RX.
  * Requires a temporary short of UART4 TX↔RX at the Controls JST (PC10↔PC11).

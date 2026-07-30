@@ -13,6 +13,11 @@
 #define MCP_BENCH_ZERO_GAIN_BURST 12u
 
 can_bus_id_t diag_pdu_can_bus(const host_pdu_command_t *pdu);
+uint8_t diag_pdu_bus_mask_at(const host_pdu_command_t *pdu,
+                             uint8_t offset,
+                             can_bus_id_t primary);
+void diag_session_prepare_buses(uint8_t bus_mask, can_bus_id_t primary);
+void diag_poll_session_buses(bool rx_only);
 void diag_flush_usb(void);
 void diag_finalize_probe(uint8_t kind, uint8_t motor_id, bool got);
 void diag_run_rs2_pending(void);

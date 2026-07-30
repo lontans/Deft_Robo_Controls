@@ -3,6 +3,7 @@
 #include "plant/servo.h"
 #include "plant/actuator.h"
 #include "plant/can/can_router.h"
+#include "plant/can/mcp2518fd.h"
 #include "plant/plugins/dynamixel.h"
 #include "host/host_link.h"
 #include "main.h"
@@ -20,13 +21,68 @@ can_bus_id_t diag_pdu_can_bus(const host_pdu_command_t *pdu)
 	return CAN_BUS_CH1;
 }
 
+uint8_t diag_pdu_bus_mask_at(const host_pdu_command_t *pdu,
+                             uint8_t offset,
+                             can_bus_id_t primary)
+{
+	uint8_t mask = 0u;
+
+	if (pdu != NULL && offset < 32u)
+		mask = pdu->data[offset] &
+		       (uint8_t)((1u << (unsigned)CAN_BACKEND_COUNT) - 1u);
+	if (mask == 0u && primary < CAN_BACKEND_COUNT)
+		mask = (uint8_t)(1u << (unsigned)primary);
+	return mask;
+}
+
+void diag_session_prepare_buses(uint8_t bus_mask, can_bus_id_t primary)
+{
+	can_router_discard_pending_tx();
+	for (uint8_t b = 0u; b < (uint8_t)CAN_BACKEND_COUNT; b++) {
+		if ((bus_mask & (uint8_t)(1u << b)) == 0u)
+			continue;
+		if (b < (uint8_t)CAN_BUS_CH4)
+			can_router_restart_fdcan((can_bus_id_t)b);
+		else {
+			(void)mcp2518_reinit_rail((can_bus_id_t)b);
+			mcp2518_reset_tx_stats((can_bus_id_t)b);
+		}
+		can_rx_drain((can_bus_id_t)b);
+	}
+	(void)primary;
+}
+
+void diag_poll_session_buses(bool rx_only)
+{
+	uint8_t mask = 0u;
+
+	if (g_dm_session_active) {
+		mask = g_dm_bus_mask;
+		if (mask == 0u && g_dm_can_bus < CAN_BACKEND_COUNT)
+			mask = (uint8_t)(1u << (unsigned)g_dm_can_bus);
+	} else if (g_rs2_session_active) {
+		mask = g_rs2_bus_mask;
+		if (mask == 0u && g_rs2_can_bus < CAN_BACKEND_COUNT)
+			mask = (uint8_t)(1u << (unsigned)g_rs2_can_bus);
+	} else {
+		return;
+	}
+
+	for (uint8_t b = 0u; b < (uint8_t)CAN_BACKEND_COUNT; b++) {
+		if ((mask & (uint8_t)(1u << b)) == 0u)
+			continue;
+		if (rx_only)
+			can_router_poll_bus_rx((can_bus_id_t)b);
+		else
+			can_router_poll_bus((can_bus_id_t)b);
+	}
+}
+
 void diag_flush_usb(void)
 {
 	for (uint8_t i = 0; i < 32u; i++) {
-		if (g_dm_session_active && g_dm_can_bus < CAN_BACKEND_COUNT)
-			can_router_poll_bus_rx(g_dm_can_bus);
-		else if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
-			can_router_poll_bus_rx(g_rs2_can_bus);
+		if (g_dm_session_active || g_rs2_session_active)
+			diag_poll_session_buses(true);
 		else
 			plant_diag_can_router_poll();
 
@@ -101,31 +157,28 @@ void plant_diag_on_dxl_command(const host_command_image_t *cmd)
 
 void plant_diag_can_router_poll(void)
 {
-	if (g_dm_session_active && g_dm_can_bus < CAN_BACKEND_COUNT)
-		can_router_poll_bus(g_dm_can_bus);
-	else if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
-		can_router_poll_bus(g_rs2_can_bus);
-	else {
-		/* Plant already polls commanded buses (incl. MCP). End-of-lap:
-		 * FDCAN only, and skip buses the last apply already drained so
-		 * all×25 does not pay a second CH1–3 flush every lap. Idle /
-		 * uncommanded FDCAN still get coverage here. */
-		uint32_t already = actuator_last_apply_poll_buses();
+	if (g_dm_session_active || g_rs2_session_active) {
+		diag_poll_session_buses(false);
+		return;
+	}
 
-		for (can_bus_id_t bus = 0; bus < CAN_FDCAN_COUNT; bus++) {
-			if ((already & (1u << (unsigned)bus)) != 0u)
-				continue;
-			can_router_poll_bus(bus);
-		}
+	/* Plant already polls commanded buses (incl. MCP). End-of-lap:
+	 * FDCAN only, and skip buses the last apply already drained so
+	 * all×25 does not pay a second CH1–3 flush every lap. Idle /
+	 * uncommanded FDCAN still get coverage here. */
+	uint32_t already = actuator_last_apply_poll_buses();
+
+	for (can_bus_id_t bus = 0; bus < CAN_FDCAN_COUNT; bus++) {
+		if ((already & (1u << (unsigned)bus)) != 0u)
+			continue;
+		can_router_poll_bus(bus);
 	}
 }
 
 void plant_diag_yield_usb(void)
 {
-	if (g_dm_session_active && g_dm_can_bus < CAN_BACKEND_COUNT)
-		can_router_poll_bus_rx(g_dm_can_bus);
-	else if (g_rs2_session_active && g_rs2_can_bus < CAN_BACKEND_COUNT)
-		can_router_poll_bus_rx(g_rs2_can_bus);
+	if (g_dm_session_active || g_rs2_session_active)
+		diag_poll_session_buses(true);
 	else
 		plant_diag_can_router_poll();
 
@@ -172,8 +225,10 @@ void plant_diag_release_actuator_can(void)
 {
 	g_rs2_session_active = false;
 	g_rs2_quiet_until_ms = 0u;
+	g_rs2_bus_mask = 0u;
 	g_dm_session_active = false;
 	g_dm_quiet_until_ms = 0u;
+	g_dm_bus_mask = 0u;
 	g_rs2_probe_pending = false;
 	g_probe_in_progress = false;
 	g_probe_started_ms = 0u;

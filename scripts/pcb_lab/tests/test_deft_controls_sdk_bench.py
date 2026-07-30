@@ -39,7 +39,11 @@ from deft_controls_sdk.link.exchange import (
     RS2_RESP_TAG,
     SESSION_BEGIN,
     SESSION_END,
+    STM32_MODE_DEBUG,
     build_rs2_scan_command,
+    extract_cfg_mailbox,
+    extract_dm_mailbox,
+    extract_rs2_mailbox,
     parse_probe_pdu,
 )
 
@@ -48,7 +52,7 @@ def _fake_connection(responder) -> Connection:
     """A Connection with a stubbed socket; write_raw hands the outgoing frame to
     `responder(frame) -> Optional[bytes]`, and any returned reply is fed back
     into the reader — same shape as a real device's request/response."""
-    conn = Connection("TESTPORT")
+    conn = Connection("TESTPORT", stm32_mode=STM32_MODE_DEBUG)
     conn._ser = object()  # is_open True; nothing actually opens a port
 
     def _write_raw(frame: bytes, *, drain: bool = False) -> None:
@@ -72,14 +76,24 @@ def _blank_feedback() -> bytearray:
 
 
 def test_rs2_scan_command_places_tag_id_kind_and_bus() -> None:
+    from deft_controls_sdk.link.exchange import host_bus_mask
+
     frame = build_rs2_scan_command(0x70, SESSION_BEGIN, seq=5, bus=2)
     assert len(frame) == IMAGE_BYTES
     magic, = struct.unpack_from("<I", frame, 0)
     assert magic == HOST_DEBUG_COMMAND_MAGIC
-    assert frame[PDU_OFF : PDU_OFF + 3] == b"RS2"
-    assert frame[PDU_OFF + 3] == 0x70
-    assert frame[PDU_OFF + 4] == SESSION_BEGIN
-    assert frame[PDU_OFF + 11] == 2  # bus routing byte
+    pdu = extract_rs2_mailbox(frame)
+    assert pdu[:3] == b"RS2"
+    assert pdu[3] == 0x70
+    assert pdu[4] == SESSION_BEGIN
+    assert pdu[11] == 2  # bus routing byte
+
+    mask = host_bus_mask([1, 5, 6])
+    assert mask == 0x31  # bit0 + bit4 + bit5
+    multi = build_rs2_scan_command(
+        0, SESSION_BEGIN, seq=6, bus=1, bus_mask=mask
+    )
+    assert extract_rs2_mailbox(multi)[5] == mask
 
 
 def test_parse_probe_pdu_round_trip() -> None:
@@ -105,7 +119,7 @@ def test_lease_sends_session_begin_then_end() -> None:
     sent_kinds = []
 
     def responder(frame: bytes):
-        pdu = frame[PDU_OFF : PDU_OFF + 32]
+        pdu = extract_rs2_mailbox(frame)
         kind = pdu[4]
         sent_kinds.append(kind)
         resp = _blank_feedback()
@@ -125,7 +139,7 @@ def test_lease_sends_session_end_even_on_exception() -> None:
     sent_kinds = []
 
     def responder(frame: bytes):
-        pdu = frame[PDU_OFF : PDU_OFF + 32]
+        pdu = extract_rs2_mailbox(frame)
         kind = pdu[4]
         sent_kinds.append(kind)
         resp = _blank_feedback()
@@ -149,7 +163,7 @@ def test_fetch_table_pages_through_dual_arm_slot_count() -> None:
     page, total = 4, 14
 
     def responder(frame: bytes):
-        pdu_in = frame[PDU_OFF : PDU_OFF + 32]
+        pdu_in = extract_cfg_mailbox(frame)
         start = pdu_in[4]
         resp = _blank_feedback()
         rpdu = bytearray(32)
@@ -180,7 +194,7 @@ def test_discover_robstride_finds_target_id() -> None:
     target = 0x72
 
     def responder(frame: bytes):
-        pdu_in = frame[PDU_OFF : PDU_OFF + 32]
+        pdu_in = extract_rs2_mailbox(frame)
         motor_id, kind = pdu_in[3], pdu_in[4]
         resp = _blank_feedback()
         rpdu = bytearray(32)
@@ -204,7 +218,7 @@ def test_discover_robstride_all_finds_multiple_ids() -> None:
     targets = {0x70, 0x74}
 
     def responder(frame: bytes):
-        pdu_in = frame[PDU_OFF : PDU_OFF + 32]
+        pdu_in = extract_rs2_mailbox(frame)
         motor_id, kind = pdu_in[3], pdu_in[4]
         resp = _blank_feedback()
         rpdu = bytearray(32)
@@ -229,7 +243,7 @@ def test_discover_damiao_prefers_known_ids_order() -> None:
     target = 0x06
 
     def responder(frame: bytes):
-        pdu_in = frame[PDU_OFF : PDU_OFF + 32]
+        pdu_in = extract_dm_mailbox(frame)
         motor_id, kind = pdu_in[3], pdu_in[4]
         resp = _blank_feedback()
         rpdu = bytearray(32)
@@ -246,6 +260,35 @@ def test_discover_damiao_prefers_known_ids_order() -> None:
     debug = DebugAPI(conn, None)
     hit = debug.discover_damiao(bus=1, start=1, end=8, known_ids=[target])
     assert hit == target
+
+
+def test_discover_damiao_all_finds_multiple_ids() -> None:
+    """FW ID_SWEEP stops at first hit — host must re-sweep from hit+1."""
+    targets = {0x01, 0x06}
+
+    def responder(frame: bytes):
+        pdu_in = extract_dm_mailbox(frame)
+        start_id, kind, end_id = pdu_in[3], pdu_in[4], pdu_in[8]
+        resp = _blank_feedback()
+        rpdu = bytearray(32)
+        rpdu[0] = DM_RESP_TAG
+        rpdu[1] = start_id
+        rpdu[3] = kind
+        if kind == DM_PROBE_ID_SWEEP:
+            # Mimic FW: first target in [start_id, end_id].
+            for mid in range(start_id, end_id + 1):
+                if mid in targets:
+                    rpdu[2] = 1
+                    rpdu[1] = mid
+                    rpdu[24] = mid
+                    break
+        resp[PDU_OFF : PDU_OFF + 32] = bytes(rpdu)
+        return bytes(resp)
+
+    conn = _fake_connection(responder)
+    debug = DebugAPI(conn, None)
+    hits = debug.discover_damiao_all(bus=1, start=1, end=8)
+    assert hits == [0x01, 0x06]
 
 
 def test_calibrate_robstride_returns_false_without_replies() -> None:

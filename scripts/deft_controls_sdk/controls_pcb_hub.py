@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import Optional, Union
+from typing import Mapping, Optional, Union
 
 from deft_controls_sdk.debug import DebugAPI, find_cdc_port
 from deft_controls_sdk.link import ActuatorDesire, Connection, FeedbackImage, LedDesire, McuState, ServoDesire
@@ -47,22 +47,32 @@ class ControlsPcbHub:
         session_dir: Optional[Union[str, os.PathLike[str]]] = None,
         persist_telemetry: bool = False,
         telemetry: Optional[TelemetryCache] = None,
+        mode: str = "bandwidth",
     ) -> "ControlsPcbHub":
         """Connect and attach telemetry.
 
-        ``port`` omitted → auto-pick STM32 USB CDC (0483:5740), optionally
-        filtered by USB ``serial``. ``persist_telemetry`` defaults **False**.
+        ``mode``: ``bandwidth`` (stm32_mode=0, no debug-lanes / no hub.debug RPC)
+        or ``debug`` (stm32_mode=1). Change mode only by disconnect + reconnect.
+        ``port`` omitted → auto-pick STM32 USB CDC.
         """
         if not port:
             port = find_cdc_port(serial=serial)
         elif serial is not None:
             # Explicit port wins; serial only used for auto-pick.
             pass
-        connection = Connection.connect(port, baud=baud)
+        connection = Connection.connect(port, baud=baud, mode=mode)
         if telemetry is None:
             telemetry = TelemetryCache(session_dir=session_dir or default_session_dir(), persist=persist_telemetry)
         connection.attach_telemetry(telemetry)
         return cls(connection, telemetry)
+
+    @property
+    def stm32_mode(self) -> int:
+        return self._connection.stm32_mode
+
+    @property
+    def link_mode(self) -> str:
+        return self._connection.link_mode_name
 
     def close(self) -> None:
         self._connection.close()
@@ -182,6 +192,20 @@ class ControlsPcbHub:
     def set_actuator(self, slot: int, desire: ActuatorDesire, *, send: bool = True) -> None:
         self._connection.set_actuator(slot, desire, send=send)
 
+    def set_actuators(
+        self, desires: Mapping[int, ActuatorDesire], *, send: bool = True
+    ) -> None:
+        """Batch plant desires (PlantSink / ComponentAction)."""
+        self._connection.set_actuators(desires, send=send)
+
+    def latest_feedback(self) -> Optional[FeedbackImage]:
+        """Latest plant FB image (PlantSink / ComponentAction)."""
+        fb = self._connection.poll_feedback()
+        if fb is not None:
+            return fb
+        raw = self._connection._latest_fb_raw  # noqa: SLF001
+        return FeedbackImage(raw) if raw is not None else None
+
     def set_servo(self, slot: int, desire: ServoDesire, *, send: bool = True) -> None:
         self._connection.set_servo(slot, desire, send=send)
 
@@ -265,10 +289,19 @@ class ControlsPcbHub:
     def set_mcu_state(self, state: McuState, *, send: bool = True) -> None:
         self._connection.set_mcu_state(state, send=send)
 
+    def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
+        """Arm plant apply (True) or observe-gate (False) via system wire bit11."""
+        self._connection.set_plant_apply(enable, send=send)
+
     @property
     def mcu_state(self) -> McuState:
-        """Host-commanded ``system.mcu_state`` (NORMAL / DIAG_ONLY / ESTOP / …)."""
+        """Host-commanded ``system.mcu_state`` (NORMAL / RECOVERY / ESTOP / …)."""
         return self._connection.mcu_state
+
+    @property
+    def plant_apply(self) -> bool:
+        """Host-commanded plant_apply arm (False = observe, no actuator mount)."""
+        return self._connection.plant_apply
 
     @property
     def led_desire(self) -> Optional[LedDesire]:

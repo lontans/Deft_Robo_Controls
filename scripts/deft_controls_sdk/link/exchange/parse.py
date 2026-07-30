@@ -12,6 +12,8 @@ from .wire_layout import (
     PDU_OFF,
     SERVO0_FB_OFF,
     SERVO_SLOT_BYTES,
+    STM32_MODE_MASK,
+    STM32_MODE_NAMES,
     SYSTEM_FB_OFF,
 )
 
@@ -36,7 +38,7 @@ PLANT_BLOCK_NAMES = {
     1: "bench_session",
     2: "probe_busy",
     3: "quiet_period",
-    4: "diag_only",
+    4: "apply_off",  # plant_apply=0 (legacy alias: diag_only)
     5: "host_stale",
     6: "servo_session",
 }
@@ -122,6 +124,9 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
     if magic not in (HOST_FEEDBACK_MAGIC, HOST_DEBUG_FEEDBACK_MAGIC):
         return None
     sys_word, = struct.unpack_from("<I", frame, SYSTEM_FB_OFF)
+    # reserved0[1:0] echoes stm32_mode (ADR-004). UART4 bring-up may use
+    # bits[3:2]/[7:4] but must leave the low 2 bits alone.
+    stm32_mode = int(frame[SYSTEM_FB_OFF + 17]) & STM32_MODE_MASK
     pdu = frame[PDU_OFF : PDU_OFF + 32]
     tag = chr(pdu[0]) if 32 <= pdu[0] < 127 else f"0x{pdu[0]:02X}"
     plant_block = (sys_word >> 25) & 0x7F
@@ -139,6 +144,8 @@ def parse_feedback_header(frame: bytes) -> Optional[dict]:
         "last_cmd_seq": (sys_word >> 17) & 0xFF,
         "plant_block": plant_block & 0x7F,
         "plant_block_name": PLANT_BLOCK_NAMES.get(plant_block & 0x7F, f"unknown({plant_block})"),
+        "stm32_mode": stm32_mode,
+        "stm32_mode_name": STM32_MODE_NAMES.get(stm32_mode, f"mode_{stm32_mode}"),
         "pdu_tag": tag,
         "pdu_tag_name": PDU_TAG_NAMES.get(tag, "unknown"),
         "pdu_head_hex": pdu[:12].hex(),

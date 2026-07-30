@@ -151,6 +151,7 @@ class _FakeConnection:
 def _hub_with(frame: bytes) -> ControlsPcbHub:
     hub = ControlsPcbHub.__new__(ControlsPcbHub)
     hub._connection = _FakeConnection(frame)
+    hub._listen_pdu = True  # product path: V/I park enabled
     return hub
 
 

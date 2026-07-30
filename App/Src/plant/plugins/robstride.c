@@ -682,11 +682,6 @@ static bool robstride_desire_idle(const actuator_desire_t *desire)
 	return true;
 }
 
-static bool robstride_desire_blank(const actuator_desire_t *desire)
-{
-	return robstride_desire_idle(desire) && desire->position == 0.0f;
-}
-
 static uint16_t s_rs02_last_pararead_idx[ACTUATOR_COUNT];
 
 static void robstride_try_pararead_capture(const actuator_config_t *cfg,
@@ -863,13 +858,10 @@ void robstride_apply_cycle(const actuator_config_t *cfg,
 	mcp = (bus >= CAN_BUS_CH4);
 	idle = robstride_desire_idle(desire);
 
-	/* Blank MCP (kp=0 and p=0) skips SPI entirely. Idle-anchored MCP
-	 * (kp=0, p!=0) still rate-limits pararead below so HBHF can refresh
-	 * without a MIT; do not SPI-flush every plant tick for blank slots. */
-	if (mcp && robstride_desire_blank(desire)) {
-		last_maintain_ms[slot] = 0u;
-		return;
-	}
+	/* Blank and idle-anchor share the idle path below (rate-limited pararead).
+	 * Do not special-case blank MCP — CH4–6 follow the same apply policy as
+	 * CH1–3. Host still prefers idle-anchor (p=1e-6) so a single active bus
+	 * does not drop uncommanded MCP slots via the shared blank-bus skip. */
 
 	/* Host position interp is for slow MCP USB/SPI only. FDCAN must use the
 	 * host desire directly (5df1f04) — extrapolating stalled laps jolted teleop. */
@@ -1001,7 +993,12 @@ bool robstride_probe_id(can_bus_id_t bus,
 	                   (probe_kind <= RS02_PROBE_FULL || promiscuous || enable_only);
 	bool do_enable = !reset_only && !ctrl_fast && !para_read && !para_write && !proactive && !bench_cmd &&
 	                 (probe_kind <= RS02_PROBE_ENABLE_CTRL || promiscuous || enable_only);
-	bool do_ctrl = !reset_only && !enable_only && !para_read && !para_write && !proactive && !bench_cmd;
+	/* PROMISC is listen-side (accept any reply id). It must NOT pack MIT —
+	 * desire_default is kp=50@pos=0, which yanks a motor that ENABLE missed
+	 * (common on congested multi-bus MCP discover). Discover uses
+	 * ENABLE_ONLY then PROMISC; only ENABLE_CTRL/FULL/CTRL_* may do_ctrl. */
+	bool do_ctrl = !reset_only && !enable_only && !promiscuous && !para_read &&
+	               !para_write && !proactive && !bench_cmd;
 	uint16_t listen_ms = enable_only ? 200u :
 	                     (ctrl_fast ? 0u :
 	                      (para_read ? 220u :
@@ -1378,6 +1375,125 @@ bool robstride_probe_id(can_bus_id_t bus,
 	}
 
 	return (out->raw_frames_seen > 0u);
+}
+
+bool robstride_probe_id_buses(uint8_t bus_mask,
+                              uint8_t motor_id,
+                              uint8_t probe_kind,
+                              robstride_probe_result_t *out)
+{
+	can_frame_t frame;
+	uint16_t listen_ms;
+	bool promiscuous = (probe_kind == RS02_PROBE_PROMISC);
+	bool enable_only = (probe_kind == RS02_PROBE_ENABLE_ONLY);
+	uint8_t hit_ids[CAN_BACKEND_COUNT];
+	uint8_t n_prog = 0u;
+	bool any = false;
+	can_bus_id_t first = CAN_BUS_CH1;
+
+	if (out == NULL)
+		return false;
+	if (!enable_only && !promiscuous)
+		return false;
+
+	bus_mask &= (uint8_t)((1u << (unsigned)CAN_BACKEND_COUNT) - 1u);
+	if (bus_mask == 0u)
+		return false;
+
+	for (uint8_t b = 0u; b < (uint8_t)CAN_BACKEND_COUNT; b++) {
+		hit_ids[b] = 0u;
+		if ((bus_mask & (uint8_t)(1u << b)) != 0u) {
+			first = (can_bus_id_t)b;
+			break;
+		}
+	}
+
+	memset(out, 0, sizeof(*out));
+	out->motor_id = motor_id;
+	out->probe_kind = probe_kind;
+
+	listen_ms = enable_only ? 200u : 150u;
+	/* MCP rails in the mask: match single-bus inflate. */
+	if ((bus_mask & (uint8_t)~((1u << (unsigned)CAN_FDCAN_COUNT) - 1u)) != 0u)
+		listen_ms = (uint16_t)(listen_ms + listen_ms / 2u + 120u);
+
+	/* TX enable (and run-mode) on every bus in the mask. */
+	for (uint8_t b = 0u; b < (uint8_t)CAN_BACKEND_COUNT; b++) {
+		actuator_config_t cfg;
+		can_bus_id_t bus;
+
+		if ((bus_mask & (uint8_t)(1u << b)) == 0u)
+			continue;
+		bus = (can_bus_id_t)b;
+		cfg.bus = bus;
+		cfg.protocol = PROTO_ROBSTRIDE;
+		cfg.motor_id = motor_id;
+		cfg.enabled = true;
+		cfg.master_id = 0u;
+
+		can_rx_drain(bus);
+		if (bus >= CAN_BUS_CH4)
+			mcp2518_prepare_tx(bus);
+
+		if (robstride_set_run_mode(&cfg, RS02_RUN_MODE_MOVE, &frame) != PLUGIN_OK)
+			continue;
+		if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
+			continue;
+		HAL_Delay(2);
+		if (robstride_send_enable(&cfg, &frame) != PLUGIN_OK)
+			continue;
+		if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
+			continue;
+		HAL_Delay(2);
+	}
+
+	/* One shared listen window — round-robin poll/pop; progress each new hit. */
+	for (uint16_t attempt = 0; attempt < listen_ms; attempt++) {
+		for (uint8_t b = 0u; b < (uint8_t)CAN_BACKEND_COUNT; b++) {
+			can_bus_id_t bus;
+
+			if ((bus_mask & (uint8_t)(1u << b)) == 0u)
+				continue;
+			bus = (can_bus_id_t)b;
+			robstride_poll_listen(bus);
+			while (can_rx_pop(bus, &frame) == CAN_OK) {
+				robstride_probe_result_t hit;
+
+				(void)robstride_record_raw_ext(&frame, out);
+				memset(&hit, 0, sizeof(hit));
+				hit.motor_id = motor_id;
+				hit.probe_kind = probe_kind;
+				if (!robstride_try_parse_feedback(&frame, motor_id, promiscuous,
+				                                  &hit))
+					continue;
+
+				{
+					uint8_t disc = hit.discovered_id;
+					bool fresh = (hit_ids[b] == 0u) ||
+					             (promiscuous && hit_ids[b] != disc);
+
+					if (!fresh)
+						continue;
+					hit_ids[b] = disc;
+					hit.can_bus = (uint8_t)(b + 1u);
+					*out = hit;
+					any = true;
+					if (n_prog < 12u) {
+						plant_diag_probe_progress(&hit);
+						n_prog++;
+					}
+				}
+			}
+		}
+		plant_diag_yield_usb();
+		HAL_Delay(1);
+	}
+
+	if (!any) {
+		out->can_bus = (uint8_t)(first + 1u);
+		return (out->raw_frames_seen > 0u);
+	}
+	return true;
 }
 
 const plugin_ops_t robstride_ops = {

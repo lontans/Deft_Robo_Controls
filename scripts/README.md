@@ -17,6 +17,8 @@ cd scripts
 pip install -r requirements.txt
 python soft_dfu_flash.py
 python -m deft_controls_sdk.debug_dashboard --port COM5
+python -m pcb_lab
+python -m pcb_lab scan
 python -m pcb_lab doctor
 pytest pcb_lab/tests
 ```
@@ -25,7 +27,8 @@ pytest pcb_lab/tests
 
 ```text
 pcb_lab/
-  lab.py          # hold / step / blank / doctor → HostProxy
+  lab.py          # CLI + LabRobot
+  board.py        # scan / status / flash / interactive menu
   tests/          # offline SDK + lab tests
   legacy/         # gitignored local CLIs (not in repo)
 ```

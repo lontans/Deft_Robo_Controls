@@ -344,18 +344,21 @@ def calibrate(
     )
     print()
 
-    with lease(connection, telemetry, bus=bus):
-        if telemetry is not None:
-            telemetry.set_connected(True, mode="calibrate")
-        return _cal_body(
-            connection,
-            bus,
-            motor_id,
-            cal_listen_s,
-            usb_wait_s,
-            skip_iq_test,
-            strict_cali,
-        )
+    from deft_controls_sdk.debug.stream_pause import pause_plant_stream
+
+    with pause_plant_stream(connection):
+        with lease(connection, telemetry, bus=bus):
+            if telemetry is not None:
+                telemetry.set_connected(True, mode="calibrate")
+            return _cal_body(
+                connection,
+                bus,
+                motor_id,
+                cal_listen_s,
+                usb_wait_s,
+                skip_iq_test,
+                strict_cali,
+            )
 
 
 def _cal_body(

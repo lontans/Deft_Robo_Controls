@@ -20,8 +20,8 @@ bool plant_runtime_servo_can_apply(void)
 
 bool plant_runtime_actuator_can_apply(void)
 {
-	if (plant_command_mcu_state_readback() == PLANT_MCU_STATE_DIAG_ONLY) {
-		s_last_block = PLANT_BLOCK_DIAG_ONLY;
+	if (!plant_command_plant_apply_readback()) {
+		s_last_block = PLANT_BLOCK_APPLY_OFF;
 		return false;
 	}
 

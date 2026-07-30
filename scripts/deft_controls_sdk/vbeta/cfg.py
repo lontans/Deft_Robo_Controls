@@ -54,22 +54,14 @@ def table_matches_yam_left(table: Sequence) -> bool:
 def pause_plant_stream(hub: "ControlsPcbHub") -> Iterator[None]:
     """Pause plant TX/FB drain around CFG / DEBUG exchange_raw calls.
 
-    The plant stream thread shares ``Connection.reader`` with bench probes.
-    While it runs, CFG/Damiao replies are often stolen → ``TimeoutError``.
+    Canonical implementation: ``deft_controls_sdk.debug.stream_pause``.
     """
-    was = bool(hub.is_streaming)
-    hz = 40.0
-    try:
-        hz = float(getattr(hub._connection, "_stream_hz", 40.0) or 40.0)  # noqa: SLF001
-    except Exception:
-        pass
-    if was:
-        hub.stop_streaming()
-    try:
+    from deft_controls_sdk.debug.stream_pause import (
+        pause_plant_stream as _pause,
+    )
+
+    with _pause(hub):
         yield
-    finally:
-        if was:
-            hub.start_streaming(hz=hz)
 
 
 def _apply_rows(

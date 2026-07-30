@@ -43,8 +43,7 @@ static uint8_t g_diag_wr_ok;
 static uint8_t g_diag_rd_ok;
 static uint8_t g_diag_torque_ok;
 static uint32_t g_last_bus_poll_ms;
-
-
+static bool g_torque_on[SERVO_COUNT];
 
 static bool servo_host_command_stale(void)
 {
@@ -53,6 +52,15 @@ static bool servo_host_command_stale(void)
 
 servo_desire_t servo_desire_live[SERVO_COUNT];
 servo_state_t  servo_state_live[SERVO_COUNT];
+
+static bool servo_slot_wants_torque(uint8_t slot)
+{
+	if (slot >= SERVO_COUNT || !servo_table[slot].enabled)
+		return false;
+	if (servo_desire_live[slot].servo_id == 0u)
+		return false;
+	return servo_desire_live[slot].torque_enable != 0u;
+}
 
 static uint32_t servo_clamp_goal(uint8_t slot, int16_t native_step)
 {
@@ -107,6 +115,7 @@ static bool servo_recovery_step(void)
 	default:
 		if (dxl_write_u8(id, DXL_ADDR_TORQUE_ENABLE, DXL_TORQUE_ON))
 			g_diag_torque_ok++;
+		g_torque_on[g_recover_slot] = true;
 		g_hw_error[g_recover_slot] = 0u;
 		goto recovery_done;
 	}
@@ -129,6 +138,11 @@ static bool servo_unicast_write_slot(uint8_t slot)
 {
 	uint32_t goal;
 	uint8_t  id;
+
+	/* Observe / discover: host sets torque_enable=0 — never write a goal.
+	 * (Old path ignored the bit and always UNI_WR'd, which slewed to seed 0.) */
+	if (!servo_slot_wants_torque(slot))
+		return false;
 
 	if (slot >= SERVO_COUNT || !servo_table[slot].enabled)
 		return false;
@@ -190,8 +204,8 @@ static bool servo_torque_on_step(void)
 	uint32_t present;
 
 	while (g_torque_slot < SERVO_COUNT) {
-		if (!servo_table[g_torque_slot].enabled ||
-		    servo_desire_live[g_torque_slot].servo_id == 0u) {
+		/* Honor host torque_enable — observe sessions must not arm torque. */
+		if (!servo_slot_wants_torque(g_torque_slot)) {
 			g_torque_slot++;
 			continue;
 		}
@@ -205,7 +219,7 @@ static bool servo_torque_on_step(void)
 			return false;
 
 		/* Soft-start: latch goal to present before torque so we never
-		 * slew from an unknown host seed (e.g. table mid). */
+		 * slew from an unknown host seed (e.g. table mid / 0). */
 		if (dxl_read_u32(id, DXL_ADDR_PRESENT_POSITION, &present)) {
 			if (present < servo_table[g_torque_slot].pos_min)
 				present = servo_table[g_torque_slot].pos_min;
@@ -230,6 +244,7 @@ static bool servo_torque_on_step(void)
 		if (!dxl_write_u8(id, DXL_ADDR_TORQUE_ENABLE, DXL_TORQUE_ON))
 			return false;
 
+		g_torque_on[g_torque_slot] = true;
 		g_diag_torque_ok++;
 		g_torque_slot++;
 		return true;
@@ -249,6 +264,7 @@ static void servo_bus_reset(void)
 	g_bus_cycles  = 0u;
 	memset(g_hw_error, 0, sizeof(g_hw_error));
 	memset(g_pose_latched, 0, sizeof(g_pose_latched));
+	memset(g_torque_on, 0, sizeof(g_torque_on));
 	g_recover_phase = 0u;
 }
 
@@ -261,6 +277,39 @@ static void servo_torque_off_all(void)
 			continue;
 		(void)dxl_write_u8(servo_table[i].id, DXL_ADDR_TORQUE_ENABLE,
 		                   DXL_TORQUE_OFF);
+		g_torque_on[i] = false;
+	}
+}
+
+/* Host may drop torque_enable mid-session (observe) or raise it after a
+ * torque_enable=0 discover seed — apply those edges without waiting for
+ * session end. */
+static void servo_sync_torque_desire(void)
+{
+	uint8_t i;
+
+	for (i = 0; i < SERVO_COUNT; i++) {
+		if (g_torque_on[i] && !servo_slot_wants_torque(i)) {
+			if (servo_table[i].enabled) {
+				(void)dxl_write_u8(servo_table[i].id,
+				                   DXL_ADDR_TORQUE_ENABLE,
+				                   DXL_TORQUE_OFF);
+			}
+			g_torque_on[i] = false;
+			g_pose_latched[i] = false;
+		}
+	}
+
+	if (g_step == SERVO_ST_RECOVER)
+		return;
+
+	for (i = 0; i < SERVO_COUNT; i++) {
+		if (servo_slot_wants_torque(i) && !g_torque_on[i]) {
+			g_torque_slot = i;
+			g_torque_done = false;
+			g_step = SERVO_ST_TORQUE;
+			return;
+		}
 	}
 }
 
@@ -275,6 +324,8 @@ static void servo_bus_service(void)
 	 * servo_bus_poll() after FB TX — not on the TIM6 autonomy path. */
 	if (!g_servo_host_session)
 		return;
+
+	servo_sync_torque_desire();
 
 	switch (g_step) {
 	case SERVO_ST_TORQUE:
@@ -299,7 +350,10 @@ static void servo_bus_service(void)
 
 	case SERVO_ST_UNI_RD:
 	default:
-		if ((g_bus_cycles % SERVO_HW_POLL_CYCLES) == 0u) {
+		/* Observe (torque_enable=0): present-position read only — no HW-error
+		 * recovery path (that reboots + torque-ons). */
+		if (servo_slot_wants_torque(g_slot) &&
+		    (g_bus_cycles % SERVO_HW_POLL_CYCLES) == 0u) {
 			if (servo_read_hw_error(g_slot, &hw_err) && hw_err != 0u) {
 				servo_begin_recovery(g_slot, hw_err);
 				g_bus_cycles++;

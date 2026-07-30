@@ -1,25 +1,74 @@
 # pcb_lab
 
-Plant lab on **HostProxy**, plus parked tests and deprecated CLIs.
-
-```text
-pcb_lab/
-  lab.py / __main__.py   → doctor | hold | step | blank
-  tests/                 → pytest (offline)
-  legacy/                → gitignored local CLIs (optional; not tracked)
-```
+Board toolkit for the Controls PCB. Prefer the interactive menu; CLI subcommands stay available.
 
 ```powershell
 cd scripts
+python -m pcb_lab              # interactive menu
+python -m pcb_lab -h
+
+python -m pcb_lab scan
+python -m pcb_lab status --port COM5
+python -m pcb_lab leave
+python -m pcb_lab flash
+python -m pcb_lab images
+python -m pcb_lab build
+python -m pcb_lab show defaults
+
+# HostProxy snapshot (mode=debug)
 python -m pcb_lab doctor --port COM5
-python -m pcb_lab hold --component left_arm --hold-s 3
-pytest pcb_lab/tests
+
+# CFG / PCB TUI (always mode=debug)
+python -m pcb_lab.debug --port COM5 show --pcb
+python -m pcb_lab.debug --port COM5 show          # CFG table
+python -m pcb_lab.debug --port COM5 show --bandwidth
+
+# Mode-disciplined proves (suite-owned; no vbeta imports)
+python -m pcb_lab.debug test                     # picker
+python -m pcb_lab.debug test --bandwidth
+python -m pcb_lab.debug test --actuators
+python -m pcb_lab.debug test --led --preset idle
+python -m pcb_lab.debug test --servo
+python -m pcb_lab.debug test --pdu-link
 ```
+
+`HostProxy.connect` / `ControlsPcbHub.connect` default to **`mode="bandwidth"`**. Pass `mode="debug"` (or use `pcb_lab.debug`) for CFG / discover / debug-lanes RPC.
+
+`status` proves USB duplex at ~200 Hz host TX and checks FB `stm32_mode` echo is **bandwidth** (not debug / soft_dfu).
+
+## `pcb_lab.debug test` — mode rules
+
+All `test` code lives under `deft_controls_sdk.debug.suite` (`pcb_lab.debug` is a thin alias). Suite tests must not import `vbeta.*`.
+
+| Prove | Link mode | Pass gates |
+|-------|-----------|------------|
+| `--bandwidth` | **bandwidth** (dedicated connect) | `debug.metrics.measure_hold` (ack_lag / fb_hz / stm32_mode) |
+| `--actuators` / `--led` / `--servo` / `--pdu-link` | **debug** | functional / observe only — **no** timing floors |
+
+**Plant motion** (programmatic): `LabRobot.component("left_arm")` returns the same `actions.ComponentAction` as `HostProxy.component` — profiles live in `deft_controls_sdk.config`.
+
+**Inventory** (what’s plugged in) is a top-level command — not under bandwidth:
+
+```bash
+python -m pcb_lab inventory                         # TUI: pick buses + ID ranges
+python -m pcb_lab inventory --preset bench --buses 5,6
+python -m pcb_lab inventory --rs-range 0x70-0x75 --dm-range 1-8 --json
+```
+
+Actuator discover **requires** an ID range (`--preset` / `--rs-range` / TUI) — wide defaults are intentionally not used. Also samples neck servos and PDU kill-link wire.
+
+`test --bandwidth` TUI nests under **virtual** (`rx_sim` ON) vs **hardware** (`rx_sim` OFF). Scenarios: `idle` / `ch1`…`ch6` / `fdcan` / `mcp` / `arms` / `all`. Non-interactive: `--virtual|--hardware --matrix`, `--scenario mcp`, `--hz-list 40,200,500`.
+
+Debug sessions interleave `DBGC`/`DBGF` with plant frames and can inflate `ack_lag` / depress `fb_hz`. Timing proves always reconnect in bandwidth mode.
+
+Bare `show` prints the CFG table. Live board view: `show --pcb`. Doctor JSON: `pcb_lab doctor` (programmatic `collect_status` remains for scripts).
+
+## Layout
 
 ```text
-pcb_lab → HostProxy → ControlsPcbHub → USB
+pcb_lab/
+  lab.py          # CLI + LabRobot (programmatic hold/step still available)
+  board.py        # scan / status / flash / images / menu
+  debug/          # alias → deft_controls_sdk.debug.suite
+  tests/          # offline SDK + lab tests
 ```
-
-YAM / teleop uses `deft_controls_sdk.vbeta` on the same HostProxy — see [`../deft_controls_sdk/README.md`](../deft_controls_sdk/README.md).
-
-**Not** a replacement for `deft_controls_sdk.debug` (`hub.debug` CFG / discover / Soft-DFU).

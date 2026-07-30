@@ -18,21 +18,21 @@ Wire bytes: [host-contract.md](host-contract.md). Buses / protocols: [plant.md](
 
 | Name | What | Where |
 |------|------|-------|
-| USB DEBUG **pdu** mailbox | 32 B tags (`DFU!`, `CFG`, `RS2`, …) inside DEBUG frames | `host_exchange_schema.h` |
+| USB DEBUG **pdu** mailbox | Legacy 32 B tags inside `DBGC`/`DBGF` (deprecated) | offset 630 — see [debug-mailbox-deprecation.md](debug-mailbox-deprecation.md) |
+| **Debug lanes** | `DL\x01` + 10×32 B lanes on `DBGC`/`DBGF` | ADR-004 / [host-contract.md](host-contract.md) |
 | **PDB / PDU kill** | Soft/hard kill over **UART4** | `pdb_link.c` — [plant.md](plant.md)#pdb-kill |
 
-Same word; different protocols. FB `pdb[64]` mirrors power-board telemetry on PLANT; DEBUG uses the first 32 B of that region as a mailbox on `DBGC`/`DBGF` only.
+Same word historically; plant `HBHF.pdb[64]` is the power-board mirror only. Debug RPC uses debug lanes (preferred) or the legacy mailbox on DEBUG frames.
 
 ## Host API modes
 
-One physical link (USB CDC or UART), one 694 B cyclic frame — two jobs share it. Apps choose a **mode**, not a raw `pdu` tag.
+One physical link (USB CDC or UART). **`stm32_mode`** is chosen at `ControlsPcbHub.connect(mode=...)` and changes only via disconnect/reconnect (ADR-004). Distinct from `mcu_state` (apply/safety).
 
-| Mode | Wire | Host surface |
-|------|------|--------------|
-| **PLANT** | `CMDH`/`HBHF`, mailbox ignored | `ControlsPcbHub`: `set_actuator`, `start_streaming`, `recover`, … |
-| **DEBUG** | `DBGC`/`DBGF` tagged mailbox | `hub.debug.*` (exclusive lease) |
-| **HEALTH** | Derived from FB system word | Feedback fields |
-| **LOG** | Host-side NDJSON / `state.json` | `hub.telemetry.*` |
+| `mode=` / `stm32_mode` | Wire | Host surface |
+|------------------------|------|--------------|
+| **plant** / **bandwidth** (0) | `CMDH`/`HBHF` only; PDU mirror at 630+ | streaming, timing metrics; `hub.debug.*` refuses |
+| **debug** (1) | plant frames + debug lanes `DBGC`/`DBGF` | `hub.debug.*` (lease / discover / CFG) |
+| Soft-DFU (2) | leave app CDC → ROM DFU | `enter_bootloader` / flash scripts |
 
 Until a mux/`hubd` exists: **one process owns COM**.
 
@@ -69,13 +69,13 @@ TIM6 ISR → PlantTask
 PeripheralTask: DXL / LED
 ```
 
-Wins that got FB from ~2 Hz → ~600–750 Hz: INT-gated MCP RX, blank-MCP skip, poll budget, host coalesce (latest command image), ≤1 FB/tick. Coalesce intentionally causes `cmd_seq_lag` at high host TX — not a bug.
+Wins that got FB from ~2 Hz → ~600–750 Hz: INT-gated MCP RX, poll budget, host coalesce (latest command image), ≤1 FB/tick. Coalesce intentionally causes `cmd_seq_lag` at high host TX — not a bug. (Historical blank-MCP-only skip is gone; CH4–6 share the same blank-bus policy as CH1–3.)
 
-Measure: `act_lap_ms` / `act_lap_peak_ms` / `periph_lap_*` in FB; `scripts/bench_load_matrix.py`.
+Measure: `act_lap_ms` / `act_lap_peak_ms` / `periph_lap_*` in FB; suite bandwidth TUI / matrix (`python -m pcb_lab.debug test --bandwidth`).
 
 ## Plant gates
 
-`plant_runtime.c` gates 500 Hz apply. When blocked, `host_system_feedback.reserved` carries `plant_block_reason_t` (bench session, probe, quiet, DIAG_ONLY, host_stale, servo session).
+`plant_runtime.c` gates 500 Hz apply. When blocked, `host_system_feedback.reserved` carries `plant_block_reason_t` (bench session, probe, quiet, **apply_off** / `plant_apply=0`, host_stale, servo session).
 
 ## Mixed protocol (CFG, not sniff)
 
@@ -88,7 +88,7 @@ Each of 26 slots: `{bus, protocol, motor_id, master_id, enabled}`. RX fans out t
 | `PROTO_DAMIAO` | 3 | STD MIT |
 | `PROTO_ZEROERR` | 4 | STD CANopen |
 
-Blank policy: skip SPI on uncommanded MCP; Damiao/CubeMars on FDCAN keep enable latch / MIT; ZeroErr blank (`kp≈0`) must shut down PDO, not spam boot.
+Blank policy: shared for CH1–6 — skip blank slots on a bus with no commanded hold unless all-idle sync; Damiao/CubeMars keep enable latch / MIT; ZeroErr blank (`kp≈0`) must shut down PDO, not spam boot. Host idle-anchor uses `p=1e-6` so MCP stays in path when other buses are active.
 
 ## Product CFG (YAM)
 

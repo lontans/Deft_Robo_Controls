@@ -77,6 +77,15 @@ class FakeStore:
         self.fb_pos = {s: 0.0 for s in range(ACTUATOR_COUNT)}
         self.fb_vel = {s: 0.0 for s in range(ACTUATOR_COUNT)}
         self._connection = _FakeConn(self)
+        self._listen_pdu = False
+
+    @property
+    def listen_pdu(self) -> bool:
+        return self._listen_pdu
+
+    @listen_pdu.setter
+    def listen_pdu(self, enabled: bool) -> None:
+        self._listen_pdu = bool(enabled)
 
     def set_actuator(self, slot: int, desire: ActuatorDesire, *, send: bool = True) -> None:
         self.actuators[slot] = desire
@@ -275,34 +284,35 @@ def test_neck_and_led() -> None:
     assert store.servos[0].native_step_position == deg_to_steps(30.0)
     assert store.servos[1].native_step_position == deg_to_steps(10.0)
     set_led(session, 2, brightness=10)
-    assert store.led is not None and store.led.mode == 2
+    assert store.led is not None
+    assert store.led.mode == "debug" and store.led.pattern == 2
+    assert store.led.wire_mode == 2
     led_off(session)
-    assert store.led.mode == 0
+    assert store.led.mode == "follow" and store.led.wire_mode == 0
 
 
 def test_led_factory_pattern_helpers() -> None:
     """Named factory/traffic-light helpers (docs/legacy/rfc/rfc-led-factory-patterns.md)
-    resolve to the right mode + carry brightness through, same contract as
-    the generic set_led/led_off path above."""
+    resolve to the right wire pattern + carry brightness through."""
     session, store = _session()
 
     led_solid_green(session, brightness=20)
-    assert store.led.mode == 3 and store.led.master_brightness == 20
+    assert store.led.wire_mode == 3 and store.led.master_brightness == 20
 
     led_solid_yellow(session, brightness=12)
-    assert store.led.mode == 4 and store.led.master_brightness == 12
+    assert store.led.wire_mode == 4 and store.led.master_brightness == 12
 
     led_solid_red(session, brightness=31)
-    assert store.led.mode == 5 and store.led.master_brightness == 31
+    assert store.led.wire_mode == 5 and store.led.master_brightness == 31
 
     led_caution(session, brightness=8)
-    assert store.led.mode == 6
+    assert store.led.wire_mode == 6
 
     led_fault(session, brightness=8)
-    assert store.led.mode == 7
+    assert store.led.wire_mode == 7
 
     led_idle(session, brightness=12)
-    assert store.led.mode == 8 and store.led.master_brightness == 12
+    assert store.led.wire_mode == 8 and store.led.master_brightness == 12
 
 
 # -- Rig components (single Damiao arm + optional RS/neck/LED/PDU) -----------------
@@ -397,7 +407,7 @@ def test_rig_components_tick_composes_attached_pieces() -> None:
     assert result.robstride_position == pytest.approx(0.3)
     assert result.neck_pose_deg is not None  # zero-steps default FB, still a valid hold
     assert result.pdb_status is canned
-    assert store.led is not None and store.led.mode == 8
+    assert store.led is not None and store.led.wire_mode == 8
 
 
 def test_rig_components_tick_skips_everything_when_soft_kill_parked() -> None:

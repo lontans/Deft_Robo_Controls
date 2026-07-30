@@ -93,6 +93,7 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
             self._held = {0: ActuatorDesire(position=1.0, kp=8.0, kd=0.4), 3: ActuatorDesire()}
             self.auto_soft_kill = None
             self.mcu_states = []
+            self.plant_apply_flags = []
 
         def held_desire(self, slot: int):
             return self._held.get(slot)
@@ -111,6 +112,9 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
         def set_mcu_state(self, state, *, send: bool = True) -> None:
             self.mcu_states.append(int(state))
 
+        def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
+            self.plant_apply_flags.append(bool(enable))
+
         def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             self._held[slot] = desire
 
@@ -125,7 +129,8 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
     state, base = server
     state.connect("COM5")  # observe default
     assert fake.auto_soft_kill is False
-    assert fake.mcu_states and int(fake.mcu_states[-1]) == 2  # DIAG_ONLY
+    assert fake.mcu_states and int(fake.mcu_states[-1]) == 0  # NORMAL
+    assert fake.plant_apply_flags and fake.plant_apply_flags[-1] is False
     assert state.control_mode == "observe"
     status, data = _get(base, "/api/state")
     assert status == 200
@@ -203,6 +208,9 @@ def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
         def set_mcu_state(self, state, *, send: bool = True) -> None:
             pass
 
+        def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
+            pass
+
         def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
 
@@ -249,6 +257,9 @@ def test_observe_blocks_plant_commands_until_enable_control(server, monkeypatch)
 
         def set_mcu_state(self, state, *, send: bool = True) -> None:
             self.mcu = state
+
+        def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
+            self.plant_apply = bool(enable)
 
         def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
@@ -388,6 +399,9 @@ def test_app_state_rejects_double_connect_via_lock(monkeypatch) -> None:
         def set_mcu_state(self, state, *, send: bool = True) -> None:
             pass
 
+        def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
+            pass
+
         def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
 
@@ -450,6 +464,9 @@ class _TeleopFakeHub:
 
     def set_mcu_state(self, state_, *, send: bool = True) -> None:
         self.mcu_states.append(int(state_))
+
+    def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
+        pass
 
     def set_actuator(self, slot, desire, *, send: bool = True) -> None:
         self._acts[slot] = desire
