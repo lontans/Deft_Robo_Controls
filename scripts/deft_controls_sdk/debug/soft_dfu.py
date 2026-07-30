@@ -124,6 +124,47 @@ def list_cdc_ports(*, serial: Optional[str] = None) -> List[CdcPortInfo]:
     return out
 
 
+def _port_key(device: str) -> str:
+    """Normalize COM / tty path for equality (Windows COM is case-insensitive)."""
+    d = (device or "").strip()
+    if host_os() == "windows":
+        return d.upper()
+    return d
+
+
+def cdc_info_for_port(port: str) -> Optional[CdcPortInfo]:
+    """Look up ``list_cdc_ports()`` row for ``port`` (e.g. ``COM5``), or None."""
+    key = _port_key(port)
+    for row in list_cdc_ports():
+        if _port_key(row.device) == key:
+            return row
+    return None
+
+
+def resolve_flash_identity(
+    *,
+    port: Optional[str] = None,
+    serial: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Normalize ``(port, serial)`` for Soft-DFU enter + DFU re-enum.
+
+    If only ``port`` is given (e.g. ``COM5``), resolve the USB serial number
+    from that CDC device so DF11 programming still targets the same board
+    after CDC drops. Explicit ``serial`` wins when both are set; mismatch
+    vs the port's USB SN raises.
+    """
+    if port is None:
+        return None, serial
+    info = cdc_info_for_port(port)
+    if info is None:
+        return port, serial
+    if serial is not None and info.serial and serial != info.serial:
+        raise RuntimeError(
+            f"port {port!r} has USB serial {info.serial!r}, not {serial!r}"
+        )
+    return port, serial or info.serial
+
+
 def find_cdc_port(
     *,
     port: Optional[str] = None,
@@ -807,6 +848,10 @@ def _flash_via_swd(image: Path, *, serial: Optional[str]) -> str:
             "check USB device cable / power"
         )
     print(f"flash ok (SWD) — CDC at {cdc}", flush=True)
+    try:
+        post_flash_listen_pdu(cdc)
+    except Exception as exc:  # noqa: BLE001
+        print(f"post-flash listen_pdu warn: {exc}", flush=True)
     return cdc
 
 
@@ -861,6 +906,7 @@ def _program_usb_dfu(
 def flash_firmware(
     image: Optional[os.PathLike[str] | str] = None,
     *,
+    port: Optional[str] = None,
     serial: Optional[str] = None,
     flash_address: int = _APP_FLASH_BASE,
     confirm: bool = True,
@@ -872,6 +918,9 @@ def flash_firmware(
     present, else Debug ELF (see ``default_firmware_elf``).
     Returns the CDC device path after the app re-enumerates.
 
+    Pass ``port`` (e.g. ``COM5``) and/or USB ``serial``. Port alone is enough:
+    the USB serial is resolved from that CDC device for DFU re-enumeration.
+
     Order:
       1. If ``0483:DF11`` already present → USB program + Leave
       2. Else soft-enter from CDC → wait for DF11 → USB program + Leave
@@ -881,6 +930,10 @@ def flash_firmware(
     """
     if not confirm:
         raise ValueError("flash_firmware() requires confirm=True")
+
+    port, serial = resolve_flash_identity(port=port, serial=serial)
+    if port is not None:
+        print(f"target CDC {port}" + (f" sn={serial}" if serial else ""), flush=True)
 
     img = Path(image) if image is not None else default_firmware_elf()
     if not img.is_file():
@@ -915,8 +968,8 @@ def flash_firmware(
     in_dfu = wait_for_dfu(serial=serial, timeout_s=0.5)
     if not in_dfu:
         try:
-            port = enter_bootloader(confirm=True, serial=serial)
-            print(f"soft-entered DFU from {port}", flush=True)
+            entered = enter_bootloader(confirm=True, port=port, serial=serial)
+            print(f"soft-entered DFU from {entered}", flush=True)
         except RuntimeError as exc:
             if swd_ok:
                 print(
@@ -969,7 +1022,77 @@ def flash_firmware(
             "app CDC did not reappear after Leave — power-cycle the board"
         )
     print(f"flash ok — CDC at {cdc}", flush=True)
+    try:
+        post_flash_listen_pdu(cdc)
+    except Exception as exc:  # noqa: BLE001 — flash succeeded; LED settle is best-effort
+        print(f"post-flash listen_pdu warn: {exc}", flush=True)
     return cdc
+
+
+def post_flash_listen_pdu(port: str, *, hold_s: float = 0.35) -> None:
+    """After Soft-DFU, stage NVM ``listen_pdu`` + host LedDesire follow.
+
+    Strip then follows PDU traffic-light (no peer / HARD → blink-red).
+    Needs the new app image already running. Safe no-op if COM busy.
+    """
+    # Late import: soft_dfu must stay importable without hub side-effects.
+    from deft_controls_sdk.host_proxy import HostProxy
+    from deft_controls_sdk.link import LedDesire
+    from deft_controls_sdk.vbeta.cfg import pause_plant_stream
+
+    print(f"staging listen_pdu on {port}…", flush=True)
+    with HostProxy.connect(
+        port, stream_hz=200.0, telemetry_hz=200.0, idle_first=True, listen_pdu=True
+    ) as proxy:
+        proxy.set_led(LedDesire(mode="follow", master_brightness=8), send=True)
+        try:
+            with pause_plant_stream(proxy.hub):
+                periph = proxy.hub.debug.cfg_get_periph()
+                periph["listen_pdu"] = True
+                proxy.hub.debug.cfg_set_periph(periph, persist=False)
+        except Exception as exc:  # noqa: BLE001 — older FW may lack GET_PERIPH
+            print(f"  CFG listen_pdu warn: {exc}", flush=True)
+        proxy.listen_pdu = True
+        proxy.sleep(float(hold_s))
+    print("listen_pdu staged (LedDesire follow)", flush=True)
+
+
+# Back-compat alias (old Soft-DFU callers / tests).
+post_flash_idle_led = post_flash_listen_pdu
+
+
+def pcb_status(
+    *,
+    port: Optional[str] = None,
+    serial: Optional[str] = None,
+    listen_pdu: bool = False,
+    stream_hz: float = 200.0,
+) -> dict:
+    """Open the board briefly and return HostProxy.doctor() (read-only).
+
+    Includes stream rates, MCU host command, PDB (honored only if
+    ``listen_pdu``), and inferred LED. Same payload as
+    ``python -m pcb_lab doctor``. Does not flash or write NVM.
+    """
+    # Late import: avoid soft_dfu ↔ hub import cycles at module load.
+    from deft_controls_sdk.host_proxy import HostProxy
+
+    port, serial = resolve_flash_identity(port=port, serial=serial)
+    device = find_cdc_port(port=port, serial=serial)
+    with HostProxy.connect(
+        device,
+        stream_hz=float(stream_hz),
+        telemetry_hz=float(stream_hz),
+        idle_first=True,
+        listen_pdu=bool(listen_pdu),
+    ) as proxy:
+        report = proxy.doctor()
+        report["usb_serial"] = serial
+        info = cdc_info_for_port(device)
+        if info is not None:
+            report["usb_serial"] = info.serial
+            report["cdc_description"] = info.description
+        return report
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -991,6 +1114,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--image",
         default=None,
         help="path to .elf or .bin (default: Release/*.elf if present, else Debug)",
+    )
+    f.add_argument(
+        "--port",
+        default=None,
+        help="app CDC port (e.g. COM5); USB serial is resolved for DFU re-enum",
     )
     f.add_argument(
         "--serial",
@@ -1017,21 +1145,63 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     l = sub.add_parser("leave", help="AN3156 Leave to reset trampoline")
     l.add_argument("--serial", default=None)
+    l.add_argument(
+        "--port",
+        default=None,
+        help="optional CDC port used only to resolve USB serial for DFU Leave",
+    )
 
     s = sub.add_parser("scan", help="list STM32 CDC / DFU presence")
     s.add_argument("--serial", default=None)
+    s.add_argument(
+        "--port",
+        default=None,
+        help="highlight / filter to this CDC port and print its USB serial",
+    )
+
+    st = sub.add_parser(
+        "status",
+        help="query PCB host state (HostProxy doctor — read-only, needs app CDC)",
+    )
+    st.add_argument("--port", default=None, help="CDC port (e.g. COM5)")
+    st.add_argument("--serial", default=None, help="USB serial if multiple boards")
+    st.add_argument(
+        "--listen-pdu",
+        action="store_true",
+        help="honor PDB kill in status/LED (default: off; wire still under pdb.wire)",
+    )
+    st.add_argument(
+        "--stream-hz",
+        type=float,
+        default=200.0,
+        help="plant stream rate while status is open (default 200)",
+    )
 
     args = p.parse_args(list(argv) if argv is not None else None)
 
     if args.cmd == "scan":
+        port, serial = resolve_flash_identity(
+            port=getattr(args, "port", None), serial=args.serial
+        )
         print(f"host: {host_os()}  cubeprog: {_which_cubeprog() or '(none)'}  "
               f"dfu-util: {_which_dfu_util() or '(none)'}")
-        for row in list_cdc_ports(serial=args.serial):
+        if port is not None:
+            info = cdc_info_for_port(port)
+            if info is None:
+                print(f"  port {port}: (not currently enumerated)")
+            else:
+                print(
+                    f"  port {info.device} → sn={info.serial}  "
+                    f"stm32_cdc={info.is_stm32_cdc}  {info.description}"
+                )
+        for row in list_cdc_ports(serial=serial):
+            if port is not None and _port_key(row.device) != _port_key(port):
+                continue
             mark = "CDC" if row.is_stm32_cdc else "   "
             print(f"  [{mark}] {row.device}  sn={row.serial}  "
                   f"vid={row.vid} pid={row.pid}  {row.description}")
         try:
-            present = wait_for_dfu(serial=args.serial, timeout_s=0.3)
+            present = wait_for_dfu(serial=serial, timeout_s=0.3)
         except RuntimeError as exc:
             print(f"  DFU: ({exc})")
         else:
@@ -1042,12 +1212,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
         return 0
 
+    if args.cmd == "status":
+        import json
+
+        report = pcb_status(
+            port=args.port,
+            serial=args.serial,
+            listen_pdu=bool(args.listen_pdu),
+            stream_hz=float(args.stream_hz),
+        )
+        print(json.dumps(report, indent=2))
+        return 0
+
     if args.cmd == "enter":
-        print(enter_bootloader(confirm=True, port=args.port, serial=args.serial))
+        port, serial = resolve_flash_identity(port=args.port, serial=args.serial)
+        print(enter_bootloader(confirm=True, port=port, serial=serial))
         return 0
 
     if args.cmd == "leave":
-        ok = leave_bootloader(serial=args.serial)
+        _port, serial = resolve_flash_identity(
+            port=getattr(args, "port", None), serial=args.serial
+        )
+        ok = leave_bootloader(serial=serial)
         print("left" if ok else "timeout")
         return 0 if ok else 1
 
@@ -1055,6 +1241,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         addr = int(args.address, 0)
         flash_firmware(
             args.image,
+            port=args.port,
             serial=args.serial,
             flash_address=addr,
             confirm=True,

@@ -13,10 +13,12 @@ if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
 from deft_controls_sdk.host_proxy import (  # noqa: E402
+    BENCH_BASE_SLOTS,
     LEFT_ARM_SLOTS,
     ComponentView,
     HostProxy,
     Profile,
+    bench_continuous_profile,
     yam_product_profile,
 )
 from deft_controls_sdk.link import ActuatorDesire  # noqa: E402
@@ -37,10 +39,17 @@ class _FakeConn:
 
 class _FakeHub:
     def __init__(self) -> None:
+        from deft_controls_sdk.link import McuState
+
         self._connection = _FakeConn()
         self.is_streaming = True
         self.port = "FAKE"
         self.debug = SimpleNamespace(cfg_get_table=lambda: [None] * 26)
+        self._mcu_state = McuState.DIAG_ONLY
+        self._led_desire = None
+        self._listen_pdu = False
+        self._stream_hz = 200.0
+        self._telemetry_hz = 200.0
 
     def set_actuator(self, slot, desire, *, send: bool = False) -> None:
         self._connection.actuators[slot] = desire
@@ -48,8 +57,8 @@ class _FakeHub:
     def set_servo(self, *a, **k) -> None:
         pass
 
-    def set_led(self, *a, **k) -> None:
-        pass
+    def set_led(self, desire, *, send: bool = False) -> None:
+        self._led_desire = desire
 
     def send_once(self) -> None:
         pass
@@ -60,14 +69,44 @@ class _FakeHub:
     def close(self) -> None:
         pass
 
-    def start_streaming(self, hz: float = 40.0, **k) -> None:
+    def start_streaming(self, hz: float = 200.0, **k) -> None:
         self.is_streaming = True
+        self._stream_hz = float(hz)
+        if "telemetry_hz" in k:
+            self._telemetry_hz = float(k["telemetry_hz"])
 
     def stop_streaming(self) -> None:
         self.is_streaming = False
 
-    def set_mcu_state(self, *a, **k) -> None:
-        pass
+    def set_mcu_state(self, state, *, send: bool = False) -> None:
+        self._mcu_state = state
+
+    @property
+    def mcu_state(self):
+        return self._mcu_state
+
+    @property
+    def led_desire(self):
+        return self._led_desire
+
+    @property
+    def listen_pdu(self):
+        return self._listen_pdu
+
+    @listen_pdu.setter
+    def listen_pdu(self, enabled: bool) -> None:
+        self._listen_pdu = bool(enabled)
+
+    @property
+    def stream_hz(self):
+        return self._stream_hz
+
+    @property
+    def telemetry_hz(self):
+        return self._telemetry_hz
+
+    def pdb_status(self, raw=None):
+        return None
 
 
 def test_yam_product_profile_components():
@@ -77,6 +116,22 @@ def test_yam_product_profile_components():
     assert len(p.slots("base")) == 6
     with pytest.raises(KeyError):
         p.slots("nope")
+
+
+def test_bench_continuous_profile_base_on_spare_slots():
+    p = bench_continuous_profile()
+    assert p.name == "yam_bench_continuous"
+    assert p.slots("base") == BENCH_BASE_SLOTS
+    assert len(p.slots("base_product")) == 6
+
+
+def test_demux_report_offline():
+    hub = _FakeHub()
+    proxy = HostProxy.wrap(hub, profile=bench_continuous_profile())
+    report = proxy.demux_report()
+    assert report["profile"] == "yam_bench_continuous"
+    assert report["by_component"]["base"][0]["slot"] == 22
+    assert report["cfg_ok"] is True
 
 
 def test_component_hold_writes_slots():
@@ -100,9 +155,46 @@ def test_session_wraps_host_proxy():
 
 
 def test_doctor_offline():
+    from deft_controls_sdk.link import LedDesire
+    from deft_controls_sdk.link.api_types import LED_MODE_IDLE_CORNFLOWER
+
     hub = _FakeHub()
+    hub.set_led(
+        LedDesire(
+            mode="debug",
+            pattern=LED_MODE_IDLE_CORNFLOWER,
+            master_brightness=8,
+        )
+    )
     proxy = HostProxy.wrap(hub)
     report = proxy.doctor()
     assert report["profile"] == "yam_product"
     assert report["cfg_ok"] is True
     assert report["streaming"] is True
+    assert report["mcu"]["host_command_name"] == "DIAG_ONLY"
+    assert report["led"]["effective_mode_name"] == "idle_cornflower"
+    assert report["led"]["source"] == "host_debug"
+    assert report["led"]["host_policy"] == "debug"
+    assert report["listen_pdu"] is False
+    assert report["stream"]["hz"] == 200.0
+    assert report["pdb"]["listening"] is False
+
+
+def test_infer_led_from_pdb_kill():
+    from deft_controls_sdk.link.api_types import (
+        LED_MODE_BLINK_RED_FAST,
+        LED_MODE_IDLE_CORNFLOWER,
+        infer_effective_led,
+        led_mode_from_pdb_kill,
+    )
+
+    assert led_mode_from_pdb_kill(kill_state=0, estop_sense=1) == LED_MODE_IDLE_CORNFLOWER
+    assert led_mode_from_pdb_kill(kill_state=3, estop_sense=1) == LED_MODE_BLINK_RED_FAST
+    led = infer_effective_led(
+        host_led_mode="follow",
+        listen_pdu=True,
+        kill_state=1,
+        estop_sense=1,
+    )
+    assert led["source"] == "pdu_traffic_light"
+    assert led["effective_mode_name"] == "blink_yellow_slow"

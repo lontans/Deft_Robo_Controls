@@ -303,6 +303,10 @@ CFG_RESP_TAG0, CFG_RESP_TAG1, CFG_RESP_TAG2 = ord("c"), ord("f"), ord("g")
 CFG_OP_GET = 1
 CFG_OP_SET = 2
 CFG_OP_SAVE = 3
+CFG_OP_LOAD = 4
+CFG_OP_DEFAULTS = 5
+CFG_OP_GET_PERIPH = 6
+CFG_OP_SET_PERIPH = 7
 
 CFG_STATUS_OK = 0
 CFG_STATUS_BAD_ARG = 1
@@ -316,6 +320,8 @@ CFG_STATUS_NAMES = {
     CFG_STATUS_BAD_CRC: "bad_crc",
 }
 
+CFG_FLAG_LISTEN_PDU = 1 << 0
+
 
 def build_cfg_command(
     op: int,
@@ -328,6 +334,7 @@ def build_cfg_command(
     master_id: int = 0,
     enabled: bool = True,
     mcu_state: int = PLANT_MCU_STATE_NORMAL,
+    periph: Optional[dict] = None,
 ) -> bytes:
     buf = _blank_command(seq)
     patch_system_mcu_state(buf, mcu_state)
@@ -336,22 +343,48 @@ def build_cfg_command(
     buf[PDU_OFF + 2] = CFG_TAG2
     buf[PDU_OFF + 3] = op & 0xFF
     buf[PDU_OFF + 4] = slot & 0xFF
-    buf[PDU_OFF + 8] = bus & 0xFF
-    buf[PDU_OFF + 9] = protocol & 0xFF
-    buf[PDU_OFF + 10] = motor_id & 0xFF
-    buf[PDU_OFF + 11] = master_id & 0xFF
-    buf[PDU_OFF + 12] = 1 if enabled else 0
+    if op == CFG_OP_SET_PERIPH and periph is not None:
+        # Mirror App plant_config_on_command SET_PERIPH layout at p[8..].
+        flags = int(periph.get("flags", 0)) & 0xFF
+        if "listen_pdu" in periph:
+            if periph["listen_pdu"]:
+                flags |= CFG_FLAG_LISTEN_PDU
+            else:
+                flags &= ~CFG_FLAG_LISTEN_PDU
+        buf[PDU_OFF + 8] = flags & 0xFF
+        servos = periph.get("servos") or []
+        for i in range(2):
+            s = servos[i] if i < len(servos) else {}
+            off = PDU_OFF + 9 + i * 8
+            buf[off + 0] = int(s.get("model", 0)) & 0xFF
+            buf[off + 1] = int(s.get("id", 0)) & 0xFF
+            buf[off + 2] = 1 if s.get("enabled", False) else 0
+            pmin = int(s.get("pos_min", 0)) & 0xFFFF
+            pmax = int(s.get("pos_max", 0)) & 0xFFFF
+            buf[off + 4] = pmin & 0xFF
+            buf[off + 5] = (pmin >> 8) & 0xFF
+            buf[off + 6] = pmax & 0xFF
+            buf[off + 7] = (pmax >> 8) & 0xFF
+        led = periph.get("led") or {}
+        off = PDU_OFF + 9 + 16
+        count = int(led.get("default_count", 300)) & 0xFFFF
+        buf[off + 0] = count & 0xFF
+        buf[off + 1] = (count >> 8) & 0xFF
+        buf[off + 2] = int(led.get("default_mode", 8)) & 0xFF
+        buf[off + 3] = int(led.get("default_brightness", 8)) & 0xFF
+    else:
+        buf[PDU_OFF + 8] = bus & 0xFF
+        buf[PDU_OFF + 9] = protocol & 0xFF
+        buf[PDU_OFF + 10] = motor_id & 0xFF
+        buf[PDU_OFF + 11] = master_id & 0xFF
+        buf[PDU_OFF + 12] = 1 if enabled else 0
     return bytes(buf)
 
 
 def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
-    """Parse a CFG response pdu (32 B slice at PDU_OFF, not the full 672 B frame).
+    """Parse a CFG response (32 B DEBUG mailbox slice at PDU_OFF).
 
-    Paginated when ACTUATOR_COUNT exceeds one PDU's worth of slots (dual-arm, 14
-    actuators): header (0..4) + count (5) + up to N slot records, 3 bytes each
-    ([bus][protocol|(enabled<<7)][motor_id]), + trailer [total_count][start_slot]
-    in the last 2 bytes. Mirrors plant_config_feedback_fill() in
-    App/Src/plant/plant_config_nvm.c.
+    Actuator GET: paginated 3 B slots. GET/SET_PERIPH: flags + 2×servo + LED.
     """
     if len(pdu) < 8:
         return None
@@ -359,6 +392,36 @@ def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
         return None
     op = pdu[3] & 0x7F
     status = pdu[4]
+    if op in (CFG_OP_GET_PERIPH, CFG_OP_SET_PERIPH):
+        flags = pdu[8]
+        servos = []
+        for i in range(2):
+            off = 9 + i * 8
+            servos.append(
+                {
+                    "slot": i,
+                    "model": pdu[off],
+                    "id": pdu[off + 1],
+                    "enabled": bool(pdu[off + 2]),
+                    "pos_min": pdu[off + 4] | (pdu[off + 5] << 8),
+                    "pos_max": pdu[off + 6] | (pdu[off + 7] << 8),
+                }
+            )
+        loff = 9 + 16
+        return {
+            "op": op,
+            "status": status,
+            "status_name": CFG_STATUS_NAMES.get(status, f"unknown({status})"),
+            "flags": flags,
+            "listen_pdu": bool(flags & CFG_FLAG_LISTEN_PDU),
+            "servos": servos,
+            "led": {
+                "default_count": pdu[loff] | (pdu[loff + 1] << 8),
+                "default_mode": pdu[loff + 2],
+                "default_brightness": pdu[loff + 3],
+            },
+        }
+
     count = pdu[5]
     total_count = pdu[-2]
     start_slot = pdu[-1]

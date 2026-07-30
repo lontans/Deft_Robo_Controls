@@ -669,19 +669,6 @@ static void robstride_maintain_enable(const actuator_config_t *cfg,
 	}
 }
 
-static uint8_t robstride_actuator_slot(const actuator_config_t *cfg)
-{
-	if (cfg == NULL)
-		return 0u;
-
-	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
-		if (actuator_table[i].bus == cfg->bus &&
-		    actuator_table[i].motor_id == cfg->motor_id)
-			return i;
-	}
-	return 0u;
-}
-
 static bool robstride_desire_idle(const actuator_desire_t *desire)
 {
 	if (desire == NULL)

@@ -24,9 +24,18 @@ PROTO_NONE = 0
 PROTO_ROBSTRIDE = 1
 PROTO_CUBEMARS = 2
 PROTO_DAMIAO = 3
+PROTO_ZEROERR = 4
 
 NECK_PITCH_DXL_ID = 1
 NECK_YAW_DXL_ID = 2
+
+# NVM servo_table.model (matches App plant_config_nvm.h)
+SERVO_MODEL_XL430 = 0
+SERVO_MODEL_XL330_M288 = 1  # XL330-M288-T
+SERVO_MODEL_NAMES = {
+    SERVO_MODEL_XL430: "XL430",
+    SERVO_MODEL_XL330_M288: "XL330-M288-T",
+}
 
 # Damiao master IDs (bringup nominal)
 _DAMIAO_MASTER = (0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17)
@@ -145,7 +154,11 @@ __all__ = [
     "PROTO_DAMIAO",
     "PROTO_NONE",
     "PROTO_ROBSTRIDE",
+    "PROTO_ZEROERR",
     "RIGHT_ARM_SLOTS",
+    "SERVO_MODEL_NAMES",
+    "SERVO_MODEL_XL330_M288",
+    "SERVO_MODEL_XL430",
     "SPARE_SLOTS",
     "arm_slots",
     "cubemars_yam_rows",

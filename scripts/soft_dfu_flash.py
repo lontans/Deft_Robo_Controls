@@ -2,10 +2,15 @@
 """One-shot firmware flash (Windows / Linux / Jetson).
 
     python scripts/soft_dfu_flash.py
+    python scripts/soft_dfu_flash.py --port COM5
     python scripts/soft_dfu_flash.py --serial 3167376F3435
     python scripts/soft_dfu_flash.py --image Debug/foo.elf
 
-Optional subcommands (advanced): scan | enter | leave | flash
+    python scripts/soft_dfu_flash.py scan
+    python scripts/soft_dfu_flash.py scan --port COM5
+    python scripts/soft_dfu_flash.py status --port COM5
+
+Optional subcommands: scan | status | enter | leave | flash
 """
 from __future__ import annotations
 
@@ -18,7 +23,7 @@ if str(_SCRIPTS) not in sys.path:
 
 from deft_controls_sdk.debug.soft_dfu import main  # noqa: E402
 
-_SUBCOMMANDS = frozenset({"flash", "enter", "leave", "scan"})
+_SUBCOMMANDS = frozenset({"flash", "enter", "leave", "scan", "status"})
 
 
 def _dispatch_argv(argv: list[str]) -> list[str]:

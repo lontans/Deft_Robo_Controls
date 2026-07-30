@@ -13,12 +13,23 @@
  * configures PB7 as a high-Z input and reports the sensed level; it does
  * not drive the net. Soft-kill / freshness still gate kill_state over UART.
  *
- * USB kill mirror (pdb_link_kill_state/reason): stale → HARD + COMMS_LOSS;
- * on fresh PDBF with peer NORMAL, out-of-range pack/rail V·I overlays
- * SOFT_KILL_REQ + UV/OC (see pdb_vi_limits.h). pdb[64] mirror stays verbatim.
+ * USB kill mirror (pdb_link_kill_state/reason): stale → HARD + COMMS_LOSS
+ * when PDB_STALE_FAILSAFE=1; on fresh PDBF with peer NORMAL, out-of-range
+ * pack/rail V·I overlays SOFT_KILL_REQ + UV/OC (see pdb_vi_limits.h).
+ * pdb[64] mirror stays verbatim.
+ *
+ * Host can ignore kill via listen_pdu=False without reflashing. MCU LED:
+ * listen_pdu=0 → NVM default_mode; listen_pdu=1 → PDU traffic-light
+ * (no peer / HARD → blink-red). Soft-kill hooks still need host listen_pdu.
+ * Runtime NVM bit: PLANT_CFG_FLAG_LISTEN_PDU (CFG GET/SET_PERIPH).
  */
 
 #define PDB_FRAME_BYTES 64u
+
+/* 1 = product (no/stale peer → HARD+COMMS_LOSS). 0 = bench without PDU. */
+#ifndef PDB_STALE_FAILSAFE
+#define PDB_STALE_FAILSAFE 1
+#endif
 
 typedef enum {
 	PDB_KILL_NORMAL      = 0,
@@ -78,6 +89,8 @@ void pdb_link_set_soft_kill_ready(bool ready);
 /* -- PDB -> Controls (what we've heard) ------------------------------------ */
 
 bool    pdb_link_is_fresh(void);
+/* True after at least one CRC-valid PDBF since boot (may now be stale). */
+bool    pdb_link_ever_synced(void);
 uint8_t pdb_link_kill_state(void);   /* pdb_kill_state_t */
 uint8_t pdb_link_kill_reason(void);  /* pdb_kill_reason_t */
 uint8_t pdb_link_estop_sense(void);  /* local PB7 wire sense */

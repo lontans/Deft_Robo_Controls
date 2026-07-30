@@ -1,18 +1,21 @@
 #include "plant/plant_config_nvm.h"
 #include "plant/actuator.h"
+#include "plant/servo.h"
 #include "plant/plugins/damiao.h"
+#include "plant/plugins/dynamixel.h"
+#include "plant/plugins/sk9822.h"
 
 #include "stm32g4xx_hal.h"
 
 #include <stddef.h>
 #include <string.h>
 
-#define PLANT_CFG_NVM_MAGIC   0x50434647u /* 'PCFG' */
-#define PLANT_CFG_NVM_VERSION 1u
+#define PLANT_CFG_NVM_MAGIC      0x50434647u /* 'PCFG' */
+#define PLANT_CFG_NVM_VERSION_V1 1u
+#define PLANT_CFG_NVM_VERSION    2u
 
 #define PLANT_CFG_RAMFUNC __attribute__((section(".RamFunc")))
 
-/* Last 2 KiB page of 512 KiB flash (STM32G474, page size 0x800). */
 #define PLANT_CFG_FLASH_PAGE_SIZE  0x800u
 #define PLANT_CFG_FLASH_BASE       0x08000000u
 #define PLANT_CFG_FLASH_SIZE       0x00080000u
@@ -27,6 +30,22 @@ typedef struct __attribute__((packed)) {
 } plant_cfg_nvm_slot_t;
 
 typedef struct __attribute__((packed)) {
+	uint8_t  model;
+	uint8_t  id;
+	uint8_t  enabled;
+	uint8_t  reserved;
+	uint16_t pos_min;
+	uint16_t pos_max;
+} plant_cfg_nvm_servo_t;
+
+typedef struct __attribute__((packed)) {
+	uint16_t default_count;
+	uint8_t  default_mode;
+	uint8_t  default_brightness;
+} plant_cfg_nvm_led_t;
+
+/* v1 image (actuators only) — load-migrate then always SAVE as v2. */
+typedef struct __attribute__((packed)) {
 	uint32_t magic;
 	uint16_t version;
 	uint16_t length;
@@ -34,6 +53,19 @@ typedef struct __attribute__((packed)) {
 	uint8_t  slot_count;
 	uint8_t  reserved[3];
 	plant_cfg_nvm_slot_t slots[ACTUATOR_COUNT];
+} plant_cfg_nvm_image_v1_t;
+
+typedef struct __attribute__((packed)) {
+	uint32_t magic;
+	uint16_t version;
+	uint16_t length;
+	uint32_t crc32;
+	uint8_t  slot_count;
+	uint8_t  flags; /* PLANT_CFG_FLAG_LISTEN_PDU */
+	uint8_t  reserved[2];
+	plant_cfg_nvm_slot_t slots[ACTUATOR_COUNT];
+	plant_cfg_nvm_servo_t servos[SERVO_COUNT];
+	plant_cfg_nvm_led_t   led;
 } plant_cfg_nvm_image_t;
 
 static plant_cfg_nvm_slot_t s_resp_slots[ACTUATOR_COUNT];
@@ -41,17 +73,15 @@ static uint8_t              s_last_status = PLANT_CFG_STATUS_OK;
 static uint8_t              s_last_op;
 static uint8_t              s_resp_start_slot;
 static bool                 s_resp_pending;
+static bool                 s_resp_periph;
+static uint8_t              s_listen_pdu_flags; /* RAM: bit0 listen_pdu */
 
-/* CFG GET reply is paginated: header (6 B) + up to this many slots (3 B each) +
- * trailer [total_count][start_slot] (2 B) must fit HOST_PDU_PAYLOAD_BYTES. ACTUATOR_COUNT
- * can exceed one page (e.g. 14 slots, dual-arm) — host loops CFG GET with slot=start_slot
- * until it has collected total_count slots. See plant_config_feedback_fill(). */
 #define PLANT_CFG_GET_SLOTS_PER_PAGE ((HOST_PDU_PAYLOAD_BYTES - 6u - 2u) / 3u)
-
-static bool nvm_image_valid(const plant_cfg_nvm_image_t *img);
 
 #define PLANT_CFG_NVM_PAGE \
 	((uint32_t)((PLANT_CFG_NVM_ADDR - PLANT_CFG_FLASH_BASE) / PLANT_CFG_FLASH_PAGE_SIZE))
+
+/* ---- flash helpers (unchanged erase/program path) ------------------------ */
 
 static PLANT_CFG_RAMFUNC void ramfunc_flash_cache_invalidate(void)
 {
@@ -104,25 +134,6 @@ static PLANT_CFG_RAMFUNC bool ramfunc_flash_erase_page(uint32_t page)
 		return false;
 
 	ramfunc_flash_cache_invalidate();
-
-	/* STM32G4 FLASH_CR_PNB is only 7 bits wide (pages 0-127) -- FLASH_CR_BKER
-	 * (bit 11) supplies bit 7 of the page index. This is true regardless of
-	 * the DBANK option bit: with DBANK=1 (dual bank) BKER selects bank 0/1
-	 * and PNB is the page within that bank; with DBANK=0 (single 256-page
-	 * bank) BKER is simply the MSB of a flat 0-255 page number. Either way,
-	 * PLANT_CFG_NVM_PAGE=255 (the last page, see PLANT_CFG_NVM_ADDR above)
-	 * needs BKER=1. This was previously never set, so MODIFY_REG's mask
-	 * silently truncated page 255 -> 127 (0x807F800 -> 0x803F800): every
-	 * erase hit the wrong physical page, so the post-write verify against
-	 * PLANT_CFG_NVM_ADDR always failed and CFG SAVE always reported
-	 * PLANT_CFG_STATUS_FLASH_ERR even though the erase/program sequence
-	 * itself "succeeded" (just on the wrong page) -- matches the documented
-	 * symptom exactly (docs/lessons.md: "NVM --persist flash_err, RAM config
-	 * OK until power cycle"). Note reads are unaffected by this bug: plain
-	 * memory-mapped reads (plant_config_nvm_load(), flash_image_matches())
-	 * address the full 512 KiB linearly regardless of BKER/PNB -- only the
-	 * page-erase control operation needed it, which is why this was purely a
-	 * save-side bug and never corrupted a load. */
 	bker = (page >> 7) & 0x1u;
 	MODIFY_REG(FLASH->CR, FLASH_CR_PNB | FLASH_CR_BKER,
 	           ((page & 0x7Fu) << FLASH_CR_PNB_Pos) | (bker << FLASH_CR_BKER_Pos));
@@ -285,11 +296,70 @@ static void nvm_slots_to_table(const plant_cfg_nvm_slot_t *src)
 	actuator_rebuild_bus_index();
 }
 
-static bool nvm_image_valid(const plant_cfg_nvm_image_t *img)
+static void table_to_nvm_periph(plant_cfg_nvm_servo_t *servos, plant_cfg_nvm_led_t *led)
 {
-	if (img == NULL)
+	for (uint8_t i = 0; i < SERVO_COUNT; i++) {
+		servos[i].model = servo_table[i].model;
+		servos[i].id = servo_table[i].id;
+		servos[i].enabled = servo_table[i].enabled ? 1u : 0u;
+		servos[i].reserved = 0u;
+		servos[i].pos_min = servo_table[i].pos_min;
+		servos[i].pos_max = servo_table[i].pos_max;
+	}
+	led->default_count = led_table[0].default_count;
+	led->default_mode = led_table[0].default_mode;
+	led->default_brightness = led_table[0].default_brightness;
+}
+
+static void nvm_periph_to_table(const plant_cfg_nvm_servo_t *servos,
+                                const plant_cfg_nvm_led_t *led)
+{
+	for (uint8_t i = 0; i < SERVO_COUNT; i++) {
+		servo_table[i].model = servos[i].model;
+		servo_table[i].id = servos[i].id;
+		servo_table[i].enabled = servos[i].enabled != 0u;
+		servo_table[i].pos_min = servos[i].pos_min;
+		servo_table[i].pos_max = servos[i].pos_max;
+		/* Gains / profile keep factory values unless we add them to NVM later. */
+		if (servo_table[i].position_p_gain == 0u)
+			servo_table[i].position_p_gain = DXL_DEFAULT_POSITION_P_GAIN;
+		if (servo_table[i].position_d_gain == 0u)
+			servo_table[i].position_d_gain = DXL_DEFAULT_POSITION_D_GAIN;
+		if (servo_table[i].default_profile_vel == 0u)
+			servo_table[i].default_profile_vel = 180u;
+		if (servo_table[i].default_profile_accel == 0u)
+			servo_table[i].default_profile_accel = DXL_DEFAULT_PROFILE_ACCEL;
+	}
+	led_table[0].default_count = led->default_count;
+	if (led_table[0].default_count == 0u || led_table[0].default_count > LED_STRIP_MAX)
+		led_table[0].default_count = LED_STRIP_MAX;
+	led_table[0].default_mode = led->default_mode;
+	led_table[0].default_brightness = led->default_brightness;
+}
+
+static bool nvm_image_v1_valid(const plant_cfg_nvm_image_v1_t *img)
+{
+	uint32_t expect;
+
+	if (img == NULL || img->magic != PLANT_CFG_NVM_MAGIC)
 		return false;
-	if (img->magic != PLANT_CFG_NVM_MAGIC)
+	if (img->version != PLANT_CFG_NVM_VERSION_V1)
+		return false;
+	if (img->length != sizeof(plant_cfg_nvm_image_v1_t))
+		return false;
+	if (img->slot_count != ACTUATOR_COUNT)
+		return false;
+	expect = crc32_ieee((const uint8_t *)img + offsetof(plant_cfg_nvm_image_v1_t, slot_count),
+	                    sizeof(plant_cfg_nvm_image_v1_t) -
+	                    offsetof(plant_cfg_nvm_image_v1_t, slot_count));
+	return img->crc32 == expect;
+}
+
+static bool nvm_image_v2_valid(const plant_cfg_nvm_image_t *img)
+{
+	uint32_t expect;
+
+	if (img == NULL || img->magic != PLANT_CFG_NVM_MAGIC)
 		return false;
 	if (img->version != PLANT_CFG_NVM_VERSION)
 		return false;
@@ -297,10 +367,9 @@ static bool nvm_image_valid(const plant_cfg_nvm_image_t *img)
 		return false;
 	if (img->slot_count != ACTUATOR_COUNT)
 		return false;
-
-	uint32_t expect = crc32_ieee((const uint8_t *)img + offsetof(plant_cfg_nvm_image_t, slot_count),
-	                             sizeof(plant_cfg_nvm_image_t) -
-	                             offsetof(plant_cfg_nvm_image_t, slot_count));
+	expect = crc32_ieee((const uint8_t *)img + offsetof(plant_cfg_nvm_image_t, slot_count),
+	                    sizeof(plant_cfg_nvm_image_t) -
+	                    offsetof(plant_cfg_nvm_image_t, slot_count));
 	return img->crc32 == expect;
 }
 
@@ -311,7 +380,9 @@ static void build_nvm_image(plant_cfg_nvm_image_t *img)
 	img->version = PLANT_CFG_NVM_VERSION;
 	img->length = (uint16_t)sizeof(plant_cfg_nvm_image_t);
 	img->slot_count = ACTUATOR_COUNT;
+	img->flags = s_listen_pdu_flags;
 	table_to_nvm_slots(img->slots);
+	table_to_nvm_periph(img->servos, &img->led);
 	img->crc32 = crc32_ieee((const uint8_t *)img + offsetof(plant_cfg_nvm_image_t, slot_count),
 	                        sizeof(plant_cfg_nvm_image_t) -
 	                        offsetof(plant_cfg_nvm_image_t, slot_count));
@@ -319,8 +390,10 @@ static void build_nvm_image(plant_cfg_nvm_image_t *img)
 
 void plant_config_load_factory_defaults(void)
 {
-	/* Product-shaped table (26 slots): CH1×8, CH2×8, CH3×4, CH4–6×2 each.
-	 * motor_id unique per bus (reuse across buses). Override via CFG SET. */
+	/* Full NVM v2 RAM image: actuators + neck servos + LED + listen_pdu.
+	 * Product-shaped actuator scaffold: CH1×8, CH2×8, CH3×4, CH4–6×2.
+	 * Gen-2 base: CH4–6 pairs are RobStride with motor_id 0x00
+	 * placeholders until real RS-06 IDs are known. */
 	static const struct {
 		uint8_t bus;
 		uint8_t count;
@@ -336,10 +409,14 @@ void plant_config_load_factory_defaults(void)
 
 	for (uint8_t g = 0u; g < (uint8_t)(sizeof(k_layout) / sizeof(k_layout[0])); g++) {
 		for (uint8_t n = 0u; n < k_layout[g].count && slot < ACTUATOR_COUNT; n++) {
+			uint8_t mid = (uint8_t)(0x01u + n);
+			/* CH4–6 (gen-2 base): two RS-06 per channel — IDs TBD → 0x00. */
+			if (k_layout[g].bus >= (uint8_t)CAN_BUS_CH4)
+				mid = 0u;
 			actuator_table[slot] = (actuator_config_t){
 				.bus = (can_bus_id_t)k_layout[g].bus,
 				.protocol = PROTO_ROBSTRIDE,
-				.motor_id = (uint32_t)(0x01u + n),
+				.motor_id = mid,
 				.master_id = 0u,
 				.enabled = true,
 			};
@@ -356,18 +433,74 @@ void plant_config_load_factory_defaults(void)
 		};
 	}
 	actuator_rebuild_bus_index();
+
+	/* Neck DXL (current bench defaults). */
+	servo_table[0] = (servo_config_t){
+		.model = PLANT_SERVO_MODEL_XL430,
+		.id = 1,
+		.enabled = true,
+		.pos_min = 1024,
+		.pos_max = 3072,
+		.position_p_gain = DXL_DEFAULT_POSITION_P_GAIN,
+		.position_d_gain = DXL_DEFAULT_POSITION_D_GAIN,
+		.default_profile_vel = 180,
+		.default_profile_accel = DXL_DEFAULT_PROFILE_ACCEL,
+	};
+	servo_table[1] = (servo_config_t){
+		.model = PLANT_SERVO_MODEL_XL430,
+		.id = 2,
+		.enabled = true,
+		.pos_min = 700,
+		.pos_max = 2500,
+		.position_p_gain = DXL_DEFAULT_POSITION_P_GAIN,
+		.position_d_gain = DXL_DEFAULT_POSITION_D_GAIN,
+		.default_profile_vel = 180,
+		.default_profile_accel = DXL_DEFAULT_PROFILE_ACCEL,
+	};
+
+	led_table[0].default_count = LED_STRIP_MAX;
+	led_table[0].default_mode = 8u; /* LED_MODE_IDLE_CORNFLOWER */
+	led_table[0].default_brightness = 8u;
+
+	/* Bench default: do not treat missing PDU as live kill policy. */
+	s_listen_pdu_flags = 0u;
+}
+
+bool plant_config_listen_pdu(void)
+{
+	return (s_listen_pdu_flags & PLANT_CFG_FLAG_LISTEN_PDU) != 0u;
+}
+
+void plant_config_set_listen_pdu(bool enable)
+{
+	if (enable)
+		s_listen_pdu_flags |= PLANT_CFG_FLAG_LISTEN_PDU;
+	else
+		s_listen_pdu_flags &= (uint8_t)~PLANT_CFG_FLAG_LISTEN_PDU;
 }
 
 bool plant_config_nvm_load(void)
 {
-	const plant_cfg_nvm_image_t *flash_img =
+	const plant_cfg_nvm_image_t *flash_v2 =
 		(const plant_cfg_nvm_image_t *)PLANT_CFG_NVM_ADDR;
+	const plant_cfg_nvm_image_v1_t *flash_v1 =
+		(const plant_cfg_nvm_image_v1_t *)PLANT_CFG_NVM_ADDR;
 
-	if (!nvm_image_valid(flash_img))
-		return false;
+	if (nvm_image_v2_valid(flash_v2)) {
+		nvm_slots_to_table(flash_v2->slots);
+		nvm_periph_to_table(flash_v2->servos, &flash_v2->led);
+		s_listen_pdu_flags = flash_v2->flags;
+		return true;
+	}
 
-	nvm_slots_to_table(flash_img->slots);
-	return true;
+	if (nvm_image_v1_valid(flash_v1)) {
+		/* One-shot absorb of legacy actuator-only flash → RAM v2 fields
+		 * already filled by factory_defaults(); next SAVE writes v2. */
+		nvm_slots_to_table(flash_v1->slots);
+		return true;
+	}
+
+	return false;
 }
 
 bool plant_config_nvm_save(void)
@@ -378,12 +511,13 @@ bool plant_config_nvm_save(void)
 	return plant_config_nvm_save_image(&img);
 }
 
-static void stage_response(uint8_t op, uint8_t status, uint8_t start_slot)
+static void stage_response(uint8_t op, uint8_t status, uint8_t start_slot, bool periph)
 {
 	table_to_nvm_slots(s_resp_slots);
 	s_last_op = op;
 	s_last_status = status;
 	s_resp_start_slot = (start_slot < ACTUATOR_COUNT) ? start_slot : 0u;
+	s_resp_periph = periph;
 	s_resp_pending = true;
 }
 
@@ -394,6 +528,31 @@ bool plant_config_is_command(const host_command_image_t *cmd)
 	return cmd->pdu.data[0] == (uint8_t)PLANT_CFG_PDU_TAG0 &&
 	       cmd->pdu.data[1] == (uint8_t)PLANT_CFG_PDU_TAG1 &&
 	       cmd->pdu.data[2] == (uint8_t)PLANT_CFG_PDU_TAG2;
+}
+
+static void apply_periph_from_cmd(const uint8_t *p)
+{
+	/* Layout at p[8..]: flags, then servo0 (8 B), servo1 (8 B), led (4 B). */
+	s_listen_pdu_flags = p[8];
+	for (uint8_t i = 0; i < SERVO_COUNT; i++) {
+		const uint8_t *s = &p[9u + i * 8u];
+
+		servo_table[i].model = s[0];
+		servo_table[i].id = s[1];
+		servo_table[i].enabled = s[2] != 0u;
+		servo_table[i].pos_min = (uint16_t)s[4] | ((uint16_t)s[5] << 8);
+		servo_table[i].pos_max = (uint16_t)s[6] | ((uint16_t)s[7] << 8);
+	}
+	{
+		const uint8_t *l = &p[9u + SERVO_COUNT * 8u];
+
+		led_table[0].default_count = (uint16_t)l[0] | ((uint16_t)l[1] << 8);
+		led_table[0].default_mode = l[2];
+		led_table[0].default_brightness = l[3];
+		if (led_table[0].default_count == 0u ||
+		    led_table[0].default_count > LED_STRIP_MAX)
+			led_table[0].default_count = LED_STRIP_MAX;
+	}
 }
 
 void plant_config_on_command(const host_command_image_t *cmd)
@@ -411,13 +570,12 @@ void plant_config_on_command(const host_command_image_t *cmd)
 
 	switch (op) {
 	case PLANT_CFG_OP_GET:
-		/* slot doubles as the page start index for GET (unused by any other op). */
-		stage_response(op, PLANT_CFG_STATUS_OK, slot);
+		stage_response(op, PLANT_CFG_STATUS_OK, slot, false);
 		return;
 
 	case PLANT_CFG_OP_SET:
 		if (slot >= ACTUATOR_COUNT) {
-			stage_response(op, PLANT_CFG_STATUS_BAD_ARG, 0u);
+			stage_response(op, PLANT_CFG_STATUS_BAD_ARG, 0u, false);
 			return;
 		}
 		actuator_table[slot].bus = schematic_to_can_bus(p[8]);
@@ -433,26 +591,35 @@ void plant_config_on_command(const host_command_image_t *cmd)
 		}
 		actuator_table[slot].enabled = (p[12] & 1u) != 0u;
 		actuator_rebuild_bus_index();
-		stage_response(op, PLANT_CFG_STATUS_OK, 0u);
+		stage_response(op, PLANT_CFG_STATUS_OK, 0u, false);
+		return;
+
+	case PLANT_CFG_OP_GET_PERIPH:
+		stage_response(op, PLANT_CFG_STATUS_OK, 0u, true);
+		return;
+
+	case PLANT_CFG_OP_SET_PERIPH:
+		apply_periph_from_cmd(p);
+		stage_response(op, PLANT_CFG_STATUS_OK, 0u, true);
 		return;
 
 	case PLANT_CFG_OP_SAVE:
 		stage_response(op, plant_config_nvm_save() ? PLANT_CFG_STATUS_OK :
-		                                           PLANT_CFG_STATUS_FLASH_ERR, 0u);
+		                                           PLANT_CFG_STATUS_FLASH_ERR, 0u, false);
 		return;
 
 	case PLANT_CFG_OP_LOAD:
 		stage_response(op, plant_config_nvm_load() ? PLANT_CFG_STATUS_OK :
-		                                           PLANT_CFG_STATUS_BAD_CRC, 0u);
+		                                           PLANT_CFG_STATUS_BAD_CRC, 0u, false);
 		return;
 
 	case PLANT_CFG_OP_DEFAULTS:
 		plant_config_load_factory_defaults();
-		stage_response(op, PLANT_CFG_STATUS_OK, 0u);
+		stage_response(op, PLANT_CFG_STATUS_OK, 0u, false);
 		return;
 
 	default:
-		stage_response(op, PLANT_CFG_STATUS_BAD_ARG, 0u);
+		stage_response(op, PLANT_CFG_STATUS_BAD_ARG, 0u, false);
 		return;
 	}
 }
@@ -473,13 +640,38 @@ void plant_config_feedback_fill(host_pdu_feedback_t *pdu)
 	pdu->data[3] = (uint8_t)(s_last_op | 0x80u);
 	pdu->data[4] = s_last_status;
 
+	if (s_resp_periph) {
+		plant_cfg_nvm_servo_t servos[SERVO_COUNT];
+		plant_cfg_nvm_led_t led;
+
+		table_to_nvm_periph(servos, &led);
+		pdu->data[5] = 1u; /* payload present */
+		pdu->data[8] = s_listen_pdu_flags;
+		for (i = 0; i < SERVO_COUNT; i++) {
+			uint8_t off = (uint8_t)(9u + i * 8u);
+
+			pdu->data[off + 0] = servos[i].model;
+			pdu->data[off + 1] = servos[i].id;
+			pdu->data[off + 2] = servos[i].enabled;
+			pdu->data[off + 4] = (uint8_t)(servos[i].pos_min & 0xFFu);
+			pdu->data[off + 5] = (uint8_t)(servos[i].pos_min >> 8);
+			pdu->data[off + 6] = (uint8_t)(servos[i].pos_max & 0xFFu);
+			pdu->data[off + 7] = (uint8_t)(servos[i].pos_max >> 8);
+		}
+		{
+			uint8_t off = (uint8_t)(9u + SERVO_COUNT * 8u);
+
+			pdu->data[off + 0] = (uint8_t)(led.default_count & 0xFFu);
+			pdu->data[off + 1] = (uint8_t)(led.default_count >> 8);
+			pdu->data[off + 2] = led.default_mode;
+			pdu->data[off + 3] = led.default_brightness;
+		}
+		s_resp_pending = false;
+		return;
+	}
+
 	remaining = (uint8_t)(ACTUATOR_COUNT - s_resp_start_slot);
 	count = (remaining < PLANT_CFG_GET_SLOTS_PER_PAGE) ? remaining : PLANT_CFG_GET_SLOTS_PER_PAGE;
-	/* Compact 3 B/slot, paginated: [bus][protocol|(enabled<<7)][motor_id].
-	 * Header (0..4) + count (5) + up to PLANT_CFG_GET_SLOTS_PER_PAGE slots (6..) +
-	 * trailer [total_count][start_slot] in the last 2 B — lets ACTUATOR_COUNT exceed
-	 * one PDU's worth of slots (host loops CFG GET with slot=start_slot until it has
-	 * collected total_count slots; see scripts/controls_pcb_host/plugins/plant_config.py). */
 	pdu->data[5] = count;
 
 	for (i = 0; i < count; i++) {
@@ -497,10 +689,3 @@ void plant_config_feedback_fill(host_pdu_feedback_t *pdu)
 
 	s_resp_pending = false;
 }
-
-/* CFG GET page packing: 6 B header + PLANT_CFG_GET_SLOTS_PER_PAGE slots x 3 B +
- * 2 B trailer must fit HOST_PDU_PAYLOAD_BYTES. ACTUATOR_COUNT itself may exceed one
- * page — that's fine, the host pages through it (see plant_config_feedback_fill()). */
-_Static_assert(6u + PLANT_CFG_GET_SLOTS_PER_PAGE * 3u + 2u <= HOST_PDU_PAYLOAD_BYTES,
-               "CFG GET page packing exceeds PDU payload");
-

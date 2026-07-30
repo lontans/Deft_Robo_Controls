@@ -73,16 +73,157 @@ LED_MODE_BLINK_RED_FAST = 7  # estop/fault, 5 Hz 50%
 # Idle: cornflower #6495ED (100,149,237); 500 on / 500 off (1 Hz 50%).
 LED_MODE_IDLE_CORNFLOWER = 8
 
+LED_MODE_NAMES = {
+    LED_MODE_OFF: "off",
+    LED_MODE_TEST: "test",
+    LED_MODE_FLASH: "flash",
+    LED_MODE_SOLID_GREEN: "solid_green",
+    LED_MODE_SOLID_YELLOW: "solid_yellow",
+    LED_MODE_SOLID_RED: "solid_red",
+    LED_MODE_BLINK_YELLOW_SLOW: "blink_yellow_slow",
+    LED_MODE_BLINK_RED_FAST: "blink_red_fast",
+    LED_MODE_IDLE_CORNFLOWER: "idle_cornflower",
+}
+
+
+def led_mode_name(mode: int) -> str:
+    return LED_MODE_NAMES.get(int(mode), f"unknown({mode})")
+
+
+def led_mode_from_pdb_kill(*, kill_state: int, estop_sense: int) -> int:
+    """Mirror ``led_mode_from_pdb()`` in App/Src/plant/led.c.
+
+    USB plant FB already folds stale PDB UART into HARD_ESTOP + COMMS_LOSS,
+    so ``NORMAL`` here means fresh+normal on the wire.
+    """
+    # Local ints avoid importing pdb.frame at module load (link ↔ pdb cycle).
+    kill_hard = 3
+    kill_soft_ready = 2
+    kill_soft_req = 1
+    kill_normal = 0
+    if int(kill_state) == kill_hard or int(estop_sense) == 0:
+        return LED_MODE_BLINK_RED_FAST
+    if int(kill_state) == kill_soft_ready:
+        return LED_MODE_SOLID_RED
+    if int(kill_state) == kill_soft_req:
+        return LED_MODE_BLINK_YELLOW_SLOW
+    if int(kill_state) == kill_normal:
+        return LED_MODE_IDLE_CORNFLOWER
+    return LED_MODE_BLINK_RED_FAST
+
+
+LED_DESIRE_MODES = ("debug", "pdu", "follow")
+
+
+def infer_effective_led(
+    *,
+    host_led_mode: Optional[object] = None,
+    host_led: Optional["LedDesire"] = None,
+    listen_pdu: bool = False,
+    kill_state: Optional[int] = None,
+    estop_sense: Optional[int] = None,
+) -> Dict[str, object]:
+    """Host LedDesire policy vs PDU traffic-light (mirrors led.c).
+
+    ``debug`` → forced numeric pattern. ``pdu`` / ``follow`` → wire mode 0
+    (no host override); PDU map when listening, else unknown/NVM default.
+    """
+    desire = host_led
+    if desire is None and host_led_mode is not None:
+        if isinstance(host_led_mode, LedDesire):
+            desire = host_led_mode
+        elif isinstance(host_led_mode, str):
+            desire = LedDesire(mode=host_led_mode)
+        else:
+            desire = LedDesire(mode=int(host_led_mode))
+
+    policy = desire.mode if desire is not None else "follow"
+    wire = desire.wire_mode if desire is not None else LED_MODE_OFF
+    listening = True if policy == "pdu" else bool(listen_pdu)
+
+    out: Dict[str, object] = {
+        "host_mode": wire,
+        "host_mode_name": led_mode_name(wire),
+        "host_policy": policy,
+        "listen_pdu": listening,
+    }
+    if policy == "debug" and wire != LED_MODE_OFF:
+        out["source"] = "host_debug"
+        out["effective_mode"] = wire
+        out["effective_mode_name"] = led_mode_name(wire)
+        out["note"] = "LedDesire debug — numeric pattern overrides PDU/NVM"
+        return out
+    if not listening:
+        out["source"] = "nvm_or_follow"
+        out["effective_mode"] = LED_MODE_IDLE_CORNFLOWER
+        out["effective_mode_name"] = led_mode_name(LED_MODE_IDLE_CORNFLOWER)
+        out["note"] = "follow with listen_pdu=0 — MCU uses NVM default_mode"
+        return out
+    if kill_state is None:
+        out["source"] = "unknown"
+        out["effective_mode"] = LED_MODE_OFF
+        out["effective_mode_name"] = "off"
+        out["note"] = "listen_pdu set but no PDU kill bytes in FB yet"
+        return out
+    sense = 1 if estop_sense is None else int(estop_sense)
+    eff = led_mode_from_pdb_kill(kill_state=int(kill_state), estop_sense=sense)
+    out["source"] = "pdu_traffic_light"
+    out["effective_mode"] = eff
+    out["effective_mode_name"] = led_mode_name(eff)
+    out["note"] = (
+        "PDU: NORMAL→cornflower, SOFT_REQ→blink yellow, "
+        "SOFT_READY→solid red, HARD/estop_sense=0/stale→blink red"
+    )
+    return out
+
 
 @dataclass(frozen=True)
 class LedDesire:
-    """SK9822 host command (2 B). mode 0=OFF, 1=TEST, 2=FLASH, 3..7 factory
-    traffic-light, 8=idle cornflower 500/500 blink (see LED_MODE_*).
-    led_count 0 ⇒ max (300)."""
+    """Host LED policy packed into the 2 B SK9822 command word.
 
-    mode: int = 0
+    ``mode`` is a policy string:
+      - ``debug``  — force ``pattern`` (LED_MODE_* 1..8) on the wire
+      - ``pdu``    — wire mode 0 + ensure listen_pdu (traffic-light)
+      - ``follow`` — wire mode 0; MCU follows NVM listen_pdu bit
+
+    Legacy ``LedDesire(mode=8)`` (int) still works → ``debug`` + that pattern.
+    ``led_count`` 0 ⇒ firmware max (300).
+    """
+
+    mode: object = "follow"
+    pattern: int = 0
     master_brightness: int = 8
     led_count: int = 0
+
+    def __post_init__(self) -> None:
+        raw = self.mode
+        if isinstance(raw, int):
+            mid = int(raw) & 0x1F
+            if mid == 0:
+                object.__setattr__(self, "mode", "follow")
+                object.__setattr__(self, "pattern", 0)
+            else:
+                object.__setattr__(self, "mode", "debug")
+                object.__setattr__(self, "pattern", mid)
+        else:
+            m = str(raw).strip().lower()
+            if m not in LED_DESIRE_MODES:
+                raise ValueError(
+                    f"LedDesire.mode must be one of {LED_DESIRE_MODES}, got {raw!r}"
+                )
+            object.__setattr__(self, "mode", m)
+            object.__setattr__(self, "pattern", int(self.pattern) & 0x1F)
+        object.__setattr__(
+            self, "master_brightness", max(0, min(31, int(self.master_brightness)))
+        )
+        object.__setattr__(self, "led_count", max(0, int(self.led_count)))
+
+    @property
+    def wire_mode(self) -> int:
+        """Numeric mode byte for the plant command word."""
+        if self.mode == "debug":
+            return int(self.pattern) & 0x1F
+        return LED_MODE_OFF
 
 
 def validate_slot(slot: int) -> None:
@@ -168,7 +309,7 @@ class CommandImage:
     def set_led(self, desire: LedDesire) -> "CommandImage":
         patch_led_command(
             self._buf,
-            mode=desire.mode,
+            mode=desire.wire_mode,
             master_brightness=desire.master_brightness,
             led_count=desire.led_count,
         )

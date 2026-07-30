@@ -193,6 +193,30 @@ class DebugAPI:
             timeout_s=timeout_s,
         )
 
+    def cfg_save_nvm(self, *, timeout_s: float = 8.0) -> dict:
+        """Flash-persist the full NVM v2 image (actuators + periph + flags)."""
+        return _config.save_nvm(self._connection, timeout_s=timeout_s)
+
+    def cfg_get_periph(self, *, timeout_s: float = 1.5) -> dict:
+        """Read neck servos + LED defaults + listen_pdu flag (RAM)."""
+        return _config.get_periph(self._connection, timeout_s=timeout_s)
+
+    def cfg_set_periph(
+        self,
+        periph: dict,
+        *,
+        persist: bool = False,
+        timeout_s: float = 1.5,
+    ) -> dict:
+        """Write peripheral block to RAM; ``persist=True`` runs CFG SAVE (NVM v2)."""
+        return _config.set_periph(
+            self._connection,
+            self._telemetry,
+            periph,
+            persist=persist,
+            timeout_s=timeout_s,
+        )
+
     # -- Soft-DFU (reboot into ROM bootloader, no ST-Link needed) --------------------
 
     def enter_bootloader(

@@ -3,6 +3,7 @@ bytes + typed API objects. No separate "session" class — see connection.py
 docstring for why streaming/telemetry-publish live on Connection directly."""
 from .api_types import (
     IDLE,
+    LED_DESIRE_MODES,
     LED_MODE_BLINK_RED_FAST,
     LED_MODE_BLINK_YELLOW_SLOW,
     LED_MODE_FLASH,
@@ -42,6 +43,7 @@ __all__ = [
     "HOST_STALE_MS",
     "InvalidFrameError",
     "InvalidSlotError",
+    "LED_DESIRE_MODES",
     "LED_MODE_BLINK_RED_FAST",
     "LED_MODE_BLINK_YELLOW_SLOW",
     "LED_MODE_FLASH",

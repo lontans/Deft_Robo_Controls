@@ -26,27 +26,32 @@ class PcbRobotSession:
         *,
         serial: Optional[str] = None,
         baud: int = DEFAULT_BAUD,
-        stream_hz: float = 40.0,
+        stream_hz: float = 200.0,
+        profile: Optional[Profile] = None,
         apply_yam_cfg: bool = False,
         force_cfg: bool = False,
         idle_first: bool = False,
         persist_telemetry: bool = False,
+        listen_pdu: bool = True,
     ) -> "PcbRobotSession":
+        # Product path defaults listen_pdu=True (PDU soft-kill). Bench/lab
+        # HostProxy.connect defaults False.
         proxy = HostProxy.connect(
             port,
             serial=serial,
             baud=baud,
             stream_hz=stream_hz,
-            profile=yam_product_profile(),
+            profile=profile or yam_product_profile(),
             idle_first=idle_first,
             persist_telemetry=persist_telemetry,
             apply_yam_cfg=apply_yam_cfg,
             force_cfg=force_cfg,
+            listen_pdu=listen_pdu,
         )
         return cls(proxy)
 
     @classmethod
-    def wrap(cls, hub: ControlsPcbHub, *, stream_hz: float = 40.0) -> "PcbRobotSession":
+    def wrap(cls, hub: ControlsPcbHub, *, stream_hz: float = 200.0) -> "PcbRobotSession":
         """Use an existing hub (tests / caller already owns COM)."""
         return cls(HostProxy.wrap(hub, stream_hz=stream_hz, profile=yam_product_profile()))
 
