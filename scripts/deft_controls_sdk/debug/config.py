@@ -18,8 +18,10 @@ from typing import TYPE_CHECKING, List, Optional
 
 from deft_controls_sdk.link.exchange import (
     CFG_OP_GET,
+    CFG_OP_GET_PERIPH,
     CFG_OP_SAVE,
     CFG_OP_SET,
+    CFG_OP_SET_PERIPH,
     CFG_STATUS_OK,
     IMAGE_BYTES,
     PDU_OFF,
@@ -133,6 +135,50 @@ def save_nvm(connection: "Connection", *, timeout_s: float = 8.0, retries: int =
                 time.sleep(0.25)
     assert last_err is not None
     raise last_err
+
+
+def get_periph(connection: "Connection", *, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict:
+    """CFG GET_PERIPH — listen_pdu flags + neck servos + LED defaults."""
+    return exchange_cfg(connection, CFG_OP_GET_PERIPH, timeout_s=timeout_s)
+
+
+def set_periph(
+    connection: "Connection",
+    telemetry: Optional["TelemetryCache"],
+    periph: dict,
+    *,
+    persist: bool = False,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
+) -> dict:
+    """CFG SET_PERIPH (RAM); optional flash SAVE of full NVM v2 image."""
+    if telemetry is not None:
+        telemetry.set_connected(True, mode="cfg")
+    try:
+        connection.reader.drain()
+        frame = build_cfg_command(
+            CFG_OP_SET_PERIPH,
+            connection.next_seq(),
+            periph=periph,
+        )
+        resp = connection.exchange_raw(
+            frame,
+            _parse_cfg_frame,
+            timeout_s=timeout_s,
+            predicate=lambda p: p["op"] == CFG_OP_SET_PERIPH,
+        )
+        if resp is None:
+            raise TimeoutError("no CFG SET_PERIPH response from MCU")
+        if resp["status"] != CFG_STATUS_OK:
+            raise RuntimeError(f"CFG SET_PERIPH failed: {resp['status_name']}")
+        if persist:
+            time.sleep(0.05)
+            save_nvm(connection)
+        return resp
+    finally:
+        if telemetry is not None:
+            telemetry.set_connected(
+                True, mode="plant_stream" if connection.is_streaming else "idle"
+            )
 
 
 def set_slot(

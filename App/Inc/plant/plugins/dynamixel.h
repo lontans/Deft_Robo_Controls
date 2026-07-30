@@ -113,6 +113,7 @@
 #define SERVO_COUNT                HOST_EXCHANGE_SERVO_SLOTS
 
 typedef struct {
+	uint8_t  model; /* PLANT_SERVO_MODEL_* (NVM v2) */
 	uint8_t  id;
 	bool     enabled;
 	uint16_t pos_min;

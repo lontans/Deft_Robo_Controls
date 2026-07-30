@@ -16,6 +16,8 @@ typedef struct {
 
 typedef struct {
 	uint16_t default_count;
+	uint8_t  default_mode;       /* LED_MODE_* when host wire mode is 0 (follow/pdu) */
+	uint8_t  default_brightness; /* 0..31 master brightness fallback */
 } sk9822_config_t;
 
 extern sk9822_config_t led_table[LED_STRIP_COUNT];

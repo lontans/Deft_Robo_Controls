@@ -1,6 +1,7 @@
 #include "plant/led.h"
 #include "plant/plugins/sk9822.h"
 #include "plant/plant_config.h"
+#include "plant/plant_config_nvm.h"
 #include "plant/spi3_role.h"
 #include "host/pdb_link.h"
 #include "host/uart4_mode.h"
@@ -51,6 +52,11 @@ static uint8_t led_mode_from_pdb(void)
 {
 	uint8_t kill = pdb_link_kill_state();
 	uint8_t peer_estop = pdb_link_peer_estop_sense();
+
+	/* Caller only invokes this when listen_pdu is set. No peer since boot
+	 * (or stale UART) is treated as HARD estop attention, not idle. */
+	if (!pdb_link_ever_synced())
+		return LED_MODE_BLINK_RED_FAST;
 
 	if (kill == (uint8_t)PDB_KILL_HARD_ESTOP || peer_estop == 0u)
 		return LED_MODE_BLINK_RED_FAST;
@@ -290,14 +296,29 @@ void led_service(void)
 	brightness = (uint8_t)(g_cmd_live.master_brightness & 0x1Fu);
 	__enable_irq();
 
+	/* Host wire mode=0 means "no host override" (LedDesire follow/pdu) —
+	 * not "strip black". Effective pattern then comes from:
+	 *   - PDU traffic-light when listen_pdu (no peer / HARD → blink red)
+	 *   - else NVM led_table.default_mode
+	 * Non-zero host wire mode (LedDesire debug) always wins — clear it
+	 * (follow) before expecting listen_pdu to drive the strip. */
+	if (mode == LED_MODE_OFF) {
 #if UART4_MODE == UART4_MODE_PDB
-	/* Host non-OFF LedDesire wins (bench override). PDB traffic-light only
-	 * when host leaves mode OFF — otherwise stale/HARD UART paints permanent red. */
-	if (mode == LED_MODE_OFF)
-		mode = led_mode_from_pdb();
-	if (brightness == 0u)
-		brightness = 12u;
+		if (plant_config_listen_pdu())
+			mode = led_mode_from_pdb();
+		else
+			mode = led_table[0].default_mode;
+#else
+		mode = led_table[0].default_mode;
 #endif
+		if (mode == LED_MODE_OFF)
+			mode = LED_MODE_IDLE_CORNFLOWER;
+	}
+	if (brightness == 0u) {
+		brightness = led_table[0].default_brightness;
+		if (brightness == 0u)
+			brightness = 8u;
+	}
 	g_mode_effective = mode;
 
 	n = led_resolve_count(&g_cmd_live);

@@ -62,3 +62,7 @@ External_Documentation/**
 
 # Working checkout of gitlab deft_vbeta — own .git, not this repo's source.
 /deft_vbeta/
+
+# One-off PDF extract scratch
+.tmp_pdf_extract/
+.tmp_pdf_extract

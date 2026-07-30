@@ -24,7 +24,13 @@ from .debug import (
     leave_bootloader,
     list_cdc_ports,
 )
-from .host_proxy import ComponentView, HostProxy, Profile, yam_product_profile
+from .host_proxy import (
+    ComponentView,
+    HostProxy,
+    Profile,
+    bench_continuous_profile,
+    yam_product_profile,
+)
 from .link import ActuatorDesire, LedDesire, McuState, ServoDesire
 from .telemetry import SessionState, TelemetryCache
 
@@ -40,6 +46,7 @@ __all__ = [
     "ServoDesire",
     "SessionState",
     "TelemetryCache",
+    "bench_continuous_profile",
     "enter_bootloader",
     "find_cdc_port",
     "flash_firmware",

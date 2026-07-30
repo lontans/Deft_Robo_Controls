@@ -1,9 +1,14 @@
 """pcb_lab — plant lab app on HostProxy (not the YAM/vbeta product path).
 
-    python -m pcb_lab doctor --port COM5
-    python -m pcb_lab hold --component left_arm --port COM5
-    python -m pcb_lab step --component left_arm --joint 0 --delta 0.05
-    python -m pcb_lab blank --component left_arm
+    python -m pcb_lab --port COM5 doctor
+    python -m pcb_lab --port COM5 demux --profile bench
+    python -m pcb_lab --port COM5 hold --component left_arm
+    python -m pcb_lab.continuous --port COM5 --duration 20
+    python -m pcb_lab.debug scan
+    python -m pcb_lab.debug --port COM5 show --cfg --bandwidth --status
+    python -m pcb_lab.debug --port COM5 set --cfg
+    python -m pcb_lab.debug --port COM5 set --cfg --slot 22 --bus 5 \\
+        --protocol robstride --motor-id 0x70 --persist
 
 Owns COM exclusively — disconnect the debug dashboard first.
 """

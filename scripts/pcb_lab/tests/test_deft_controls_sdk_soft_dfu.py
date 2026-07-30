@@ -23,6 +23,7 @@ from deft_controls_sdk.debug.soft_dfu import (
     leave_bootloader,
     list_cdc_ports,
     main,
+    resolve_flash_identity,
 )
 from deft_controls_sdk.link import Connection
 from deft_controls_sdk.link.exchange import (
@@ -152,25 +153,55 @@ def test_pick_firmware_elf_prefers_newer(tmp_path) -> None:
     assert _pick_firmware_elf(tmp_path) == release
 
 
+def test_resolve_flash_identity_from_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    import deft_controls_sdk.debug.soft_dfu as mod
+
+    monkeypatch.setattr(
+        mod,
+        "list_cdc_ports",
+        lambda *, serial=None: [
+            CdcPortInfo("COM5", "3167376F3435", 0x0483, 0x5740, "CDC", True),
+        ],
+    )
+    monkeypatch.setattr(mod, "host_os", lambda: "windows")
+    assert resolve_flash_identity(port="com5") == ("com5", "3167376F3435")
+    with pytest.raises(RuntimeError, match="not"):
+        resolve_flash_identity(port="COM5", serial="OTHER")
+
+
 def test_main_flash_wires_to_flash_firmware(monkeypatch: pytest.MonkeyPatch) -> None:
     import deft_controls_sdk.debug.soft_dfu as mod
 
     called = {}
 
-    def _flash(image, *, serial=None, flash_address=0, confirm=True, require_usb_dfu=False):
+    def _flash(
+        image,
+        *,
+        port=None,
+        serial=None,
+        flash_address=0,
+        confirm=True,
+        require_usb_dfu=False,
+    ):
         called["image"] = image
+        called["port"] = port
         called["serial"] = serial
         called["address"] = flash_address
         called["require_usb_dfu"] = require_usb_dfu
         return "/dev/ttyACM0"
 
     monkeypatch.setattr(mod, "flash_firmware", _flash)
+    monkeypatch.setattr(mod, "post_flash_listen_pdu", lambda *a, **k: None)
     assert main(
         ["flash", "--serial", "ABC", "--image", "/tmp/x.elf", "--require-usb-dfu"]
     ) == 0
     assert called["serial"] == "ABC"
     assert called["image"] == "/tmp/x.elf"
     assert called["require_usb_dfu"] is True
+
+    assert main(["flash", "--port", "COM5", "--image", "/tmp/y.elf"]) == 0
+    assert called["port"] == "COM5"
+    assert called["image"] == "/tmp/y.elf"
 
 
 def test_dfu_util_flash_retries_sudo_on_access_denied(

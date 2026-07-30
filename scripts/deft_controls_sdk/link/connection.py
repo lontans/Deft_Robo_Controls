@@ -109,7 +109,7 @@ class Connection:
         self._stream_thread: Optional[threading.Thread] = None
         self._telemetry_thread: Optional[threading.Thread] = None
         self._stream_stop = threading.Event()
-        self._stream_hz = 40.0
+        self._stream_hz = 200.0
         # Telemetry runs on a *side* thread — never inside the plant TX loop.
         # Legacy teleop was send→sleep only; coupling TelemetryCache into that
         # path is what made the Windows GUI bringup feel high-latency.
@@ -218,7 +218,7 @@ class Connection:
             if state in (McuState.RECOVERY, McuState.ESTOP):
                 self._desires.clear()
                 self._servos.clear()
-                self._led = LedDesire(mode=0, master_brightness=0, led_count=0)
+                self._led = LedDesire(mode="follow", master_brightness=0, led_count=0)
         if send and self._ser is not None:
             self.send_once()
 
@@ -234,6 +234,11 @@ class Connection:
     @property
     def mcu_state(self) -> McuState:
         return self._mcu_state
+
+    @property
+    def led_desire(self) -> Optional[LedDesire]:
+        """Last host LED command held for plant TX (may be None)."""
+        return self._led
 
     def recover(self) -> None:
         self.set_mcu_state(McuState.RECOVERY)
@@ -352,7 +357,7 @@ class Connection:
 
     def clear_led(self, *, send: bool = True) -> None:
         with self._state_lock:
-            self._led = LedDesire(mode=0, master_brightness=0, led_count=0)
+            self._led = LedDesire(mode="follow", master_brightness=0, led_count=0)
         if send:
             self.send_once()
 
@@ -540,7 +545,7 @@ class Connection:
         """Register a no-arg callback invoked on the plant stream before each TX."""
         self._pre_plant_send = fn
 
-    def start_streaming(self, hz: float = 40.0, *, telemetry_hz: float = 10.0) -> None:
+    def start_streaming(self, hz: float = 200.0, *, telemetry_hz: float = 200.0) -> None:
         """Background plant stream — resends held desires, polls feedback.
 
         ``hz`` is the plant TX / HOST_STALE cadence (legacy teleop default 40).

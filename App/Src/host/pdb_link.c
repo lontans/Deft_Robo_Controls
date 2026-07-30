@@ -530,6 +530,16 @@ bool pdb_link_is_fresh(void)
 	return synced && (HAL_GetTick() - last_ms) <= PDB_STALE_MS;
 }
 
+bool pdb_link_ever_synced(void)
+{
+	bool synced;
+
+	plant_crit_enter();
+	synced = s_ever_synced;
+	plant_crit_exit();
+	return synced;
+}
+
 /* Snapshot freshness + the one status byte together so a Host-task update
  * landing between the two reads can't hand back a freshness verdict paired
  * with a byte from a different frame. */
@@ -603,8 +613,14 @@ static void pdb_link_eval_kill(uint8_t *state_out, uint8_t *reason_out)
 	plant_crit_exit();
 
 	if (!synced || (HAL_GetTick() - last_ms) > PDB_STALE_MS) {
+#if PDB_STALE_FAILSAFE
 		*state_out = (uint8_t)PDB_KILL_HARD_ESTOP;
 		*reason_out = (uint8_t)PDB_KILL_REASON_COMMS_LOSS;
+#else
+		/* Bench: no PDU peer — do not latch HARD on USB/LED traffic-light. */
+		*state_out = (uint8_t)PDB_KILL_NORMAL;
+		*reason_out = (uint8_t)PDB_KILL_REASON_NONE;
+#endif
 		return;
 	}
 
@@ -722,6 +738,7 @@ void pdb_link_set_rail_enable_cmd(uint8_t mask) { (void)mask; }
 void pdb_link_request_estop(bool assert) { (void)assert; }
 void pdb_link_set_soft_kill_ready(bool ready) { (void)ready; }
 bool pdb_link_is_fresh(void) { return false; }
+bool pdb_link_ever_synced(void) { return false; }
 uint8_t pdb_link_kill_state(void) { return (uint8_t)PDB_KILL_HARD_ESTOP; }
 uint8_t pdb_link_kill_reason(void) { return (uint8_t)PDB_KILL_REASON_COMMS_LOSS; }
 uint8_t pdb_link_estop_sense(void) { return 0u; }

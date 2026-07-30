@@ -9,9 +9,12 @@
 from __future__ import annotations
 
 from .bench import (
+    CFG_FLAG_LISTEN_PDU,
     CFG_OP_GET,
+    CFG_OP_GET_PERIPH,
     CFG_OP_SAVE,
     CFG_OP_SET,
+    CFG_OP_SET_PERIPH,
     CFG_RESP_TAG0,
     CFG_RESP_TAG1,
     CFG_RESP_TAG2,
@@ -94,9 +97,12 @@ from .wire_layout import (
 
 __all__ = [
     "ACTUATOR_COUNT",
+    "CFG_FLAG_LISTEN_PDU",
     "CFG_OP_GET",
+    "CFG_OP_GET_PERIPH",
     "CFG_OP_SAVE",
     "CFG_OP_SET",
+    "CFG_OP_SET_PERIPH",
     "CFG_RESP_TAG0",
     "CFG_RESP_TAG1",
     "CFG_RESP_TAG2",

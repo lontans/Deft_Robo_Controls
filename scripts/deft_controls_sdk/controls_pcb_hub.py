@@ -29,6 +29,10 @@ from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
 
 class ControlsPcbHub:
     def __init__(self, connection: Connection, telemetry: TelemetryCache) -> None:
+        # When False: ignore PDB kill for soft-kill hooks + doctor LED inference.
+        # USB FB may still show HARD+COMMS_LOSS (MCU stale failsafe); host policy
+        # treats PDB as not listening. Product with a live PDU should set True.
+        self._listen_pdu = False
         self._connection = connection
         self._telemetry = telemetry
         self._debug = DebugAPI(connection, telemetry)
@@ -87,14 +91,34 @@ class ControlsPcbHub:
     def state_path(self) -> Path:
         return self.telemetry.state_path
 
+    @property
+    def listen_pdu(self) -> bool:
+        """If False, host ignores PDB kill for soft-kill + status LED policy."""
+        return self._listen_pdu
+
+    @listen_pdu.setter
+    def listen_pdu(self, enabled: bool) -> None:
+        self._listen_pdu = bool(enabled)
+
+    @property
+    def stream_hz(self) -> Optional[float]:
+        hz = getattr(self._connection, "_stream_hz", None)
+        return float(hz) if hz is not None else None
+
+    @property
+    def telemetry_hz(self) -> Optional[float]:
+        hz = getattr(self._connection, "_telemetry_hz", None)
+        return float(hz) if hz is not None else None
+
     def set_auto_soft_kill(self, enabled: bool) -> None:
         """Enable/disable plant-TX soft-kill park hooks (PDU SOFT_KILL_REQ + V/I).
 
         Product teleop leaves this on. The debug dashboard observe mode turns
         it off so Connect does not latch ESTOP from a residual PDU soft-kill
         or host V/I check before the operator opts into plant control.
+        No-op when ``listen_pdu`` is False (bench without a PDU peer).
         """
-        if enabled:
+        if enabled and self._listen_pdu:
 
             def _pre_plant_send() -> None:
                 self.soft_kill_park_if_requested(send=False)
@@ -108,8 +132,8 @@ class ControlsPcbHub:
         self,
         hz: float = 200.0,
         *,
-        telemetry_hz: float = 10.0,
-        auto_soft_kill: bool = True,
+        telemetry_hz: float = 200.0,
+        auto_soft_kill: Optional[bool] = None,
     ) -> None:
         """Background plant stream — keeps HOST_STALE clear and feeds telemetry.
 
@@ -117,12 +141,15 @@ class ControlsPcbHub:
         TelemetryCache / UI publish runs on a *side* thread at ``telemetry_hz``
         so dashboard disk/json cannot stretch plant TX gaps.
 
-        When ``auto_soft_kill`` is True (default, product path): auto-parks via
+        When ``auto_soft_kill`` is True: auto-parks via
         :meth:`soft_kill_park_if_requested` when USB kill is ``SOFT_KILL_REQ``,
         and via :meth:`soft_kill_park_if_bad_vi` against ``pdb.limits``.
-        Pass ``auto_soft_kill=False`` for read-only observe streams (dashboard).
+        Default follows ``listen_pdu``. Pass ``auto_soft_kill=False`` for
+        read-only observe streams (dashboard).
         """
-        self.set_auto_soft_kill(auto_soft_kill)
+        if auto_soft_kill is None:
+            auto_soft_kill = self._listen_pdu
+        self.set_auto_soft_kill(bool(auto_soft_kill))
         self._connection.start_streaming(hz=hz, telemetry_hz=telemetry_hz)
 
     def log_feedback(self, raw: Optional[bytes] = None, *, include_raw: bool = True) -> None:
@@ -238,6 +265,16 @@ class ControlsPcbHub:
     def set_mcu_state(self, state: McuState, *, send: bool = True) -> None:
         self._connection.set_mcu_state(state, send=send)
 
+    @property
+    def mcu_state(self) -> McuState:
+        """Host-commanded ``system.mcu_state`` (NORMAL / DIAG_ONLY / ESTOP / …)."""
+        return self._connection.mcu_state
+
+    @property
+    def led_desire(self) -> Optional[LedDesire]:
+        """Host-commanded LED mode held for plant TX (None if never set)."""
+        return self._connection.led_desire
+
     def pdb_status(self, raw: Optional[bytes] = None) -> Optional[PdbStatus]:
         """Typed USB PDB status: system kill bytes + optional ``pdb[64]`` mirror.
 
@@ -266,7 +303,7 @@ class ControlsPcbHub:
         blank = {s: ActuatorDesire() for s in range(ACTUATOR_COUNT)}
         self._connection.set_actuators(blank, send=False)
         self._connection.clear_servos(send=False)
-        self.set_led(LedDesire(mode=0, master_brightness=0, led_count=0), send=False)
+        self.set_led(LedDesire(mode="follow", master_brightness=0, led_count=0), send=False)
         self.set_mcu_state(McuState.ESTOP, send=send)
         if send:
             # One extra poll so callers can read post-park kill/LED immediately.
@@ -276,8 +313,10 @@ class ControlsPcbHub:
     def soft_kill_park_if_requested(self, *, send: bool = True) -> bool:
         """If USB kill is ``SOFT_KILL_REQ``, run :meth:`soft_kill_park`.
 
-        Returns True when a park was performed.
+        Returns True when a park was performed. No-op when ``listen_pdu`` is False.
         """
+        if not self._listen_pdu:
+            return False
         status = self.pdb_status()
         if status is None or status.kill_state != KILL_SOFT_REQ:
             return False
@@ -294,7 +333,10 @@ class ControlsPcbHub:
         ``HARD_ESTOP``/``COMMS_LOSS`` already), ``SOFT_KILL_REQ``/``READY``,
         and ``HARD_ESTOP`` are all already handled by the existing kill-state
         paths. Returns True when a park was performed.
+        No-op when ``listen_pdu`` is False.
         """
+        if not self._listen_pdu:
+            return False
         status = self.pdb_status()
         if status is None or not status.normal:
             return False
