@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,7 +42,6 @@ def test_arm_and_wheel_factories():
     left = arm_profile("yam", side="left")
     assert left.name == "left_arm"
     assert left.slots == LEFT_ARM_SLOTS
-    assert left.kind == "joint"
     assert left.cfg and left.cfg[0] is not None
 
     custom = arm_profile("yam", side="left", slots="0,1,2")
@@ -50,14 +50,13 @@ def test_arm_and_wheel_factories():
 
     base = wheel_profile(name="base")
     assert base.slots == BASE_SLOTS
-    assert base.kind == "wheel"
 
     bench = wheel_profile(name="base", bench=True)
     assert bench.slots == BENCH_BASE_SLOTS
 
 
 def test_single_profile_as_cfg_row():
-    p = single_profile(22, protocol="robstride", motor_id=0x70, bus=5, kind="wheel")
+    p = single_profile(22, protocol="robstride", motor_id=0x70, bus=5)
     row = p.as_cfg_row()
     assert row == {
         "slot": 22,
@@ -70,8 +69,16 @@ def test_single_profile_as_cfg_row():
 
 
 def test_yam_assembly_and_demux_shim():
+    from deft_controls_sdk.config import (
+        BASE_WHEEL_1_SLOTS,
+        BASE_WHEEL_2_SLOTS,
+        BASE_WHEEL_3_SLOTS,
+        PRODUCT_ACTUATOR_SECTIONS,
+        TORSO_SLOT,
+    )
+
     asm = yam_product_assembly()
-    assert set(asm.actuators) == {"left_arm", "right_arm", "base", "lift"}
+    assert set(asm.actuators) == set(PRODUCT_ACTUATOR_SECTIONS)
     assert "neck" in asm.servos
     demux = asm.to_demux_profile()
     legacy = yam_product_profile()
@@ -79,6 +86,14 @@ def test_yam_assembly_and_demux_shim():
     assert demux.components == legacy.components
     assert demux.slots("left_arm") == LEFT_ARM_SLOTS
     assert demux.slots("right_arm") == RIGHT_ARM_SLOTS
+    assert demux.slots("base_wheel_1") == BASE_WHEEL_1_SLOTS
+    assert demux.slots("base_wheel_2") == BASE_WHEEL_2_SLOTS
+    assert demux.slots("base_wheel_3") == BASE_WHEEL_3_SLOTS
+    assert demux.slots("torso") == (TORSO_SLOT,)
+    with pytest.raises(KeyError):
+        demux.slots("base")
+    with pytest.raises(KeyError):
+        demux.slots("lift")
 
 
 def test_bench_assembly_demux():
@@ -91,12 +106,16 @@ def test_bench_assembly_demux():
 
 def test_assembly_overlap_raises():
     a = arm_profile("yam", side="left")
-    b = ActuatorProfile(name="dup", slots=(3, 4), kind="joint")
+    b = ActuatorProfile(name="dup", slots=(3, 4))
     with pytest.raises(ValueError, match="overlaps"):
         Assembly(name="bad", actuators={"left_arm": a, "dup": b})
 
 
 def test_actuator_action_from_actuator_profile():
+    class _Fb:
+        def actuator(self, slot):
+            return SimpleNamespace(position=0.25) if slot == 22 else None
+
     class _Sink:
         def __init__(self) -> None:
             self.actuators = {}
@@ -105,14 +124,16 @@ def test_actuator_action_from_actuator_profile():
             self.actuators.update(desires)
 
         def latest_feedback(self):
-            return None
+            return _Fb()
 
     sink = _Sink()
-    prof = single_profile(22, protocol="rs", motor_id=0x70, bus=5, kind="wheel")
+    prof = single_profile(22, protocol="rs", motor_id=0x70, bus=5)
     action = ActuatorAction.from_actuator_profile(sink, prof)
-    assert action.kind == "wheel"
-    action.hold([0.25], send=False)
+    assert action.slots == (22,)
+    # Default hold samples FB and stays put
+    action.hold(send=False)
     assert sink.actuators[22].position == pytest.approx(0.25)
     nudged = action.nudge(delta=0.05, send=False)
-    assert nudged[0] == pytest.approx(0.05)  # no FB → from zeros + delta
+    assert nudged.meta["positions"][0] == pytest.approx(0.30)
+    assert sink.actuators[22].position == pytest.approx(0.30)
     assert isinstance(sink.actuators[22], ActuatorDesire)

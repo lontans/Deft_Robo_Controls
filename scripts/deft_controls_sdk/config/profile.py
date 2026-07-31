@@ -15,12 +15,32 @@ RIGHT_ARM_SLOTS: Tuple[int, ...] = tuple(range(7, 14))
 BASE_STEER_SLOTS: Dict[str, int] = {"BwC": 14, "BwR": 15, "BwL": 16}
 BASE_DRIVE_SLOTS: Dict[str, int] = {"BpC": 17, "BpR": 18, "BpL": 19}
 BASE_SLOTS: Tuple[int, ...] = (14, 15, 16, 17, 18, 19)
+# Product demux: each wheel module = (steer, drive) for C / R / L.
+BASE_WHEEL_1_SLOTS: Tuple[int, ...] = (14, 17)  # Center
+BASE_WHEEL_2_SLOTS: Tuple[int, ...] = (15, 18)  # Right
+BASE_WHEEL_3_SLOTS: Tuple[int, ...] = (16, 19)  # Left
+BASE_WHEEL_SLOTS: Dict[str, Tuple[int, ...]] = {
+    "base_wheel_1": BASE_WHEEL_1_SLOTS,
+    "base_wheel_2": BASE_WHEEL_2_SLOTS,
+    "base_wheel_3": BASE_WHEEL_3_SLOTS,
+}
 LIFT_SLOT = 20
+TORSO_SLOT = LIFT_SLOT  # product section name for slot 20
 SPARE_SLOTS: Tuple[int, ...] = (21, 22, 23, 24, 25)
 # Continuous / bus56 lab: CH5+CH6 motors on spare slots (not product base 14–19).
 BENCH_BASE_SLOTS: Tuple[int, ...] = (22, 23, 24, 25)
 NECK_PITCH_SERVO_SLOT = 0
 NECK_YAW_SERVO_SLOT = 1
+
+# Canonical product actuator section names (HostProxy demux / ROS).
+PRODUCT_ACTUATOR_SECTIONS: Tuple[str, ...] = (
+    "left_arm",
+    "right_arm",
+    "base_wheel_1",
+    "base_wheel_2",
+    "base_wheel_3",
+    "torso",
+)
 
 
 @dataclass(frozen=True)

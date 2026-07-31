@@ -1,9 +1,9 @@
-"""CLI / TUI for board inventory — ``python -m pcb_lab inventory``.
+"""CLI / TUI for peripheral inventory — ``pcb_lab.debug test --inventory``.
 
 Interactive by default (choose buses + ID ranges). Non-interactive for AI::
 
-    python -m pcb_lab inventory --preset bench --buses 5,6
-    python -m pcb_lab inventory --rs-range 0x70-0x75 --dm-range 1-8 --json
+    python -m pcb_lab.debug test --inventory --preset bench --buses 5,6
+    python -m pcb_lab.debug test --inventory --rs-range 0x70-0x75 --dm-range 1-8 --json
 """
 from __future__ import annotations
 
@@ -147,59 +147,70 @@ def _plan_from_args(args: argparse.Namespace) -> dict:
     }
 
 
-def add_inventory_arguments(p: argparse.ArgumentParser) -> None:
-    """Shared flags for ``pcb_lab inventory`` and suite forwarders."""
-    p.add_argument(
+def add_inventory_arguments(
+    p: argparse.ArgumentParser,
+    *,
+    omit: Sequence[str] = (),
+) -> None:
+    """Shared flags for ``test --inventory`` (and standalone inventory parser)."""
+    skip = {str(x) for x in omit}
+
+    def _add(*opts: str, **kwargs) -> None:
+        if any(o in skip for o in opts):
+            return
+        p.add_argument(*opts, **kwargs)
+
+    _add(
         "--buses",
         default=None,
         help="CAN buses 1..6 or 'all' (default: all / TUI)",
     )
-    p.add_argument(
+    _add(
         "--protocols",
         default=None,
         help="robstride,damiao (default: both)",
     )
-    p.add_argument(
+    _add(
         "--preset",
         choices=sorted(set(RANGE_PRESETS) - {"yam"}),  # yam==product
         default=None,
         help="ID range preset (bench|product|full) — required for non-TUI actuator probe",
     )
-    p.add_argument(
+    _add(
         "--rs-range",
         default=None,
         metavar="START-END",
         help="RobStride ID range e.g. 0x70-0x75",
     )
-    p.add_argument(
+    _add(
         "--dm-range",
         default=None,
         metavar="START-END",
         help="Damiao ID range e.g. 1-8",
     )
-    p.add_argument("--no-actuators", action="store_true", help="skip CAN discover")
-    p.add_argument("--no-servos", action="store_true", help="skip neck servo sample")
-    p.add_argument("--no-pdu", action="store_true", help="skip PDU wire check")
-    p.add_argument("--actuators-only", action="store_true")
-    p.add_argument("--servos-only", action="store_true")
-    p.add_argument("--pdu-only", action="store_true")
-    p.add_argument(
+    _add("--no-actuators", action="store_true", help="skip CAN discover")
+    _add("--no-servos", action="store_true", help="skip neck servo sample")
+    _add("--no-pdu", action="store_true", help="skip PDU wire check")
+    _add("--actuators-only", action="store_true")
+    _add("--servos-only", action="store_true")
+    _add("--pdu-only", action="store_true")
+    _add(
         "--peer",
         action="store_true",
         help="require live PDU peer (fail if missing/stale)",
     )
-    p.add_argument(
+    _add(
         "--tui",
         action="store_true",
         help="force interactive range picker (default when no range flags)",
     )
-    p.add_argument(
+    _add(
         "--no-tui",
         action="store_true",
         help="fail instead of opening TUI when ranges missing",
     )
-    p.add_argument("--json", action="store_true", help="print JSON only (quiet banners)")
-    p.add_argument(
+    _add("--json", action="store_true", help="print JSON only (quiet banners)")
+    _add(
         "--listen-ms",
         type=int,
         default=40,
@@ -208,7 +219,7 @@ def add_inventory_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def run_inventory_cli(args: argparse.Namespace) -> int:
-    """Entry from ``pcb_lab inventory`` / suite."""
+    """Entry from ``pcb_lab.debug test --inventory``."""
     want_tui = bool(getattr(args, "tui", False))
     has_range = bool(
         getattr(args, "preset", None)
@@ -238,7 +249,7 @@ def run_inventory_cli(args: argparse.Namespace) -> int:
         getattr(args, "port", None),
         stream_hz=50.0,
         telemetry_hz=50.0,
-        idle_first=True,
+        armed=False,
         listen_pdu=listen,
         mode="debug",
     ) as proxy:
@@ -262,7 +273,7 @@ def run_inventory_cli(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="pcb_lab inventory",
+        prog="pcb_lab.debug test --inventory",
         description="Probe connected hardware (actuators / servos / PDU).",
     )
     p.add_argument("--port", default=None, help="CDC COM port")

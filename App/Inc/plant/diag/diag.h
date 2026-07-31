@@ -1,8 +1,15 @@
 #pragma once
 #include "host/host_exchange_schema.h"
+#include "plant/diag/diag_gates.h"
 #include "plant/plugins/robstride.h"
 #include <stdbool.h>
 #include <stdint.h>
+
+/* Bench DEBUG RPC (discover / probe / lease) — not plant CMDH, not CFG.
+ *
+ * Tags live in image pdu.data[32]. Plant apply is gated via diag_gates.h
+ * while a lease/probe/quiet is active. Bandwidth mode never sends these.
+ */
 
 /* Bench PDU (562 B image pdu.data[32]). */
 #define PLANT_DIAG_PDU_TAG0          'R'
@@ -58,30 +65,12 @@
 /* RS2 DBGF: host bus 1..6 when multi-bus discover stamped a hit (was mcp init mask). */
 #define PLANT_DIAG_RS2_PDU_RESP_BUS  27u
 
-/* Why 500 Hz actuator apply was skipped (stamped in feedback system.plant_block). */
-typedef enum {
-	PLANT_BLOCK_NONE = 0,
-	PLANT_BLOCK_BENCH_SESSION = 1,
-	PLANT_BLOCK_PROBE_BUSY = 2,
-	PLANT_BLOCK_QUIET_PERIOD = 3,
-	PLANT_BLOCK_APPLY_OFF = 4, /* plant_apply=0 (or legacy mcu_state=DIAG_ONLY) */
-	PLANT_BLOCK_HOST_STALE = 5,
-	PLANT_BLOCK_SERVO_SESSION = 6,
-} plant_block_reason_t;
-
-/* Back-compat alias — same code as PLANT_BLOCK_APPLY_OFF. */
-#define PLANT_BLOCK_DIAG_ONLY PLANT_BLOCK_APPLY_OFF
-
-void plant_diag_release_actuator_can(void);
-bool plant_diag_bench_session_active(void);
-bool plant_diag_probe_busy(void);
-bool plant_diag_quiet_period_active(void);
-bool plant_diag_skip_actuator_can(void);
-bool plant_diag_skip_servo_bus(void);
 bool plant_diag_is_rs2_command(const host_command_image_t *cmd);
 bool plant_diag_is_dxl_command(const host_command_image_t *cmd);
 bool plant_diag_is_dm_command(const host_command_image_t *cmd);
-void plant_diag_on_command(const host_command_image_t *cmd);
+void plant_diag_on_rs2_command(const host_command_image_t *cmd);
+/* Back-compat alias — prefer plant_diag_on_rs2_command. */
+#define plant_diag_on_command plant_diag_on_rs2_command
 void plant_diag_on_dxl_command(const host_command_image_t *cmd);
 void plant_diag_on_dm_command(const host_command_image_t *cmd);
 void plant_diag_service(void);
@@ -92,7 +81,3 @@ void plant_diag_probe_progress(const robstride_probe_result_t *partial);
 void plant_diag_feedback_sent(uint8_t probe_kind);
 void plant_diag_feedback_fill(host_pdu_feedback_t *pdu);
 void plant_diag_feedback_stamp_fw_marker(host_pdu_feedback_t *pdu);
-
-bool plant_runtime_actuator_can_apply(void);
-plant_block_reason_t plant_runtime_actuator_block_reason(void);
-bool plant_runtime_servo_can_apply(void);

@@ -1,7 +1,7 @@
-"""Actuator prove — ``mode=debug`` discover / CFG / cal + plant motion.
+"""Actuator prove helpers — discover / CFG / hold / nudge for the bringup TUI.
 
-Discover / CFG / RobStride cal use debug lanes. Movement uses plant CMDH via
-``ActuatorAction`` (joint vs wheel gain kinds). No timing floors.
+The interactive menu lives in ``board_verify.py`` (bare ``test`` and
+``--actuators``). This module owns prompts + plant helpers used there.
 """
 from __future__ import annotations
 
@@ -13,13 +13,10 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from deft_controls_sdk.actions import ActuatorAction
 from deft_controls_sdk.config import (
-    ActuatorKind,
-    ActuatorProfile,
     Assembly,
-    kind_for_component,
     single_profile,
     yam_product_assembly,
-)  # ActuatorProfile used when overriding section kind
+)
 from deft_controls_sdk.debug.discover import (
     DEFAULT_ID_RANGE,
     parse_bus_list,
@@ -27,8 +24,6 @@ from deft_controls_sdk.debug.discover import (
     summarize_queued,
 )
 from deft_controls_sdk.host_proxy import HostProxy
-from deft_controls_sdk.link import McuState
-
 from .proto import protocol_name
 from .show import format_cfg_table
 
@@ -50,10 +45,10 @@ def _connect_debug(args: argparse.Namespace) -> tuple[HostProxy, Assembly]:
         getattr(args, "port", None),
         stream_hz=stream_hz,
         telemetry_hz=telemetry_hz,
-        idle_first=True,
+        armed=False,
         listen_pdu=bool(getattr(args, "listen_pdu", False)),
         mode="debug",
-        profile=assembly.to_demux_profile(),
+        assembly=assembly,
     )
     return proxy, assembly
 
@@ -229,39 +224,33 @@ def _cfg_hint(proxy: HostProxy) -> None:
 
 
 def parse_single_target(target: str) -> ActuatorProfile:
-    """Parse ``single:SLOT:PROTO:MOTOR:BUS[:kind]`` into ``single_profile``."""
+    """Parse ``single:SLOT:PROTO:MOTOR:BUS`` into ``single_profile``.
+
+    Trailing ``:joint|:wheel`` is accepted but ignored (gains are hold kwargs).
+    """
     parts = [p.strip() for p in str(target).split(":")]
     if len(parts) < 5 or parts[0].lower() != "single":
         raise ValueError(
-            "single target form: single:SLOT:PROTO:MOTOR:BUS[:joint|wheel] "
-            "(e.g. single:22:robstride:0x70:5:wheel)"
+            "single target form: single:SLOT:PROTO:MOTOR:BUS "
+            "(e.g. single:22:robstride:0x70:5)"
         )
     slot = int(parts[1], 0)
     proto = parts[2]
     motor_id = int(parts[3], 0)
     bus = int(parts[4], 0)
-    kind: ActuatorKind = "joint"
-    if len(parts) >= 6 and parts[5]:
-        k = parts[5].lower()
-        if k not in ("joint", "wheel"):
-            raise ValueError(f"kind must be joint|wheel, got {parts[5]!r}")
-        kind = k  # type: ignore[assignment]
-    return single_profile(
-        slot, protocol=proto, motor_id=motor_id, bus=bus, kind=kind
-    )
+    return single_profile(slot, protocol=proto, motor_id=motor_id, bus=bus)
 
 
 def resolve_motion_target(
     proxy: HostProxy,
     target: str,
     *,
-    kind: Optional[ActuatorKind] = None,
     assembly: Optional[Assembly] = None,
 ) -> ActuatorAction:
     """Build an ``ActuatorAction`` from assembly section, single, or slot.
 
     Examples: ``left_arm``, ``base``, ``22``, ``slot:22``,
-    ``single:22:robstride:0x70:5:wheel``.
+    ``single:22:robstride:0x70:5``.
     """
     raw = str(target).strip()
     if not raw:
@@ -272,32 +261,26 @@ def resolve_motion_target(
         return ActuatorAction.from_actuator_profile(proxy, prof)
     if lower.startswith("slot:"):
         slot = int(lower.split(":", 1)[1].strip(), 0)
-        k: ActuatorKind = kind if kind is not None else "joint"
-        return ActuatorAction.from_slots(proxy, (slot,), name=f"slot_{slot}", kind=k)
+        return ActuatorAction.from_slots(proxy, (slot,), name=f"slot_{slot}")
     try:
         slot = int(raw, 0)
     except ValueError:
         slot = None
     if slot is not None:
-        k = kind if kind is not None else "joint"
-        return ActuatorAction.from_slots(proxy, (slot,), name=f"slot_{slot}", kind=k)
+        return ActuatorAction.from_slots(proxy, (slot,), name=f"slot_{slot}")
     if assembly is not None and raw in assembly.actuators:
-        prof = assembly.actuator(raw)
-        if kind is not None and kind != prof.kind:
-            from deft_controls_sdk.config import ActuatorProfile as AP
-
-            prof = AP(name=prof.name, slots=prof.slots, kind=kind, cfg=prof.cfg)
-        return ActuatorAction.from_actuator_profile(proxy, prof)
-    return ActuatorAction(
-        proxy,
-        proxy.profile,
-        raw,
-        kind=kind if kind is not None else kind_for_component(raw),
-    )
+        return ActuatorAction.from_actuator_profile(proxy, assembly.actuator(raw))
+    return ActuatorAction(proxy, proxy.profile, raw)
 
 
 def ensure_plant_control(proxy: HostProxy, *, enable: bool = True) -> None:
-    """Arm or disarm plant apply (required for motors to track desires)."""
+    """Arm or disarm plant apply — prefers ``HostProxy.ensure_plant_control``."""
+    fn = getattr(proxy, "ensure_plant_control", None)
+    if callable(fn):
+        fn(enable=enable)
+        return
+    from deft_controls_sdk.link import McuState
+
     proxy.hub.set_mcu_state(McuState.NORMAL, send=False)
     proxy.hub.set_plant_apply(bool(enable), send=False)
     proxy.send_once()
@@ -306,14 +289,14 @@ def ensure_plant_control(proxy: HostProxy, *, enable: bool = True) -> None:
 def apply_hold(
     proxy: HostProxy,
     action: ActuatorAction,
-    positions: Sequence[float],
+    positions: Optional[Sequence[float]] = None,
     *,
     hold_s: float = 1.0,
     kp: Optional[float] = None,
     kd: Optional[float] = None,
     enable_control: bool = True,
 ) -> None:
-    """Hold positions on ``action`` (kind defaults unless kp/kd set)."""
+    """Hold on ``action`` — default samples FB (stay put); or explicit positions."""
     if enable_control:
         ensure_plant_control(proxy, enable=True)
     action.hold(positions, kp=kp, kd=kd, send=False)
@@ -336,11 +319,11 @@ def apply_step(
     """Step one index in the group by ``delta`` rad from FB (or 0)."""
     if enable_control:
         ensure_plant_control(proxy, enable=True)
-    pos = action.nudge(index=index, delta=delta, kp=kp, kd=kd, send=False)
+    mounted = action.nudge(index=index, delta=delta, kp=kp, kd=kd, send=False)
     proxy.send_once()
     if hold_s > 0:
         time.sleep(float(hold_s))
-    return pos
+    return [float(p) for p in mounted.meta.get("positions", [])]
 
 
 def apply_blank(proxy: HostProxy, action: ActuatorAction, *, send: bool = True) -> None:
@@ -349,61 +332,30 @@ def apply_blank(proxy: HostProxy, action: ActuatorAction, *, send: bool = True) 
         proxy.send_once()
 
 
-def _prompt_kind(default: ActuatorKind) -> ActuatorKind:
-    raw = _prompt("kind (joint|wheel)", default).strip().lower()
-    if raw in ("joint", "j"):
-        return "joint"
-    if raw in ("wheel", "w"):
-        return "wheel"
-    return default
-
-
 def _print_action_fb(action: ActuatorAction) -> None:
     pos = action.positions()
     print(
-        f"  {action.name}  kind={action.kind}  slots={list(action.slots)}  "
+        f"  {action.name}  slots={list(action.slots)}  "
         f"fb={pos if pos is not None else '(no FB yet)'}"
     )
 
 
 def _motion_hold_menu(proxy: HostProxy, assembly: Assembly) -> None:
+    """Hold in place at FB (default), or at explicit positions."""
     known = ", ".join(sorted(assembly.actuators))
-    target = _prompt(
-        f"target (section: {known} | slot N | single:SLOT:PROTO:MOTOR:BUS[:kind])",
-        "base",
-    )
+    target = _prompt(f"target (section: {known} | slot N)", "22")
     if not target:
         return
-    default_kind: ActuatorKind = (
-        "wheel"
-        if target.strip().lower() in ("base", "base_product")
-        or target.strip().isdigit()
-        or target.strip().lower().startswith("single:")
-        else kind_for_component(target)
-    )
-    kind = None
-    if not target.strip().lower().startswith("single:"):
-        kind = _prompt_kind(default_kind)
     try:
-        action = resolve_motion_target(
-            proxy, target, kind=kind, assembly=assembly
-        )
+        action = resolve_motion_target(proxy, target, assembly=assembly)
     except Exception as exc:  # noqa: BLE001
         print(f"target: {exc}", file=sys.stderr)
         return
     _print_action_fb(action)
-    n = len(action.slots)
-    fb = action.positions()
-    default_pos = "fb" if fb is not None else ",".join(["0"] * n)
-    pos_s = _prompt(f"positions ({n} floats, or 'fb')", default_pos)
-    if not pos_s:
-        return
-    if pos_s.strip().lower() == "fb":
-        if fb is None:
-            print("no feedback yet — enter numeric positions", file=sys.stderr)
-            return
-        positions = list(fb)
-    else:
+    pos_s = _prompt("positions (empty = sample FB / stay put)", "")
+    positions: Optional[Sequence[float]] = None
+    if pos_s.strip():
+        n = len(action.slots)
         parts = [p.strip() for p in pos_s.replace(" ", ",").split(",") if p.strip()]
         if len(parts) == 1 and n > 1:
             positions = [float(parts[0])] * n
@@ -412,18 +364,15 @@ def _motion_hold_menu(proxy: HostProxy, assembly: Assembly) -> None:
     hold_s = _prompt_float("hold seconds", 2.0)
     if hold_s is None:
         return
-    ov = _prompt_yn("override kp/kd (else kind defaults)", default=False)
-    kp = kd = None
-    if ov:
-        kp = _prompt_float("kp", 20.0 if action.kind == "wheel" else 40.0)
-        kd = _prompt_float("kd", 1.0 if action.kind == "wheel" else 2.5)
-        if kp is None or kd is None:
-            return
+    kp = _prompt_float("kp", 20.0)
+    kd = _prompt_float("kd", 1.0)
+    if kp is None or kd is None:
+        return
     print(
-        f"\nhold  target={action.name}  kind={action.kind}  slots={list(action.slots)}  "
-        f"plant_apply=ON  hold_s={hold_s:g}"
+        f"\nhold  target={action.name}  slots={list(action.slots)}  "
+        f"kp={kp:g} kd={kd:g}  sampled={positions is None}"
     )
-    if not _prompt_yn("proceed (motors will move)", default=False):
+    if not _prompt_yn("proceed (motors will track hold)", default=False):
         print("cancelled")
         return
     apply_hold(proxy, action, positions, hold_s=hold_s, kp=kp, kd=kd)
@@ -431,22 +380,11 @@ def _motion_hold_menu(proxy: HostProxy, assembly: Assembly) -> None:
 
 
 def _motion_step_menu(proxy: HostProxy, assembly: Assembly) -> None:
-    target = _prompt("target (section | slot N | single:…)", "22")
+    target = _prompt("target (section | slot N)", "22")
     if not target:
         return
-    default_kind: ActuatorKind = (
-        "wheel"
-        if target.strip().lower() in ("base", "base_product")
-        or target.strip().isdigit()
-        else kind_for_component(target)
-    )
-    kind = None if target.strip().lower().startswith("single:") else _prompt_kind(
-        default_kind
-    )
     try:
-        action = resolve_motion_target(
-            proxy, target, kind=kind, assembly=assembly
-        )
+        action = resolve_motion_target(proxy, target, assembly=assembly)
     except Exception as exc:  # noqa: BLE001
         print(f"target: {exc}", file=sys.stderr)
         return
@@ -458,21 +396,27 @@ def _motion_step_menu(proxy: HostProxy, assembly: Assembly) -> None:
     hold_s = _prompt_float("hold seconds", 1.0)
     if hold_s is None:
         return
+    kp = _prompt_float("kp", 20.0)
+    kd = _prompt_float("kd", 1.0)
+    if kp is None or kd is None:
+        return
     print(
-        f"\nnudge  target={action.name}  kind={action.kind}  index={idx}  "
-        f"delta={delta:g}  plant_apply=ON"
+        f"\nnudge  target={action.name}  index={idx}  "
+        f"delta={delta:g}  kp={kp:g} kd={kd:g}"
     )
     if not _prompt_yn("proceed (motors will move)", default=False):
         print("cancelled")
         return
-    pos = apply_step(proxy, action, index=idx, delta=delta, hold_s=hold_s)
+    pos = apply_step(
+        proxy, action, index=idx, delta=delta, hold_s=hold_s, kp=kp, kd=kd
+    )
     print(f"  commanded={pos}")
     _print_action_fb(action)
 
 
 def _motion_blank_menu(proxy: HostProxy, assembly: Assembly) -> None:
     known = ", ".join(sorted(assembly.actuators))
-    target = _prompt(f"target to blank ({known} | slot N)", "base")
+    target = _prompt(f"target to blank ({known} | slot N)", "22")
     if not target:
         return
     try:
@@ -485,7 +429,7 @@ def _motion_blank_menu(proxy: HostProxy, assembly: Assembly) -> None:
         print("cancelled")
         return
     apply_blank(proxy, action)
-    print("blanked (zero desires). Use observe (menu 10) to clear plant_apply.")
+    print("blanked. Use observe (o) to disarm plant_apply.")
 
 
 def _motion_fb_menu(proxy: HostProxy, assembly: Assembly) -> None:
@@ -506,99 +450,70 @@ def _motion_fb_menu(proxy: HostProxy, assembly: Assembly) -> None:
     _print_action_fb(action)
 
 
-def _cfg_apply_single_menu(proxy: HostProxy) -> None:
-    """Build single_profile and RAM-apply CFG (optional persist)."""
-    target = _prompt(
-        "single:SLOT:PROTO:MOTOR:BUS[:kind]",
-        "single:22:robstride:0x70:5:wheel",
-    )
-    if not target:
+def _cfg_edit_slot_menu(proxy: HostProxy) -> None:
+    """Step-prompt CFG identity for one plant slot (RAM, optional NVM)."""
+    slot_s = _prompt("plant slot", "22")
+    if not slot_s:
         return
     try:
-        prof = parse_single_target(target)
-        row = prof.as_cfg_row()
-    except Exception as exc:  # noqa: BLE001
-        print(f"single: {exc}", file=sys.stderr)
+        slot = int(slot_s, 0)
+    except ValueError:
+        print("bad slot", file=sys.stderr)
         return
-    persist = _prompt_yn("persist to NVM (flash SAVE)", default=False)
-    print(f"\ncfg_set_slot  {row}  persist={persist}")
+    # Show live row when available
+    try:
+        table = proxy.hub.debug.cfg_get_table()
+        row = table[slot] if 0 <= slot < len(table) else None
+        if row:
+            print(
+                f"  live RAM  bus={row.get('bus')}  "
+                f"proto={row.get('protocol')}  "
+                f"id={_hex_id(int(row.get('motor_id') or 0))}  "
+                f"en={row.get('enabled')}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  (cfg_get_table: {exc})")
+
+    bus_s = _prompt("bus 1..6", "5")
+    proto = _prompt("protocol (robstride|damiao|cubemars|zeroerr)", "robstride")
+    mid_s = _prompt("motor id", "0x70")
+    if not bus_s or not proto or not mid_s:
+        return
+    try:
+        prof = single_profile(
+            slot,
+            protocol=proto,
+            motor_id=int(mid_s, 0),
+            bus=int(bus_s, 0),
+        )
+        cfg_row = prof.as_cfg_row()
+    except Exception as exc:  # noqa: BLE001
+        print(f"cfg: {exc}", file=sys.stderr)
+        return
+    persist = _prompt_yn("persist to NVM (flash)", default=False)
+    print(f"\ncfg_set_slot  {cfg_row}  persist={persist}")
     if not _prompt_yn("proceed", default=False):
         print("cancelled")
         return
-    resp = proxy.hub.debug.cfg_set_slot(**row, persist=persist)
+    resp = proxy.hub.debug.cfg_set_slot(**cfg_row, persist=persist)
     print(json.dumps(resp, indent=2, default=str))
+
+
+# Back-compat name used by older call sites / tests
+_cfg_apply_single_menu = _cfg_edit_slot_menu
 
 
 def _motion_observe_menu(proxy: HostProxy) -> None:
     """plant_apply off — stop mounting desires (safe observe)."""
-    print("observe: plant_apply=OFF (desires not mounted)")
+    print("observe: plant_apply=OFF")
     ensure_plant_control(proxy, enable=False)
     print("ok")
 
 
 def run_actuators_test(args: argparse.Namespace) -> int:
-    """Entry for ``test --actuators`` — discover / CFG / motion menu.
+    """``test --actuators`` — actuators-only peripheral menu."""
+    from .board_verify import run_bringup
 
-    Full Assembly workshop is bare ``pcb_lab.debug test`` (see ``workshop.py``).
-    """
-    print(
-        "test --actuators  mode=debug  "
-        "(CFG/discover/cal + plant motion via ActuatorAction; no timing floors)"
-    )
-    print(
-        "note: connect uses idle_first (plant_apply off). "
-        "Motion menus arm plant_apply after confirm. "
-        "For Assembly workshop (profiles / NVM nudge / operate): "
-        "run bare ``test`` (no --actuators)."
-    )
-    proxy, assembly = _connect_debug(args)
-    with proxy:
-        while True:
-            print(
-                "\n  --- identity / device ---\n"
-                "  1) show CFG table\n"
-                "  2) show enabled CFG only\n"
-                "  3) discover (multi-bus / multi-protocol)\n"
-                "  4) calibrate robstride (encoder cal)\n"
-                "  5) CFG enabled hint (JSON)\n"
-                "  11) CFG apply single_profile (RAM / optional NVM)\n"
-                "  --- plant motion (CMDH) ---\n"
-                "  6) hold (section / slot / single:…)\n"
-                "  7) nudge one joint/slot (+delta rad)\n"
-                "  8) blank group/slot desires\n"
-                "  9) show FB positions\n"
-                "  10) observe (plant_apply OFF)\n"
-                "  q) quit"
-            )
-            choice = _prompt("choice", "q").lower()
-            if choice in ("", "q", "quit", "exit"):
-                break
-            try:
-                if choice in ("1", "cfg"):
-                    _show_cfg(proxy)
-                elif choice in ("2", "enabled"):
-                    _show_cfg(proxy, only_enabled=True)
-                elif choice in ("3", "discover", "d"):
-                    _discover_menu(proxy)
-                elif choice in ("4", "calibrate", "cal", "c"):
-                    _calibrate_robstride_menu(proxy)
-                elif choice in ("5", "hint"):
-                    _cfg_hint(proxy)
-                elif choice in ("6", "hold", "h"):
-                    _motion_hold_menu(proxy, assembly)
-                elif choice in ("7", "step", "s", "nudge"):
-                    _motion_step_menu(proxy, assembly)
-                elif choice in ("8", "blank", "b"):
-                    _motion_blank_menu(proxy, assembly)
-                elif choice in ("9", "fb", "pos"):
-                    _motion_fb_menu(proxy, assembly)
-                elif choice in ("10", "observe", "o"):
-                    _motion_observe_menu(proxy)
-                elif choice in ("11", "cfg_single"):
-                    _cfg_apply_single_menu(proxy)
-                else:
-                    print(f"unknown choice {choice!r}")
-            except Exception as exc:  # noqa: BLE001
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
-    return 0
+    if not getattr(args, "assembly", None):
+        args.assembly = "bench"
+    return run_bringup(args, scope="actuators")

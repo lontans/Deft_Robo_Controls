@@ -118,7 +118,7 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 
 		/* RS2 bench on MCP: keep probe ext_id/can_data/discovered_id intact.
 		 * MCP smoke fields live only in pdu[29..31] (and [27..28] above). */
-		if (g_rs2_can_bus >= CAN_BUS_CH4) {
+		{
 			uint8_t tx_ok = 0u;
 			uint8_t tx_fail = 0u;
 			uint8_t tx_nack = 0u;
@@ -132,20 +132,6 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 			pdu->data[29] = tx_ok;
 			pdu->data[30] = tx_fail;
 			pdu->data[31] = tec;
-		} else {
-			uint8_t tx_ok = 0u;
-			uint8_t tx_fail = 0u;
-			uint8_t tx_nack = 0u;
-			uint8_t tec = 0u;
-			uint8_t rec = 0u;
-
-			mcp2518_get_tx_stats(rail, &tx_ok, &tx_fail, &tx_nack);
-			mcp2518_rail_trec(rail, &tec, &rec);
-			(void)tx_nack;
-			pdu->data[29] = tx_ok;
-			pdu->data[30] = tx_fail;
-			pdu->data[31] = tec;
-			(void)rec;
 		}
 	}
 

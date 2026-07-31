@@ -1,14 +1,15 @@
-"""Plant debug suite CLI: ``scan|show|set|test``.
+"""Plant debug suite CLI: ``show|set|test``.
 
 Canonical::
 
-    python -m deft_controls_sdk.debug.suite [--port COM5] scan|show|set|test …
+    python -m deft_controls_sdk.debug.suite [--port COM5] show|set|test …
 
 Lab alias (same argv)::
 
     python -m pcb_lab.debug …
 
 ``test`` owns its own connect per domain (bandwidth vs debug) — see test_cmd.
+Board USB / Soft-DFU lives on ``python -m pcb_lab`` (not here).
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import sys
 import time
 from typing import Optional, Sequence
 
+from deft_controls_sdk.debug.stream_pause import pause_plant_stream
 from deft_controls_sdk.host_proxy import HostProxy
 
 from .cfg_editor import run_cfg_editor
@@ -31,11 +33,12 @@ from .show import (
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="deft_controls_sdk.debug.suite",
+        prog="pcb_lab.debug",
         description=(
-            "Scan ports / show CFG|pcb / set CFG / test domains — plant debug suite. "
+            "Peripheral / CFG debug suite: show | set | test. "
             "Timing proves: test --bandwidth (mode=bandwidth). "
-            "Peripheral proves: test --actuators|--led|--servo|--pdu-link (mode=debug)."
+            "Peripheral proves: test --inventory|--actuators|--led|--servo|--pdu-link "
+            "(mode=debug). Board USB/flash: python -m pcb_lab."
         ),
     )
     p.add_argument("--port", default=None, help="CDC COM port (auto if omitted)")
@@ -62,17 +65,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="write TelemetryCache to state.json (implied by show --pcb)",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
-
-    sc = sub.add_parser(
-        "scan",
-        help="list STM32 CDC / DFU ports (same as soft_dfu_flash.py scan)",
-    )
-    sc.add_argument(
-        "--serial",
-        default=None,
-        help="filter by USB serial number",
-    )
-    sc.set_defaults(_cmd="scan")
 
     sh = sub.add_parser(
         "show",
@@ -205,7 +197,7 @@ def _connect(args: argparse.Namespace) -> HostProxy:
         args.port,
         stream_hz=stream_hz,
         telemetry_hz=telemetry_hz,
-        idle_first=True,
+        armed=False,
         listen_pdu=bool(args.listen_pdu),
         persist_telemetry=persist,
         mode="bandwidth" if want_bw_only else "debug",
@@ -228,7 +220,7 @@ def _cmd_show(proxy: HostProxy, args: argparse.Namespace) -> int:
         )
 
     if not (want_cfg or want_bw or want_pcb):
-        # Bare show → CFG table (live board: show --pcb; doctor: pcb_lab doctor)
+        # Bare show → CFG table (live board: show --pcb)
         want_cfg = True
 
     settle = max(0.0, float(args.settle_ms) / 1000.0)
@@ -334,12 +326,11 @@ def _cmd_set(proxy: HostProxy, args: argparse.Namespace) -> int:
             return 0
         print(
             "set: pass --cfg / --stream HZ / --led …\n"
-            "  python -m deft_controls_sdk.debug.suite set --stream 200\n"
-            "  python -m deft_controls_sdk.debug.suite set --led-mode 8\n"
-            "  python -m deft_controls_sdk.debug.suite set --led pdu\n"
-            "  python -m deft_controls_sdk.debug.suite set --led follow\n"
-            "  python -m deft_controls_sdk.debug.suite set --cfg\n"
-            "  (or: python -m pcb_lab.debug …)",
+            "  python -m pcb_lab.debug set --stream 200\n"
+            "  python -m pcb_lab.debug set --led-mode 8\n"
+            "  python -m pcb_lab.debug set --led pdu\n"
+            "  python -m pcb_lab.debug set --led follow\n"
+            "  python -m pcb_lab.debug set --cfg",
             file=sys.stderr,
         )
         return 2
@@ -357,8 +348,6 @@ def _cmd_set(proxy: HostProxy, args: argparse.Namespace) -> int:
             proto = parse_protocol(args.protocol)
             motor_id = int(args.motor_id, 0) & 0xFF
             master_id = 0xFF if args.master_id is None else int(args.master_id, 0) & 0xFF
-            from deft_controls_sdk.vbeta.cfg import pause_plant_stream
-
             with pause_plant_stream(proxy.hub):
                 proxy.hub.debug.cfg_set_slot(
                     slot=int(args.slot),
@@ -381,24 +370,8 @@ def _cmd_set(proxy: HostProxy, args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_scan(args: argparse.Namespace) -> int:
-    """Delegate to Soft-DFU scan (no COM open / no plant stream)."""
-    from deft_controls_sdk.debug.soft_dfu import main as soft_dfu_main
-
-    argv = ["scan"]
-    port = getattr(args, "port", None)
-    if port:
-        argv.extend(["--port", port])
-    serial = getattr(args, "serial", None)
-    if serial:
-        argv.extend(["--serial", serial])
-    return int(soft_dfu_main(argv))
-
-
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _build_parser().parse_args(list(argv) if argv is not None else None)
-    if args._cmd == "scan":
-        return _cmd_scan(args)
     if args._cmd == "test":
         from .test_cmd import run_test
 

@@ -75,7 +75,9 @@ Measure: `act_lap_ms` / `act_lap_peak_ms` / `periph_lap_*` in FB; suite bandwidt
 
 ## Plant gates
 
-`plant_runtime.c` gates 500 Hz apply. When blocked, `host_system_feedback.reserved` carries `plant_block_reason_t` (bench session, probe, quiet, **apply_off** / `plant_apply=0`, host_stale, servo session).
+`plant/diag/diag_gates.h` (`plant_runtime_actuator_can_apply`) gates 500 Hz apply. When blocked, feedback carries `plant_block_reason_t`: bench session, probe busy, quiet, **apply_off** (`plant_apply=0`), host_stale. Wire code `SERVO_SESSION=6` is reserved/unused — servo uses `plant_diag_skip_servo_bus`, not this gate.
+
+Bench discover/probe (`plant/diag/diag.h`) is a separate DEBUG path; `mode=bandwidth` never sends those tags. Cleaning diag lease/probe code does **not** move bandwidth metrics (ack_lag / fb_hz) — those are USB + CAN apply work when apply is armed.
 
 ## Mixed protocol (CFG, not sniff)
 
@@ -94,21 +96,28 @@ Blank policy: shared for CH1–6 — skip blank slots on a bus with no commanded
 
 | Slots | Bus | Protocol |
 |------:|-----|----------|
-| 0–6 left | CH1 | Damiao |
-| 7–13 right | CH2 | Damiao |
-| 14–19 base | CH4–6 | RobStride |
-| 20 lift | CH3 | disabled |
+| 0–6 left_arm | CH1 | Damiao |
+| 7–13 right_arm | CH2 | Damiao |
+| 14+17 / 15+18 / 16+19 base_wheel_1..3 | CH4–6 | RobStride (steer+drive) |
+| 20 torso | CH3 | disabled |
 | 21–25 spare | — | disabled |
+
+HostProxy demuxes named sections into the held 694B CMDH image. Product
+(deft_vbeta) authors `ActuatorDesire` fields; lab `actions/` is separate.
+See [integration.md](integration.md).
 
 ## Platform north star
 
-Controls PCB = thin **plant platform** (one COM, many peripherals). Host-side demux: **HostProxy** in the SDK; lab via `pcb_lab`; YAM via `vbeta`. ROS peripheral drivers later. Do not edit YAMAIMobile for plant glue. See [integration.md](integration.md).
+Controls PCB = thin **plant platform** (one COM, many peripherals). Host-side
+demux: **HostProxy.set_section**; lab via `pcb_lab` + `actions/`; product via
+**deft_vbeta** (this repo is a submodule; product drivers live in the parent).
+ROS: `ControlsPcbHostNode`. Do not edit YAMAIMobile for plant glue.
 
 ## Module map
 
 ```
 App/host/     wire schema, link, PDB UART
 App/plant/    actuator, control_loop, plant_diag, can/, plugins/
-scripts/deft_controls_sdk/   ControlsPcbHub (preferred)
-scripts/pcb_lab/             lab + tests + legacy/ (retire)
+scripts/deft_controls_sdk/   HostProxy + Hub + ros/ (preferred)
+scripts/pcb_lab/             lab CLI + tests
 ```

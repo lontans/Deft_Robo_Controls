@@ -19,11 +19,13 @@ Host tools: [scripts/README.md](scripts/README.md) (SDK + `pcb_lab/`). Local ven
 
 ## Host software
 
-```powershell
+Windows and Ubuntu/Jetson (USB CDC). Details: [scripts/README.md](scripts/README.md).
+
+```bash
 cd scripts
 pip install -r requirements.txt
 
-python soft_dfu_flash.py
+python soft_dfu_flash.py          # Linux: ./soft_dfu_flash.sh
 python -m pcb_lab
 python -m deft_controls_sdk.debug_dashboard
 ```
@@ -34,7 +36,7 @@ Canonical API: [docs/host-contract.md](docs/host-contract.md). Lab: [scripts/pcb
 
 - **MCU:** STM32G474RE  
 - **Plant:** FDCAN1/2/3 @ 1 Mbps, SPI-CAN CH4–6, UART4/5, TIM6 plant tick  
-- **Host:** USB CDC (laptop) or UART4 (Jetson — conflicts with PDB mode)  
+- **Host:** USB CDC (laptop / Jetson); UART4 Jetson host conflicts with PDB mode  
 - **LEDs:** SK9822 + per-channel ACT  
 
 ## Repository layout

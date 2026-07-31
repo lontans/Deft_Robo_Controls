@@ -24,7 +24,7 @@ from deft_controls_sdk.config.actuator import _DAMIAO_MASTER
 from deft_controls_sdk.config.led import LED_PRESETS as _CONFIG_LED_PRESETS
 from deft_controls_sdk.config.led import LedPreset
 from deft_controls_sdk.link.api_types import LED_MODE_IDLE_CORNFLOWER
-from deft_controls_sdk.vbeta.slots import (
+from deft_controls_sdk.config import (
     NECK_PITCH_DXL_ID,
     NECK_YAW_DXL_ID,
     PROTO_CUBEMARS,

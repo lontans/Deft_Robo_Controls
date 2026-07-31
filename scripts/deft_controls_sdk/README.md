@@ -2,61 +2,168 @@
 
 Host SDK for the Deft Robotics controls PCB (USB CDC).
 
-## Shape
+Runs on **Windows** and **Ubuntu/Jetson**. Pass a port (`COM5`, `/dev/ttyACM0`) or omit it and let discovery pick STM32 CDC `0483:5740`. Install host deps from [`../requirements.txt`](../requirements.txt) (`pyserial`, `libusb1`, …); Linux Soft-DFU setup is in [`../README.md`](../README.md).
+
+## Mental model
 
 ```text
-actions/          PlantAction → ActuatorAction / LedAction / ServoAction / PduLinkAction
-                  + TeleopEngine / operate (spin, move_arm) / cfg_identity (NVM gate)
-config/           Assembly + ActuatorProfile/ServoProfile; Profile demux shim; CFG rows
-debug/            hub.debug toolkit (discover, CFG RPC, Soft-DFU, suite)
-                  suite/workshop.py = Assembly workshop (bare `test`)
-telemetry/        FB cache / recorder
-link/             Connection + 694 B + Desire types
-ControlsPcbHub    board USB (slots, hub.debug, telemetry)
-HostProxy         profile demux → actions.ActuatorAction
-vbeta/            YAM / deft_vbeta drivers → HostProxy
-debug_dashboard/  human UI → Hub (owns COM while open; can import actions.teleop later)
-ros/              optional ROS 2 adapter (HostProxy as a node); needs rclpy
-                  only when imported — python -m deft_controls_sdk.ros
+connect  → open COM + stream          (choose mode)
+arm      → plant_apply ON             (motors track)
+command  → mount → apply → clear
+disarm   → plant_apply OFF
+close    → release COM
 ```
 
-Lab app + tests: [`../pcb_lab/`](../pcb_lab/).
+| `mode=` | Plant motion | CFG / discover / inventory / cal |
+|---------|--------------|----------------------------------|
+| `"bandwidth"` | yes | **no** (`hub.debug` blocked) |
+| `"debug"` | yes | **yes** — use for bringup |
 
-Docs: [`docs/host-contract.md`](../../docs/host-contract.md), [`docs/integration.md`](../../docs/integration.md).
+Change mode only by disconnect + reconnect.
 
-## Quick start
+## Shape
+
+| Layer | Role |
+|-------|------|
+| `HostProxy` | Session + section demux (`set_section`) into held 694B CMDH |
+| `proxy.actions` | Lab/notebook batch: `mount` / `apply` / `clear` (not product path) |
+| `actions/` | `ActuatorAction` / `ServoAction` / `LedAction` / `TeleopEngine` |
+| `config/` | Stock assemblies (`product` sections / `bench`) + YAM CFG preset |
+| `debug/` | `hub.debug.*`, `run_inventory`, `collect_cfg`, Soft-DFU |
+| `ros/` | Optional ROS node → `set_section` (MIT `5*n` commands) |
+| `ControlsPcbHub` | Wire / USB |
+
+Product YAM drivers live in parent **deft_vbeta** (not this package).
+
+Lab CLI: [`../pcb_lab/`](../pcb_lab/) — flash/USB via `python -m pcb_lab`; interactive prove via `python -m pcb_lab.debug`.
+
+## Quick start (notebook)
 
 ```python
-from deft_controls_sdk import HostProxy, ControlsPcbHub, ActuatorDesire
-from deft_controls_sdk.actions import ActuatorAction
-from deft_controls_sdk.config import yam_product_profile
+from deft_controls_sdk import HostProxy
+from deft_controls_sdk.actions import make_teleop_engine, neck_cruise
+from deft_controls_sdk.debug import as_hex, run_inventory
 
-with HostProxy.connect() as proxy:
-    proxy.actuators("left_arm").hold([0.0] * 7, kp=8.0, kd=0.5)
-    proxy.send_once()
+# Bringup session — disarmed until you say so
+# Port: "COM5" / "/dev/ttyACM0" / omit for auto-discover
+with HostProxy.connect(mode="debug", armed=False) as proxy:
+    hub = proxy.hub
+    assert proxy.mode == "debug"
+    assert proxy.armed is False
 
-# Same ActuatorAction type with hub sink (no HostProxy policy):
-with ControlsPcbHub.connect() as hub:
-    ActuatorAction(hub, yam_product_profile(), "base").blank(send=True)
-    hub.debug.cfg_get_table()
+    # Who's on the bus? (debug mode only)
+    run_inventory(
+        proxy,
+        buses=(5, 6),
+        ranges={"robstride": (0x70, 0x72)},  # explicit IDs — or preset="bench"
+        include_servos=True,
+        include_pdu=False,
+    )
+    print(as_hex(hub.debug.discover_robstride_by_bus(buses=[5], start=0x70, end=0x72)))
+    print(proxy.cfg_snapshot()["enabled_count"])  # debug mode only
+
+    # connect → arm → mount/apply → clear → disarm
+    proxy.arm_plant()
+    a = proxy.actions
+    wheels = a.actuator(slots=(22, 23))
+    neck = a.servo()
+
+    a.mount(wheels.hold(kp=20.0, kd=1.0))   # sample FB → stay put (no move)
+    a.mount(neck.neck_center())
+    print(a.pending)                   # inspect mounted patches
+    a.apply()                          # commit once
+
+    a.mount(wheels.nudge(index=0, delta=0.05, kp=20.0, kd=1.0))
+    a.apply()
+    print("FB", wheels.positions())
+
+    a.clear()                          # blank touched groups + empty pending
+    # Neck cruise uses TeleopEngine (timed slew — separate from mount/apply)
+    engine = make_teleop_engine(lambda: hub)
+    neck_cruise(engine, pitch=2048, yaw=2048, cruise=200)
+    # ... later: engine.stop()
+
+    proxy.disarm_plant()
 ```
 
-**USB flash:** `python soft_dfu_flash.py`  
+### Product sections (deft_vbeta)
+
+Default connect uses `yam_product_assembly()` — fixed demux names:
+
+`left_arm` · `right_arm` · `base_wheel_1|2|3` · `torso` (+ servo `neck`)
+
+```python
+from deft_controls_sdk.link import ActuatorDesire
+
+with HostProxy.connect("COM5", mode="bandwidth", armed=True, listen_pdu=True) as proxy:
+    # Product authors full MIT fields; HostProxy only demuxes onto slots.
+    proxy.set_section(
+        "left_arm",
+        [ActuatorDesire(position=0.0, kp=30.0, kd=1.0) for _ in range(7)],
+    )
+```
+
+### Lab named groups (`actions`)
+
+```python
+from deft_controls_sdk.config import assembly_from_name
+
+asm = assembly_from_name("bench")  # spare-slot wheels 22–25
+with HostProxy.connect("COM5", mode="debug", armed=False, assembly=asm) as proxy:
+    proxy.arm_plant()
+    a = proxy.actions
+    a.mount(a.actuator(name="base").hold(kp=20.0, kd=1.0))  # stay put
+    a.apply()
+    a.clear()
+    proxy.disarm_plant()
+```
+
+See [docs/integration.md](../../docs/integration.md) for the product demux contract.
+
+### CFG identity (RAM vs NVM)
+
+`ActuatorProfile` holds **slots + CFG identity** (bus / protocol / motor_id). Not gains.
+
+```python
+from deft_controls_sdk.config import single_profile
+
+# Build host-side identity for plant slot 22
+prof = single_profile(22, protocol="robstride", motor_id=0x70, bus=5)
+
+# Check live RAM table
+table = hub.debug.cfg_get_table()          # 26 rows (or None)
+print(proxy.cfg_snapshot()["enabled_count"])
+
+# Write RAM only (lost on reboot unless SAVE)
+for row in prof.as_cfg_rows():
+    hub.debug.cfg_set_slot(**row, persist=False)
+
+# Persist RAM → flash (NVM)
+hub.debug.cfg_save_nvm()                   # or cfg_set_slot(..., persist=True)
+
+# Reload flash → RAM (e.g. after reboot / to restore NVM into live table)
+hub.debug.cfg_load_nvm()
+```
+
+Discover → map hits onto slots → `single_profile` / `as_cfg_rows` → `cfg_set_slot` is the bringup path. `zip(SLOT_POOL, hits)` is just assigning plant slot indices to discovered `(bus, protocol, id)` tuples.
+
+### `mount` / `apply` / `clear`
+
+- Helpers (`hold`, `nudge`, `neck_center`, …) return a `MountedAction` patch.
+- `a.mount(...)` appends to the pending list (inspect via `a.pending`).
+- `a.apply()` merges pending into the hub held map and `commit()`s once.
+- `a.clear()` blanks groups touched by prior applies, then empties pending.
+- `send=True` on helpers is a legacy shortcut (immediate TX / mount+apply).
+- Pass `kp`/`kd` on hold — there is no joint/wheel `kind` on profiles or actions.
+
+## CFG: RAM vs flash
+
+```text
+GET / SET     → live RAM (lost on reboot unless SAVE)
+SAVE          → RAM → flash
+LOAD          → flash → RAM
+```
+
+**USB flash:** `python -m pcb_lab flash`  
 **Dashboard:** `python -m deft_controls_sdk.debug_dashboard`  
-**Lab:** `python -m pcb_lab inventory` / `python -m pcb_lab doctor`  
 **Tests:** `pytest pcb_lab/tests`
-
-## ROS 2 (optional)
-
-`ros/` wraps one `HostProxy` as a node — actuators/led/servo topics over the
-same `ActuatorAction`/`LedAction`/`ServoAction` every other host app uses.
-Requires `rclpy` + `sensor_msgs`/`std_msgs` (ROS 2 workspace or `pip install
-rclpy`); nothing else in this SDK needs them.
-
-```powershell
-python -m deft_controls_sdk.ros --help
-python -m deft_controls_sdk.ros --profile product
-```
-
-CFG / discover / cal are not exposed on this node — use `mode="debug"` via
-`pcb_lab` / `hub.debug` for that.

@@ -13,8 +13,10 @@ if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
 from deft_controls_sdk.actions import (  # noqa: E402
+    Actions,
     ActuatorAction,
     LedAction,
+    MountedAction,
     PlantAction,
     PduLinkAction,
     ServoAction,
@@ -24,23 +26,40 @@ from deft_controls_sdk.config import (  # noqa: E402
     LEFT_ARM_SLOTS,
     Profile,
     bench_continuous_profile,
+    yam_product_assembly,
     yam_product_profile,
 )
 from deft_controls_sdk.host_proxy import HostProxy  # noqa: E402
 from deft_controls_sdk.link import ActuatorDesire  # noqa: E402
-from deft_controls_sdk.vbeta.session import PcbRobotSession  # noqa: E402
+
+
+class _FakeFb:
+    """Minimal FeedbackImage stand-in for hold()/nudge() sampling."""
+
+    def __init__(self) -> None:
+        self.positions: Dict[int, float] = {}
+
+    def actuator(self, slot: int):
+        if int(slot) not in self.positions:
+            return None
+        return SimpleNamespace(position=float(self.positions[int(slot)]))
 
 
 class _FakeConn:
     def __init__(self) -> None:
         self.actuators: Dict[int, ActuatorDesire] = {}
+        self.servos: Dict[int, object] = {}
         self._latest_fb_raw = None
+        self.send_count = 0
+        self.fb = _FakeFb()
 
     def set_actuators(self, desires, *, send: bool = False) -> None:
         self.actuators.update(desires)
+        if send:
+            self.send_count += 1
 
     def poll_feedback(self):
-        return None
+        return self.fb
 
 
 class _FakeHub:
@@ -57,18 +76,20 @@ class _FakeHub:
         self._listen_pdu = False
         self._stream_hz = 200.0
         self._telemetry_hz = 200.0
+        self.link_mode = "debug"
+        self.send_once_count = 0
 
     def set_actuator(self, slot, desire, *, send: bool = False) -> None:
         self._connection.actuators[slot] = desire
 
-    def set_servo(self, *a, **k) -> None:
-        pass
+    def set_servo(self, slot, desire, *, send: bool = False) -> None:
+        self._connection.servos[int(slot)] = desire
 
     def set_led(self, desire, *, send: bool = False) -> None:
         self._led_desire = desire
 
     def send_once(self) -> None:
-        pass
+        self.send_once_count += 1
 
     def soft_kill_park_if_requested(self, *, send: bool = False) -> bool:
         return False
@@ -124,10 +145,20 @@ class _FakeHub:
 
 
 def test_yam_product_profile_components():
+    from deft_controls_sdk.config import (
+        BASE_WHEEL_1_SLOTS,
+        PRODUCT_ACTUATOR_SECTIONS,
+        TORSO_SLOT,
+    )
+
     p = yam_product_profile()
     assert p.name == "yam_product"
     assert p.slots("left_arm") == LEFT_ARM_SLOTS
-    assert len(p.slots("base")) == 6
+    assert p.slots("base_wheel_1") == BASE_WHEEL_1_SLOTS
+    assert p.slots("torso") == (TORSO_SLOT,)
+    assert set(p.components) == set(PRODUCT_ACTUATOR_SECTIONS)
+    with pytest.raises(KeyError):
+        p.slots("base")
     with pytest.raises(KeyError):
         p.slots("nope")
 
@@ -154,7 +185,6 @@ def test_actuator_hold_writes_slots():
     view = proxy.actuators("left_arm")
     assert isinstance(view, ActuatorAction)
     assert isinstance(view, PlantAction)
-    assert view.kind == "joint"
     assert proxy.component("left_arm").slots == view.slots
     view.hold([0.1 * i for i in range(7)], kp=9.0, kd=0.4, send=False)
     for i, slot in enumerate(LEFT_ARM_SLOTS):
@@ -164,29 +194,44 @@ def test_actuator_hold_writes_slots():
         assert d.kd == pytest.approx(0.4)
 
 
-def test_actuator_kind_defaults_joint_vs_wheel():
-    from deft_controls_sdk.config import DEFAULT_ARM_KP, DEFAULT_WHEEL_KP, DEFAULT_WHEEL_KD
+def test_actuator_hold_uses_neutral_defaults_or_explicit_gains():
+    from deft_controls_sdk.config import DEFAULT_HOLD_KP, DEFAULT_HOLD_KD
 
     hub = _FakeHub()
     proxy = HostProxy.wrap(hub, profile=yam_product_profile())
     arm = proxy.actuators("left_arm")
-    assert arm.kind == "joint"
     arm.hold([0.0] * 7, send=False)
-    for i, slot in enumerate(LEFT_ARM_SLOTS):
-        assert hub._connection.actuators[slot].kp == pytest.approx(DEFAULT_ARM_KP[i])
+    for slot in LEFT_ARM_SLOTS:
+        assert hub._connection.actuators[slot].kp == pytest.approx(DEFAULT_HOLD_KP)
+        assert hub._connection.actuators[slot].kd == pytest.approx(DEFAULT_HOLD_KD)
 
-    base = proxy.actuators("base")
-    assert base.kind == "wheel"
-    base.hold([0.1] * 6, send=False)
-    for slot in yam_product_profile().slots("base"):
+    wheel1 = proxy.actuators("base_wheel_1")
+    wheel1.hold([0.1, 0.2], kp=40.0, kd=2.5, send=False)
+    for slot in yam_product_profile().slots("base_wheel_1"):
         d = hub._connection.actuators[slot]
-        assert d.kp == pytest.approx(DEFAULT_WHEEL_KP)
-        assert d.kd == pytest.approx(DEFAULT_WHEEL_KD)
+        assert d.kp == pytest.approx(40.0)
+        assert d.kd == pytest.approx(2.5)
 
-    wheel = ActuatorAction.from_slots(proxy, (22,), name="ch5", kind="wheel")
-    assert wheel.kind == "wheel"
+    wheel = ActuatorAction.from_slots(proxy, (22,), name="ch5")
     wheel.hold([0.2], send=False)
-    assert hub._connection.actuators[22].kp == pytest.approx(DEFAULT_WHEEL_KP)
+    assert hub._connection.actuators[22].kp == pytest.approx(DEFAULT_HOLD_KP)
+
+
+def test_set_section_demuxes_ordered_desires():
+    from deft_controls_sdk.config import BASE_WHEEL_1_SLOTS
+    from deft_controls_sdk.link import ActuatorDesire
+
+    hub = _FakeHub()
+    proxy = HostProxy.wrap(hub, assembly=yam_product_assembly())
+    desires = [
+        ActuatorDesire(position=0.3, velocity=0.0, kp=10.0, kd=1.0, torque=0.1),
+        ActuatorDesire(position=0.0, velocity=1.5, kp=0.0, kd=2.0, torque=0.0),
+    ]
+    proxy.set_section("base_wheel_1", desires, send=False)
+    assert hub._connection.actuators[BASE_WHEEL_1_SLOTS[0]].position == pytest.approx(0.3)
+    assert hub._connection.actuators[BASE_WHEEL_1_SLOTS[1]].velocity == pytest.approx(1.5)
+    with pytest.raises(ValueError, match="expects 2"):
+        proxy.set_section("base_wheel_1", desires[:1], send=False)
 
 
 def test_actuator_action_hub_sink():
@@ -201,15 +246,17 @@ def test_actuator_action_hub_sink():
 
     hub.set_actuators = set_actuators  # type: ignore[method-assign]
     hub.latest_feedback = latest_feedback  # type: ignore[method-assign]
-    action = ActuatorAction(hub, yam_product_profile(), "base")
+    action = ActuatorAction(hub, yam_product_profile(), "base_wheel_1")
     action.blank(send=False)
-    assert set(hub._connection.actuators) == set(yam_product_profile().slots("base"))
+    assert set(hub._connection.actuators) == set(
+        yam_product_profile().slots("base_wheel_1")
+    )
 
 
 def test_actuator_from_slots_single():
     hub = _FakeHub()
     proxy = HostProxy.wrap(hub, profile=yam_product_profile())
-    one = ActuatorAction.from_slots(proxy, (22,), name="slot_22", kind="wheel")
+    one = ActuatorAction.from_slots(proxy, (22,), name="slot_22")
     one.hold([0.5], kp=5.0, kd=0.2, send=False)
     assert hub._connection.actuators[22].position == pytest.approx(0.5)
 
@@ -217,13 +264,18 @@ def test_actuator_from_slots_single():
 def test_action_hierarchy_siblings():
     hub = _FakeHub()
     proxy = HostProxy.wrap(hub, profile=yam_product_profile())
-    assert isinstance(proxy.actuators("base"), ActuatorAction)
+    assert isinstance(proxy.actuators("base_wheel_1"), ActuatorAction)
     assert isinstance(proxy.led(), LedAction)
     assert isinstance(proxy.servo(), ServoAction)
     assert isinstance(proxy.pdu_link(), PduLinkAction)
     assert all(
         isinstance(x, PlantAction)
-        for x in (proxy.actuators("base"), proxy.led(), proxy.servo(), proxy.pdu_link())
+        for x in (
+            proxy.actuators("base_wheel_1"),
+            proxy.led(),
+            proxy.servo(),
+            proxy.pdu_link(),
+        )
     )
 
 
@@ -240,19 +292,106 @@ def test_lab_robot_actuators_matches_proxy():
     assert a.slots == b.slots == c.slots == LEFT_ARM_SLOTS
 
 
+def test_arm_disarm_commit_and_assembly_bind():
+    from deft_controls_sdk.config import assembly_from_name
+
+    hub = _FakeHub()
+    asm = assembly_from_name("bench")
+    proxy = HostProxy.wrap(hub, assembly=asm)
+    assert proxy.mode == "debug"
+    assert proxy.assembly is asm
+    assert proxy.armed is False
+
+    proxy.arm_plant()
+    assert proxy.armed is True
+    assert hub.plant_apply is True
+
+    proxy.disarm_plant()
+    assert proxy.armed is False
+
+    # Named group from assembly (spare-slot base on bench)
+    base = proxy.actuators("base")
+    assert base.slots == BENCH_BASE_SLOTS
+
+    hub.link_mode = "bandwidth"
+    with pytest.raises(RuntimeError, match="mode='debug'"):
+        proxy.require_debug("inventory")
+
+
+def test_actions_mount_apply_clear_pending():
+    """Preferred notebook path: mount → inspect → apply → clear."""
+    hub = _FakeHub()
+    hub._connection.fb.positions[22] = 0.1
+    hub._connection.fb.positions[23] = 0.2
+    proxy = HostProxy.wrap(hub, profile=yam_product_profile())
+    a = proxy.actions
+    assert isinstance(a, Actions)
+
+    wheels = a.actuator(slots=(22, 23))
+    neck = a.servo()
+    assert wheels.actions is a
+    assert neck.actions is a
+
+    # Default hold() samples FB — stay put, no move
+    hold = wheels.hold()
+    assert isinstance(hold, MountedAction)
+    assert hold.meta["sampled"] is True
+    assert hold.meta["positions"] == [0.1, 0.2]
+    # Bound helpers do not TX until apply
+    assert 22 not in hub._connection.actuators
+
+    a.mount(hold)
+    a.mount(neck.neck_center())
+    assert a.pending_count == 2
+    assert a.pending[0]["label"].endswith(".hold")
+    assert a.pending[1]["kind"] == "servo"
+    assert hub.send_once_count == 0
+
+    a.apply()
+    assert a.pending_count == 0
+    assert hub.send_once_count == 1
+    assert hub._connection.actuators[22].position == pytest.approx(0.1)
+    assert hub._connection.actuators[23].position == pytest.approx(0.2)
+    assert hub._connection.servos  # neck slots written
+
+    a.mount(wheels.nudge(index=0, delta=0.05))
+    a.apply()
+    assert hub._connection.actuators[22].position == pytest.approx(0.15)
+    assert hub.send_once_count == 2
+
+    a.clear()
+    assert a.pending_count == 0
+    assert hub._connection.actuators[22].position == pytest.approx(0.0)
+    assert hub._connection.actuators[23].position == pytest.approx(0.0)
+    for desire in hub._connection.servos.values():
+        assert desire.servo_id == 0
+    assert hub.send_once_count == 3
+
+
+def test_hold_without_fb_raises():
+    hub = _FakeHub()
+    proxy = HostProxy.wrap(hub, profile=yam_product_profile())
+    wheels = proxy.actions.actuator(slots=(22,))
+    with pytest.raises(RuntimeError, match="no feedback"):
+        wheels.hold()
+
+
+def test_actions_bound_send_true_is_mount_apply():
+    hub = _FakeHub()
+    proxy = HostProxy.wrap(hub, profile=yam_product_profile())
+    a = proxy.actions
+    wheels = a.actuator(slots=(22,))
+    wheels.hold([0.3], send=True)  # legacy shortcut
+    assert hub._connection.actuators[22].position == pytest.approx(0.3)
+    assert a.pending_count == 0
+    assert hub.send_once_count >= 1
+
+
 def test_telemetry_package_exports_cache():
     from deft_controls_sdk import TelemetryCache as TopCache
     from deft_controls_sdk.telemetry import TelemetryCache
 
     assert TopCache is TelemetryCache
-
-
-def test_session_wraps_host_proxy():
-    hub = _FakeHub()
-    session = PcbRobotSession.wrap(hub)
-    assert isinstance(session.proxy, HostProxy)
-    session.set_actuator(0, ActuatorDesire(position=1.0, kp=1.0), send=False)
-    assert hub._connection.actuators[0].position == pytest.approx(1.0)
 
 
 def test_doctor_offline():

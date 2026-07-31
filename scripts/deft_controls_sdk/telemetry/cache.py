@@ -116,7 +116,7 @@ _PLANT_BLOCK_HINTS = {
     3: ("QUIET_PERIOD", "post-session quiet window — wait or recover"),
     4: ("APPLY_OFF", "plant_apply=0 (observe) — plant will not apply"),
     5: ("HOST_STALE", "no fresh host command >500 ms — keep streaming (send_once / start_streaming)"),
-    6: ("SERVO_SESSION", "servo host session is holding the plant path"),
+    6: ("SERVO_SESSION", "reserved (unused); servo uses skip_servo_bus, not this gate"),
 }
 
 _MCU_STATE_NAMES = {0: "NORMAL", 1: "RECOVERY", 2: "DIAG_ONLY(legacy)", 3: "ESTOP"}

@@ -6,7 +6,7 @@ now. Protocol queue is still outer (no RS×DM overlap on the same session).
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import damiao as _damiao
 from . import robstride as _robstride
@@ -33,8 +33,34 @@ DEFAULT_ID_RANGE: Dict[str, Tuple[int, int]] = {
 }
 
 
-def _hex_id(n: int) -> str:
+def hex_id(n: int) -> str:
+    """One CAN/motor id as ``0xNN`` (low 8 bits)."""
     return f"0x{int(n) & 0xFF:02X}"
+
+
+def as_hex(obj: Any) -> Any:
+    """Recursively format discover ids for display.
+
+    ``int`` → ``\"0xNN\"``; ``list``/``tuple`` → list of hex; ``dict`` (e.g.
+    ``discover_robstride_by_bus`` ``{bus: [ids…]}``) → same keys with hex values.
+    Non-int leaves are returned unchanged.
+
+    Notebook::
+
+        from deft_controls_sdk.debug import as_hex
+        print(as_hex(hub.debug.discover_robstride_by_bus(buses=[5, 6])))
+        # {5: ['0x70', '0x74'], 6: ['0x75']}
+    """
+    if isinstance(obj, Mapping):
+        return {k: as_hex(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [as_hex(x) for x in obj]
+    if isinstance(obj, int) and not isinstance(obj, bool):
+        return hex_id(obj)
+    return obj
+
+
+_hex_id = hex_id  # internal alias (queued discover JSON)
 
 
 def parse_bus_list(text: str) -> List[int]:

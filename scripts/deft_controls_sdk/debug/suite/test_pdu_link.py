@@ -26,7 +26,7 @@ def run_pdu_link_test(args: argparse.Namespace) -> int:
         getattr(args, "port", None),
         stream_hz=stream_hz,
         telemetry_hz=telemetry_hz,
-        idle_first=True,
+        armed=False,
         listen_pdu=listen,
         mode="debug",
     ) as proxy:

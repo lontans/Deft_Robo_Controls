@@ -22,7 +22,7 @@ def run_servo_test(args: argparse.Namespace) -> int:
         getattr(args, "port", None),
         stream_hz=stream_hz,
         telemetry_hz=telemetry_hz,
-        idle_first=True,
+        armed=False,
         listen_pdu=bool(getattr(args, "listen_pdu", False)),
         mode="debug",
     ) as proxy:

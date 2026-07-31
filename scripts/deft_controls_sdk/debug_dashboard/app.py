@@ -26,16 +26,24 @@ from pathlib import Path
 from typing import Literal, Optional
 from urllib.parse import urlparse
 
-from deft_controls_sdk import ActuatorDesire, ControlsPcbHub, McuState, ServoDesire
+from deft_controls_sdk import ActuatorDesire, HostProxy, McuState, ServoDesire
+from deft_controls_sdk.actions import (
+    build_actuator_specs,
+    build_servo_specs,
+    make_teleop_engine,
+)
+from deft_controls_sdk.config import assembly_from_name
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD, list_ports_info
 from deft_controls_sdk.telemetry import TelemetryCache, default_session_dir
 
 from . import remote_continuous
-from .teleop import TeleopEngine, build_actuator_specs, build_servo_specs
 
 # Peer (e.g. yam_continuous_all) owns CDC while dashboard follows state.json —
 # Soft-kill Park writes this flag; the peer parks and deletes it.
 SOFT_KILL_REQUEST_NAME = "soft_kill_request"
+# Refuse HostProxy.connect while a peer's state.json still looks live — opening
+# COM would collide with the CDC owner (Windows exclusive open / dual writers).
+PEER_OWNER_MAX_AGE_S = 2.0
 
 ControlMode = Literal["observe", "control"]
 DEFAULT_HTTP_PORT = 8766
@@ -47,12 +55,15 @@ hold-position) if kp/kd/|velocity|/|torque| exceed this."""
 
 
 class AppState:
-    """Owns the (optional) ControlsPcbHub across connect/disconnect cycles.
+    """Owns the (optional) HostProxy session across connect/disconnect cycles.
 
     One TelemetryCache lives for the whole process lifetime, independent of
     any particular connection — /api/state always has something sane to
     return, even before the first Connect, and fault history / ring buffer
     survive a board reset instead of resetting on every reconnect.
+
+    UI ``observe`` / ``control`` map onto HostProxy ``armed=False`` /
+    ``arm_plant()`` — same session shape as notebooks and pcb_lab.debug.
     """
 
     def __init__(
@@ -69,18 +80,20 @@ class AppState:
         self.telemetry = TelemetryCache(
             session_dir=session_dir or default_session_dir(), persist=persist_telemetry
         )
-        self.hub: Optional[ControlsPcbHub] = None
+        self.proxy: Optional[HostProxy] = None
         self.control_mode: ControlMode = "observe"
 
-        # Teleop (per-slot target+cruise slew — see teleop.py) and its slot-group model.
-        # "bench" is the default CFG map because that's what's actually wired/live-verified
-        # on the current bench (base on slots 22-25) — see base-robstride-mcp.md's "Known
-        # falsehoods retired". "product" is offered purely as the wizard's CFG-map hint.
+        # Teleop (per-slot target+cruise slew — actions.TeleopEngine) and its
+        # slot-group model. "bench" is the default CFG map because that's what's
+        # actually wired/live-verified on the current bench (base on slots 22-25)
+        # — see base-robstride-mcp.md's "Known falsehoods retired". "product" is
+        # offered purely as the wizard's CFG-map hint.
         self.cfg_map: str = "bench"
         self.actuator_specs = build_actuator_specs(self.cfg_map)
         self.servo_specs = build_servo_specs()
-        self.teleop = TeleopEngine(
-            hub_getter=lambda: self.hub, feedback_getter=self._teleop_feedback_snapshot,
+        self.teleop = make_teleop_engine(
+            lambda: None if self.proxy is None else self.proxy.hub,
+            feedback_getter=self._teleop_feedback_snapshot,
         )
 
         # Continuous mode launch/stop over SSH — swappable so tests can drive the HTTP
@@ -91,8 +104,50 @@ class AppState:
         self._continuous_status: dict = {"state": "unknown", "detail": None}
 
     @property
+    def hub(self):
+        """Wire hub for the active session, or None when disconnected."""
+        return None if self.proxy is None else self.proxy.hub
+
+    @property
     def connected(self) -> bool:
-        return self.hub is not None
+        return self.proxy is not None
+
+    def peer_com_owner(self) -> Optional[dict]:
+        """If another process owns CDC in this session dir, return peer info.
+
+        Detected from a fresh ``state.json`` with ``connected=true``. Freshness
+        prefers ``updated_at``; if that is unset (connect-only publish), falls
+        back to the file mtime. Stale files (crashed peer) older than
+        ``PEER_OWNER_MAX_AGE_S`` are ignored so Connect can reclaim the port.
+        Does not open COM.
+        """
+        sp = self.telemetry.state_path
+        if not sp.is_file():
+            return None
+        try:
+            data = json.loads(sp.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not data.get("connected"):
+            return None
+        now = time.time()
+        updated = float(data.get("updated_at") or 0.0)
+        if updated > 0.0:
+            age = now - updated
+        else:
+            try:
+                age = now - sp.stat().st_mtime
+            except OSError:
+                return None
+        if age > PEER_OWNER_MAX_AGE_S:
+            return None
+        return {
+            "port": data.get("port"),
+            "age_s": age,
+            "path": str(sp),
+            "fb_hz": data.get("fb_hz"),
+            "summary": data.get("summary"),
+        }
 
     def connect(
         self,
@@ -101,27 +156,46 @@ class AppState:
         baud: int = DEFAULT_BAUD,
         mode: ControlMode = "observe",
     ) -> None:
-        """Open CDC and start the plant stream.
+        """Open CDC via HostProxy and start the plant stream.
 
-        Default ``mode="observe"``: plant_apply=0 + no auto soft-kill park — safe
-        telemetry without faulting the board on Connect. Pass ``mode="control"``
-        only when the operator wants plant_apply + park hooks.
+        Default ``mode="observe"``: ``armed=False`` (plant_apply=0) + no auto
+        soft-kill park — safe telemetry without faulting the board on Connect.
+        Pass ``mode="control"`` only when the operator wants plant apply + park
+        hooks (``arm_plant()``).
+
+        Refuses to open COM while a peer is actively publishing ``state.json``
+        for this session dir — stay in follow mode instead of colliding.
         """
         if mode not in ("observe", "control"):
             raise ValueError("mode must be 'observe' or 'control'")
         with self._lock:
-            if self.hub is not None:
-                raise RuntimeError(f"already connected to {self.hub.port} — disconnect first")
-            hub = ControlsPcbHub.connect(port, baud=baud, telemetry=self.telemetry)
-            # Observe first: clear HOST_STALE without latching ESTOP from PDU.
-            hub.start_streaming(
-                hz=self._stream_hz,
+            if self.proxy is not None:
+                raise RuntimeError(
+                    f"already connected to {self.proxy.hub.port} — disconnect first"
+                )
+            peer = self.peer_com_owner()
+            if peer is not None:
+                peer_port = peer.get("port") or "?"
+                raise RuntimeError(
+                    f"COM already owned by a peer writing {peer['path']} "
+                    f"(port={peer_port}, age={peer['age_s']:.1f}s). "
+                    "Stay in follow mode — do not Connect while continuous/teleop "
+                    "owns CDC. Stop the peer (or Soft-kill Park) first."
+                )
+            # Desk bringup: share this process TelemetryCache so /api/state and
+            # fault history survive reconnect. armed=False ≡ UI observe.
+            proxy = HostProxy.connect(
+                port,
+                baud=baud,
+                stream_hz=self._stream_hz,
                 telemetry_hz=self._telemetry_hz,
-                auto_soft_kill=False,
+                armed=False,
+                listen_pdu=False,
+                telemetry=self.telemetry,
+                assembly=assembly_from_name(self.cfg_map),
+                mode="bandwidth",
             )
-            hub.set_mcu_state(McuState.NORMAL, send=False)
-            hub.set_plant_apply(False, send=True)
-            self.hub = hub
+            self.proxy = proxy
             self.control_mode = "observe"
             if mode == "control":
                 self._enter_control_locked()
@@ -130,50 +204,52 @@ class AppState:
         if mode not in ("observe", "control"):
             raise ValueError("mode must be 'observe' or 'control'")
         with self._lock:
-            hub = self.hub
-            if hub is None:
+            proxy = self.proxy
+            if proxy is None:
                 raise RuntimeError("not connected")
             if mode == "control":
                 self._enter_control_locked()
             else:
                 self.teleop.disengage_all()
+                hub = proxy.hub
                 hub.set_auto_soft_kill(False)
                 for slot in range(ACTUATOR_COUNT):
-                    hub.set_actuator(slot, ActuatorDesire(), send=False)
-                hub.set_mcu_state(McuState.NORMAL, send=False)
-                hub.set_plant_apply(False, send=True)
+                    proxy.set_actuator(slot, ActuatorDesire(), send=False)
+                proxy.disarm_plant()
                 self.control_mode = "observe"
 
     def _enter_control_locked(self) -> None:
-        hub = self.hub
-        assert hub is not None
-        hub.set_auto_soft_kill(True)
-        hub.set_mcu_state(McuState.NORMAL, send=False)
-        hub.set_plant_apply(True, send=True)
+        proxy = self.proxy
+        assert proxy is not None
+        proxy.hub.set_auto_soft_kill(True)
+        proxy.arm_plant()
         self.control_mode = "control"
 
     def disconnect(self) -> None:
         with self._lock:
             self.teleop.disengage_all()
-            if self.hub is not None:
+            proxy = self.proxy
+            if proxy is not None:
                 # Leave plant_apply off so disconnect does not freeze an ESTOP
                 # latch from a soft-kill park that happened while connected.
                 try:
-                    self.hub.set_auto_soft_kill(False)
-                    self.hub.set_mcu_state(McuState.NORMAL, send=False)
-                    self.hub.set_plant_apply(False, send=True)
+                    proxy.hub.set_auto_soft_kill(False)
+                    proxy.disarm_plant()
                     time.sleep(0.05)
                 except Exception:
                     pass
-                self.hub.close()
-                self.hub = None
+                try:
+                    proxy.close()
+                except Exception:
+                    pass
+                self.proxy = None
             self.control_mode = "observe"
 
-    def _require_hub(self) -> ControlsPcbHub:
-        hub = self.hub
-        if hub is None:
+    def _require_proxy(self) -> HostProxy:
+        proxy = self.proxy
+        if proxy is None:
             raise RuntimeError("not connected")
-        return hub
+        return proxy
 
     def set_actuator(self, slot: int, *, position: float, kp: float, kd: float) -> None:
         # send=False: only update the held desire. The background stream loop
@@ -186,30 +262,34 @@ class AppState:
         pos = position
         if abs(pos) < 1e-6 and (abs(kp) > 1e-9 or abs(kd) > 1e-9):
             pos = 1e-6
-        self._require_hub().set_actuator(
+        self._require_proxy().set_actuator(
             slot,
             ActuatorDesire(position=pos, velocity=0.0, kp=kp, kd=kd, torque=0.0),
             send=False,
         )
 
     def idle_actuator(self, slot: int) -> None:
-        self._require_hub().set_actuator(slot, ActuatorDesire(), send=False)
+        self._require_proxy().set_actuator(slot, ActuatorDesire(), send=False)
 
     def idle_all_actuators(self) -> None:
         """Blank every held desire — Apply accumulates slots; MCP LEDs on
         'other' buses are usually leftover holds, not cross-rail firmware TX."""
-        hub = self._require_hub()
+        proxy = self._require_proxy()
         for slot in range(ACTUATOR_COUNT):
-            hub.set_actuator(slot, ActuatorDesire(), send=False)
+            proxy.set_actuator(slot, ActuatorDesire(), send=False)
 
     def set_mcu_state(self, state: int) -> None:
-        self._require_hub().set_mcu_state(McuState(state))
+        self._require_proxy().hub.set_mcu_state(McuState(state))
 
     def set_plant_apply(self, enable: bool) -> None:
-        self._require_hub().set_plant_apply(bool(enable), send=True)
+        proxy = self._require_proxy()
+        if enable:
+            proxy.arm_plant()
+        else:
+            proxy.disarm_plant()
 
     def recover(self) -> None:
-        self._require_hub().recover()
+        self._require_proxy().hub.recover()
 
     def soft_kill_request_path(self) -> Path:
         return self.telemetry.session_dir / SOFT_KILL_REQUEST_NAME
@@ -221,8 +301,9 @@ class AppState:
         When following a peer's state.json (continuous owns CDC): write a
         request flag the peer polls — Connect COM is not required.
         """
-        if self.hub is not None:
-            self.hub.soft_kill_park()
+        hub = self.hub
+        if hub is not None:
+            hub.soft_kill_park()
             return {"mode": "direct", "parked": True}
         flag = self.soft_kill_request_path()
         flag.parent.mkdir(parents=True, exist_ok=True)
@@ -265,8 +346,8 @@ class AppState:
     # -- Teleop (per-slot target+cruise slew) --------------------------------------------
 
     def set_cfg_map(self, cfg_map: str) -> None:
-        """UI-only relabeling of which slots are "base" — see teleop.py's
-        build_actuator_specs docstring. Never touches board CFG."""
+        """UI-only relabeling of which slots are "base" — see
+        ``actions.teleop.build_actuator_specs``. Never touches board CFG."""
         if cfg_map not in ("bench", "product"):
             raise ValueError("cfg_map must be 'bench' or 'product'")
         self.cfg_map = cfg_map
@@ -288,7 +369,7 @@ class AppState:
 
     def _teleop_feedback_snapshot(self) -> dict:
         """One telemetry read per teleop tick (not per slot) — feeds the settled-hold
-        damping/flag logic in teleop.py, never used to move a commanded target."""
+        damping/flag logic in TeleopEngine, never used to move a commanded target."""
         actuators = self.telemetry.snapshot().actuators
         return {i: a for i, a in enumerate(actuators) if a is not None}
 
@@ -313,7 +394,7 @@ class AppState:
             raise ValueError(f"slot {slot} is not a known actuator in the '{self.cfg_map}' CFG map")
         if not spec.verified:
             raise ValueError(f"{spec.label} (slot {slot}) has no live-verified range on this bench yet")
-        self._require_hub()
+        self._require_proxy()
         seed = self._current_actuator_position(slot)
         if seed is None:
             raise RuntimeError(f"no live position for slot {slot} yet — wait for feedback before teleop")
@@ -325,7 +406,7 @@ class AppState:
             raise ValueError(f"slot {slot} is not a known actuator in the '{self.cfg_map}' CFG map")
         if not spec.verified:
             raise ValueError(f"{spec.label} (slot {slot}) has no live-verified range on this bench yet")
-        self._require_hub()
+        self._require_proxy()
         seed = self._current_actuator_position(slot)
         if seed is None:
             raise RuntimeError(f"no live position for slot {slot} yet — wait for feedback before teleop")
@@ -345,7 +426,7 @@ class AppState:
         spec = self.servo_specs.get(slot)
         if spec is None:
             raise ValueError(f"slot {slot} is not a neck servo slot (0=pitch, 1=yaw)")
-        self._require_hub()
+        self._require_proxy()
         self.teleop.engage_servo(slot, spec=spec, target=target, cruise=cruise)
 
     def teleop_servo_stop(self, slot: int) -> None:
@@ -358,27 +439,27 @@ class AppState:
         spec = self.servo_specs.get(slot)
         if spec is None:
             raise ValueError(f"slot {slot} is not a neck servo slot (0=pitch, 1=yaw)")
-        hub = self._require_hub()
+        proxy = self._require_proxy()
         self.teleop.disengage_servo(slot)
-        hub.set_servo(slot, ServoDesire(servo_id=0), send=False)
+        proxy.set_servo(slot, ServoDesire(servo_id=0), send=False)
 
     def idle_group(self, group: str) -> None:
         """Blank every desire in one teleop group at once — the "idle
         movement for each base actuator / neck / arm" ask. Always safe
         regardless of whether the group's range is live-verified (Idle never
         commands a position, unlike target-teleop)."""
-        hub = self._require_hub()
+        proxy = self._require_proxy()
         if group == "neck":
             for slot in self.servo_specs:
                 self.teleop.disengage_servo(slot)
-            hub.clear_servos(send=False)
+            proxy.hub.clear_servos(send=False)
             return
         if group not in ("base", "arm_left", "arm_right"):
             raise ValueError("group must be one of: base, arm_left, arm_right, neck")
         for slot, spec in self.actuator_specs.items():
             if spec.group == group:
                 self.teleop.disengage_actuator(slot)
-                hub.set_actuator(slot, ActuatorDesire(), send=False)
+                proxy.set_actuator(slot, ActuatorDesire(), send=False)
 
     # -- Continuous mode (SSH launch/stop on the Jetson) ----------------------------------
 

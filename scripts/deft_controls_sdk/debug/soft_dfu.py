@@ -1040,7 +1040,7 @@ def post_flash_listen_pdu(port: str, *, hold_s: float = 0.35) -> None:
     # Late import: soft_dfu must stay importable without hub side-effects.
     from deft_controls_sdk.host_proxy import HostProxy
     from deft_controls_sdk.link import LedDesire
-    from deft_controls_sdk.vbeta.cfg import pause_plant_stream
+    from deft_controls_sdk.debug.stream_pause import pause_plant_stream
 
     print(f"staging listen_pdu on {port}…", flush=True)
     # mode=debug required for CFG; do not Soft-DFU from this path.
@@ -1048,7 +1048,7 @@ def post_flash_listen_pdu(port: str, *, hold_s: float = 0.35) -> None:
         port,
         stream_hz=50.0,
         telemetry_hz=20.0,
-        idle_first=True,
+        armed=False,
         listen_pdu=True,
         mode="debug",
     ) as proxy:
@@ -1080,7 +1080,7 @@ def pcb_status(
 
     Includes stream rates, MCU host command, PDB (honored only if
     ``listen_pdu``), and inferred LED. Same payload as
-    ``python -m pcb_lab doctor``. Does not flash or write NVM.
+    ``python -m pcb_lab status`` / ``pcb_lab.debug show``. Does not flash or write NVM.
     """
     # Late import: avoid soft_dfu ↔ hub import cycles at module load.
     from deft_controls_sdk.host_proxy import HostProxy
@@ -1091,7 +1091,7 @@ def pcb_status(
         device,
         stream_hz=float(stream_hz),
         telemetry_hz=float(stream_hz),
-        idle_first=True,
+        armed=False,
         listen_pdu=bool(listen_pdu),
     ) as proxy:
         report = proxy.doctor()

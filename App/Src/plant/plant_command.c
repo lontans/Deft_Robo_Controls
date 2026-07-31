@@ -153,7 +153,7 @@ static void plant_command_dispatch_debug_legacy(const host_command_image_t *cmd)
 	else if (pdu_dm)
 		plant_diag_on_dm_command(cmd);
 	else if (pdu_rs2)
-		plant_diag_on_command(cmd);
+		plant_diag_on_rs2_command(cmd);
 
 	/* Observe (plant_apply=0): handle RPC tags but do not mount plant or
 	 * tear down an active bench lease — same role legacy DIAG_ONLY had. */
@@ -214,7 +214,7 @@ static void plant_command_dispatch_debug_lanes(const host_command_image_t *cmd)
 		       sizeof(float) * 5u);
 		local.actuator_commands[0].meta = 0u;
 		if (plant_diag_is_rs2_command(&local))
-			plant_diag_on_command(&local);
+			plant_diag_on_rs2_command(&local);
 	}
 
 	if (arm & (1u << HOST_DEBUG_LANE_DM)) {

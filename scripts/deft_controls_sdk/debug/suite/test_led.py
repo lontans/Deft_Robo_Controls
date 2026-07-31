@@ -15,7 +15,14 @@ from .presets import apply_led_preset
 
 
 def run_led_test(args: argparse.Namespace) -> int:
-    name = str(getattr(args, "preset", "idle") or "idle")
+    # Prefer --led-preset; --preset is reserved for inventory ID ranges.
+    name = str(
+        getattr(args, "led_preset", None)
+        or getattr(args, "preset", None)
+        or "idle"
+    )
+    if name in ("bench", "product", "full", "yam"):
+        name = "idle"
     preset = LED_PRESETS.get(name)
     if preset is None:
         print(
@@ -38,7 +45,7 @@ def run_led_test(args: argparse.Namespace) -> int:
         getattr(args, "port", None),
         stream_hz=stream_hz,
         telemetry_hz=telemetry_hz,
-        idle_first=True,
+        armed=False,
         listen_pdu=bool(getattr(args, "listen_pdu", False)),
         mode="debug",
     ) as proxy:

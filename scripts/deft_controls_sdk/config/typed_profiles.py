@@ -6,10 +6,9 @@ Assemblies compose these; HostProxy demux still uses ``Profile`` via
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from .actuator import (
-    ActuatorKind,
     PROTO_CUBEMARS,
     PROTO_DAMIAO,
     PROTO_NONE,
@@ -20,10 +19,11 @@ from .actuator import (
 )
 from .profile import (
     BASE_SLOTS,
+    BASE_WHEEL_SLOTS,
     BENCH_BASE_SLOTS,
-    LIFT_SLOT,
     NECK_PITCH_SERVO_SLOT,
     NECK_YAW_SERVO_SLOT,
+    TORSO_SLOT,
 )
 from .servo import (
     NECK_PITCH_DXL_ID,
@@ -88,11 +88,14 @@ class CfgSlotSpec:
 
 @dataclass(frozen=True)
 class ActuatorProfile:
-    """Homogeneous actuator section or single — slots + kind + optional CFG."""
+    """Actuator section or single — host slots + optional CFG identity rows.
+
+    CFG rows are bus/protocol/motor_id (NVM identity). Plant gains (kp/kd) are
+    not part of the profile — pass them on ``hold(...)`` / teleop.
+    """
 
     name: str
     slots: Tuple[int, ...]
-    kind: ActuatorKind
     cfg: Tuple[Optional[CfgSlotSpec], ...] = ()
 
     def __post_init__(self) -> None:
@@ -104,7 +107,7 @@ class ActuatorProfile:
             )
 
     def as_cfg_rows(self) -> List[dict]:
-        """Rows suitable for ``hub.debug.cfg_set_slot(**row)`` (skips missing cfg)."""
+        """Rows for ``hub.debug.cfg_set_slot(**row)`` (skips missing cfg)."""
         out: List[dict] = []
         specs = self.cfg
         if not specs:
@@ -133,6 +136,26 @@ class ActuatorProfile:
             )
         return rows[0]
 
+    def with_cfg(
+        self, cfg: Sequence[Optional[CfgSlotSpec]]
+    ) -> "ActuatorProfile":
+        """Return a copy with CFG identity rows (same slots/name)."""
+        return ActuatorProfile(
+            name=self.name,
+            slots=self.slots,
+            cfg=tuple(cfg),
+        )
+
+    def with_yam_cfg(self) -> "ActuatorProfile":
+        """Fill CFG from YAM product defaults for this profile's slots."""
+        return self.with_cfg(cfg_specs_from_yam_slots(self.slots))
+
+    def with_cfg_from_table(
+        self, table: Sequence[Optional[Mapping[str, Any]]]
+    ) -> "ActuatorProfile":
+        """Fill CFG from a live ``cfg_get_table()`` (or equivalent) rows."""
+        return self.with_cfg(cfg_specs_from_table(self.slots, table))
+
 
 @dataclass(frozen=True)
 class ServoEntry:
@@ -153,7 +176,67 @@ class ServoProfile:
         return tuple(e.slot for e in self.entries)
 
 
+def cfg_specs_from_yam_slots(
+    slots: Sequence[int],
+) -> Tuple[Optional[CfgSlotSpec], ...]:
+    """YAM product CFG identity for ``slots`` (None when out of range / unused)."""
+    rows = yam_product_rows()
+    out: List[Optional[CfgSlotSpec]] = []
+    for slot in slots:
+        s = int(slot)
+        if s < 0 or s >= len(rows):
+            out.append(None)
+            continue
+        bus, enabled, proto, mid, master = rows[s]
+        if not enabled or int(proto) == PROTO_NONE:
+            out.append(None)
+            continue
+        out.append(
+            CfgSlotSpec(
+                bus=int(bus),
+                protocol=int(proto),
+                motor_id=int(mid),
+                master_id=int(master),
+                enabled=bool(enabled),
+            )
+        )
+    return tuple(out)
+
+
+def cfg_specs_from_table(
+    slots: Sequence[int],
+    table: Sequence[Optional[Mapping[str, Any]]],
+) -> Tuple[Optional[CfgSlotSpec], ...]:
+    """Build CFG specs from a live CFG table indexed by slot."""
+    by_slot: Dict[int, Mapping[str, Any]] = {}
+    for i, row in enumerate(table):
+        if row is None:
+            continue
+        by_slot[int(row.get("slot", i))] = row
+    out: List[Optional[CfgSlotSpec]] = []
+    for slot in slots:
+        row = by_slot.get(int(slot))
+        if row is None:
+            out.append(None)
+            continue
+        proto = int(row.get("protocol", PROTO_NONE))
+        if not bool(row.get("enabled", False)) or proto == PROTO_NONE:
+            out.append(None)
+            continue
+        out.append(
+            CfgSlotSpec(
+                bus=int(row.get("bus", 0)),
+                protocol=proto,
+                motor_id=int(row.get("motor_id", 0)) & 0xFF,
+                master_id=int(row.get("master_id", 0)) & 0xFF,
+                enabled=True,
+            )
+        )
+    return tuple(out)
+
+
 def _cfg_from_yam_rows(slots: Sequence[int]) -> Tuple[Optional[CfgSlotSpec], ...]:
+    """Backward-compatible alias — keep disabled product rows as specs."""
     rows = yam_product_rows()
     out: List[Optional[CfgSlotSpec]] = []
     for slot in slots:
@@ -197,7 +280,6 @@ def arm_profile(
     return ActuatorProfile(
         name=name or default_name,
         slots=resolved,
-        kind="joint",
         cfg=_cfg_from_yam_rows(resolved) if resolved == default_slots else (),
     )
 
@@ -208,21 +290,44 @@ def wheel_profile(
     slots: SlotsIn = None,
     bench: bool = False,
 ) -> ActuatorProfile:
-    """Section profile for base/wheel actuators."""
+    """Section profile for base/wheel actuators (slots + optional CFG).
+
+    Lab/bench still uses a single ``base`` (spare or full ``BASE_SLOTS``).
+    Product demux uses :func:`base_wheel_profile` per module.
+    """
     default = BENCH_BASE_SLOTS if bench else BASE_SLOTS
     resolved = parse_slots_spec(slots, default)
     cfg = _cfg_from_yam_rows(resolved) if (not bench and resolved == BASE_SLOTS) else ()
-    return ActuatorProfile(name=name, slots=resolved, kind="wheel", cfg=cfg)
+    return ActuatorProfile(name=name, slots=resolved, cfg=cfg)
 
 
-def lift_profile(*, slots: SlotsIn = None, name: str = "lift") -> ActuatorProfile:
-    resolved = parse_slots_spec(slots, (LIFT_SLOT,))
+def base_wheel_profile(index: int) -> ActuatorProfile:
+    """Product base wheel module ``index`` in ``{1,2,3}`` → (steer, drive) slots."""
+    name = f"base_wheel_{int(index)}"
+    try:
+        default_slots = BASE_WHEEL_SLOTS[name]
+    except KeyError as exc:
+        raise ValueError(f"base wheel index must be 1|2|3, got {index!r}") from exc
+    return ActuatorProfile(
+        name=name,
+        slots=default_slots,
+        cfg=_cfg_from_yam_rows(default_slots),
+    )
+
+
+def torso_profile(*, slots: SlotsIn = None, name: str = "torso") -> ActuatorProfile:
+    """Product torso section (slot 20 / ``TORSO_SLOT``)."""
+    resolved = parse_slots_spec(slots, (TORSO_SLOT,))
     return ActuatorProfile(
         name=name,
         slots=resolved,
-        kind="joint",
-        cfg=_cfg_from_yam_rows(resolved) if resolved == (LIFT_SLOT,) else (),
+        cfg=_cfg_from_yam_rows(resolved) if resolved == (TORSO_SLOT,) else (),
     )
+
+
+def lift_profile(*, slots: SlotsIn = None, name: str = "lift") -> ActuatorProfile:
+    """Bench alias of :func:`torso_profile` (same slot; legacy section name)."""
+    return torso_profile(slots=slots, name=name)
 
 
 def single_profile(
@@ -231,18 +336,16 @@ def single_profile(
     protocol: Union[str, int],
     motor_id: int,
     bus: int,
-    kind: ActuatorKind = "joint",
     master_id: int = 0,
     enabled: bool = True,
     name: Optional[str] = None,
 ) -> ActuatorProfile:
-    """One actuator + CFG identity (motion + NVM)."""
+    """One actuator slot + CFG identity (for ``cfg_set_slot`` / NVM)."""
     s = int(slot)
     proto = parse_protocol(protocol)
     return ActuatorProfile(
         name=name or f"slot_{s}",
         slots=(s,),
-        kind=kind,
         cfg=(
             CfgSlotSpec(
                 bus=int(bus),
@@ -279,10 +382,14 @@ __all__ = [
     "ServoEntry",
     "ServoProfile",
     "arm_profile",
+    "base_wheel_profile",
+    "cfg_specs_from_table",
+    "cfg_specs_from_yam_slots",
     "lift_profile",
     "neck_profile",
     "parse_protocol",
     "parse_slots_spec",
     "single_profile",
+    "torso_profile",
     "wheel_profile",
 ]

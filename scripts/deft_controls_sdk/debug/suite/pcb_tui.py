@@ -23,7 +23,7 @@ from deft_controls_sdk.host_proxy import HostProxy
 from deft_controls_sdk.link import ActuatorDesire, McuState, ServoDesire
 from deft_controls_sdk.link.api_types import led_mode_name
 from deft_controls_sdk.link.exchange import parse_servo_feedback
-from deft_controls_sdk.vbeta.slots import SERVO_MODEL_NAMES
+from deft_controls_sdk.config import SERVO_MODEL_NAMES
 
 from .show import _box_lines, collect_cfg, format_banner
 

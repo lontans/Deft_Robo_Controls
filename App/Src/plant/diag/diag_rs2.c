@@ -74,7 +74,7 @@ bool plant_diag_is_rs2_command(const host_command_image_t *cmd)
 	return pdu_is_scan_request(&cmd->pdu);
 }
 
-void plant_diag_on_command(const host_command_image_t *cmd)
+void plant_diag_on_rs2_command(const host_command_image_t *cmd)
 {
 	if (cmd == NULL || !pdu_is_scan_request(&cmd->pdu))
 		return;

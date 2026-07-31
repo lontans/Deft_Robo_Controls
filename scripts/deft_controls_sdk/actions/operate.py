@@ -1,14 +1,21 @@
-"""Operate helpers — spin (wheel jog) and arm cruise via ``TeleopEngine``.
+"""Operate helpers — cruise/jog via ``TeleopEngine``.
 
-General plant actions (not suite-specific). The Assembly workshop TUI calls
-these; ``debug_dashboard`` can later drive the same ``TeleopEngine`` from
-mouse UI without owning a second cruise implementation.
+Plant CMDH helpers (not CFG/discover). Lifecycle reminder::
+
+    proxy.arm_plant()
+    engine = make_teleop_engine(...)
+    spin_jog(...) / neck_cruise(...) / move_arm_cruise(...)
+    stop_slots(...) / stop_servos(...)
+    engine.stop()
+    proxy.disarm_plant()
 """
 from __future__ import annotations
 
 from typing import Callable, Dict, Mapping, Optional, Sequence
 
-from .teleop import SlotSpec, TeleopEngine, build_actuator_specs
+from deft_controls_sdk.config.profile import NECK_PITCH_SERVO_SLOT, NECK_YAW_SERVO_SLOT
+
+from .teleop import SlotSpec, TeleopEngine, build_actuator_specs, build_servo_specs
 
 
 HubGetter = Callable[[], object]
@@ -21,7 +28,7 @@ def make_teleop_engine(
     feedback_getter: Optional[FeedbackGetter] = None,
     hz: float = 25.0,
 ) -> TeleopEngine:
-    """Construct a shared cruise engine (dashboard-compatible API)."""
+    """Construct a shared cruise engine (actuators + neck servos)."""
     return TeleopEngine(
         hub_getter=hub_getter,
         feedback_getter=feedback_getter,
@@ -41,7 +48,6 @@ def feedback_positions_from_proxy(proxy: object) -> Dict[int, dict]:
     if fb is None:
         return {}
     out: Dict[int, dict] = {}
-    # FeedbackImage exposes .actuator(slot) → state with position/velocity
     for slot in range(26):
         st = fb.actuator(slot) if hasattr(fb, "actuator") else None
         if st is None:
@@ -111,9 +117,53 @@ def move_arm_cruise(
         )
 
 
+def neck_cruise(
+    engine: TeleopEngine,
+    *,
+    pitch: Optional[float] = None,
+    yaw: Optional[float] = None,
+    cruise: Optional[float] = None,
+    specs: Optional[Mapping[int, SlotSpec]] = None,
+) -> None:
+    """Cruise neck servos to native DXL positions (same engine as wheel/arm).
+
+    ``pitch`` / ``yaw`` are native step positions (e.g. 2048 center).
+    Omit a joint to leave it alone. Requires ``proxy.arm_plant()`` first.
+    """
+    servo_specs = dict(specs) if specs is not None else build_servo_specs()
+    targets = {
+        NECK_PITCH_SERVO_SLOT: pitch,
+        NECK_YAW_SERVO_SLOT: yaw,
+    }
+    for slot, target in targets.items():
+        if target is None:
+            continue
+        spec = servo_specs.get(int(slot))
+        if spec is None:
+            raise ValueError(f"no SlotSpec for neck slot {slot}")
+        rate = float(cruise) if cruise is not None else float(spec.cruise_default)
+        engine.engage_servo(
+            int(slot),
+            spec=spec,
+            target=float(target),
+            cruise=rate,
+        )
+
+
 def stop_slots(engine: TeleopEngine, slots: Sequence[int]) -> None:
     for slot in slots:
         engine.stop_actuator(int(slot))
+
+
+def stop_servos(
+    engine: TeleopEngine,
+    slots: Optional[Sequence[int]] = None,
+) -> None:
+    """Freeze neck (or given servo slots) in place."""
+    if slots is None:
+        slots = (NECK_PITCH_SERVO_SLOT, NECK_YAW_SERVO_SLOT)
+    for slot in slots:
+        engine.stop_servo(int(slot))
 
 
 def specs_for_cfg_map(cfg_map: str = "bench") -> Dict[int, SlotSpec]:
@@ -124,8 +174,10 @@ __all__ = [
     "feedback_positions_from_proxy",
     "make_teleop_engine",
     "move_arm_cruise",
+    "neck_cruise",
     "seed_for_slot",
     "specs_for_cfg_map",
     "spin_jog",
+    "stop_servos",
     "stop_slots",
 ]

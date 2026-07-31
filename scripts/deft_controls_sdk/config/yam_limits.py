@@ -1,4 +1,4 @@
-"""YAM Damiao arm soft limits for vbeta (host-side clamps).
+"""YAM Damiao arm soft limits (host-side clamps).
 
 Port of ``scripts/pcb_lab/legacy/control_hub/yam_limits.py`` into the SDK surface.
 J1–J6 come from MuJoCo ``External_Documentation/yam_arm_damiao/yam.xml``;
@@ -23,7 +23,7 @@ from typing import Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from deft_controls_sdk.vbeta.slots import arm_slots
+from deft_controls_sdk.config.actuator import arm_slots
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_YAM_XML = _REPO_ROOT / "External_Documentation" / "yam_arm_damiao" / "yam.xml"
@@ -229,7 +229,7 @@ def load_bench_clear_left(
     if env in ("0", "false", "off", "no"):
         return None
     try:
-        from deft_controls_sdk.vbeta import yam_bench_clear_left as bench
+        from deft_controls_sdk.config import yam_bench_clear_left as bench
     except ImportError:
         return None
     active = bool(bench.CLEAR_ACTIVE) if force is None else bool(force)

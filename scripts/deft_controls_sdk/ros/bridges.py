@@ -4,10 +4,18 @@ Takes/returns plain Python values (and duck-typed message-shaped objects) so
 this module is importable and unit-testable without ROS installed. ``node.py``
 is the only place that touches real ``rclpy`` / ``std_msgs`` / ``sensor_msgs``
 types.
+
+Actuator command wire (product): ``Float64MultiArray.data`` length ``5 * n``
+interleaved ``[p, v, kp, kd, τ] * n`` → ordered ``ActuatorDesire`` list for
+``HostProxy.set_section``.
 """
 from __future__ import annotations
 
-from typing import Any, List, Tuple
+from typing import Any, List, Sequence, Tuple
+
+from deft_controls_sdk.link import ActuatorDesire
+
+_MIT_STRIDE = 5
 
 
 def positions_from_command(msg: Any) -> List[float]:
@@ -15,6 +23,7 @@ def positions_from_command(msg: Any) -> List[float]:
 
     Duck-types on whichever attribute is present so a command topic can be
     swapped between the two message types without touching this function.
+    Legacy helper — product teleop prefers :func:`desires_from_mit_command`.
     """
     data = getattr(msg, "position", None)
     if data is None:
@@ -25,6 +34,59 @@ def positions_from_command(msg: Any) -> List[float]:
             "expected Float64MultiArray or JointState"
         )
     return [float(v) for v in data]
+
+
+def desires_from_mit_command(msg: Any, *, n: int) -> List[ActuatorDesire]:
+    """Unpack interleaved MIT fields into ``n`` ``ActuatorDesire`` values.
+
+    Expects ``Float64MultiArray.data`` (or ``.position``) of length ``5 * n``:
+    ``[p, v, kp, kd, τ]`` repeated per joint in section order.
+    """
+    if n < 0:
+        raise ValueError(f"n must be >= 0, got {n}")
+    data = getattr(msg, "data", None)
+    if data is None:
+        data = getattr(msg, "position", None)
+    if data is None:
+        raise TypeError(
+            f"{type(msg).__name__} has neither .data nor .position — "
+            "expected Float64MultiArray or JointState"
+        )
+    values = [float(v) for v in data]
+    expect = _MIT_STRIDE * int(n)
+    if len(values) != expect:
+        raise ValueError(
+            f"MIT command expects {expect} floats (5*{n}), got {len(values)}"
+        )
+    out: List[ActuatorDesire] = []
+    for i in range(n):
+        base = i * _MIT_STRIDE
+        out.append(
+            ActuatorDesire(
+                position=values[base],
+                velocity=values[base + 1],
+                kp=values[base + 2],
+                kd=values[base + 3],
+                torque=values[base + 4],
+            )
+        )
+    return out
+
+
+def mit_command_from_desires(desires: Sequence[ActuatorDesire]) -> List[float]:
+    """Pack ordered desires into interleaved ``[p, v, kp, kd, τ] * n``."""
+    out: List[float] = []
+    for d in desires:
+        out.extend(
+            [
+                float(d.position),
+                float(d.velocity),
+                float(d.kp),
+                float(d.kd),
+                float(d.torque),
+            ]
+        )
+    return out
 
 
 def joint_names(n: int) -> List[str]:
@@ -62,8 +124,10 @@ def neck_positions_from_joint_state(
 
 
 __all__ = [
+    "desires_from_mit_command",
     "joint_names",
     "led_command_from_msg",
+    "mit_command_from_desires",
     "neck_positions_from_joint_state",
     "positions_from_command",
 ]

@@ -1,6 +1,6 @@
+#include "plant/diag/diag_gates.h"
 #include "plant/diag/diag.h"
 #include "plant/plant_command.h"
-#include "plant/servo.h"
 #include "host/host_link.h"
 #include "plant/actuator.h"
 
@@ -11,11 +11,6 @@ static plant_block_reason_t s_last_block = PLANT_BLOCK_NONE;
 plant_block_reason_t plant_runtime_actuator_block_reason(void)
 {
 	return s_last_block;
-}
-
-bool plant_runtime_servo_can_apply(void)
-{
-	return !plant_diag_skip_servo_bus();
 }
 
 bool plant_runtime_actuator_can_apply(void)
@@ -32,8 +27,6 @@ bool plant_runtime_actuator_can_apply(void)
 			s_last_block = PLANT_BLOCK_PROBE_BUSY;
 		else if (plant_diag_quiet_period_active())
 			s_last_block = PLANT_BLOCK_QUIET_PERIOD;
-		else if (servo_host_session_active())
-			s_last_block = PLANT_BLOCK_SERVO_SESSION;
 		else
 			s_last_block = PLANT_BLOCK_BENCH_SESSION;
 		return false;

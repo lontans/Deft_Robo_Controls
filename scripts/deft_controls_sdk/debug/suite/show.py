@@ -1,15 +1,20 @@
-"""Collectors for the plant debug suite ``show`` command."""
+"""Formatters + thin re-exports for the plant debug suite ``show`` command.
+
+Programmatic snapshots live in ``deft_controls_sdk.debug.snapshot`` /
+``HostProxy.cfg_snapshot()`` — import those from notebooks, not this module.
+"""
 from __future__ import annotations
 
 import shutil
 from typing import Any, Dict, List, Optional
 
+from deft_controls_sdk.debug.snapshot import (  # noqa: F401 — suite re-export
+    collect_bandwidth,
+    collect_cfg,
+)
 from deft_controls_sdk.host_proxy import HostProxy
 from deft_controls_sdk.link.api_types import led_mode_name
-from deft_controls_sdk.vbeta.cfg import pause_plant_stream
-from deft_controls_sdk.vbeta.slots import SERVO_MODEL_NAMES
-
-from .proto import protocol_name
+from deft_controls_sdk.config import SERVO_MODEL_NAMES
 
 
 def terminal_cols(*, fallback: int = 80, floor: int = 40) -> int:
@@ -52,104 +57,8 @@ def format_banner(banner: str = "", *, width: Optional[int] = None) -> str:
     return "\n".join(ln[:cols].rstrip() for ln in src.splitlines())
 
 
-def _normalize_table(table: List[dict]) -> List[dict]:
-    out: List[dict] = []
-    for i, row in enumerate(table):
-        if row is None:
-            continue
-        slot = int(row.get("slot", i))
-        proto = int(row.get("protocol", 0))
-        out.append(
-            {
-                "slot": slot,
-                "enabled": bool(row.get("enabled", False)),
-                "bus": int(row.get("bus", 0)),
-                "protocol": proto,
-                "protocol_name": protocol_name(proto),
-                "motor_id": int(row.get("motor_id", 0)),
-                "motor_id_hex": f"0x{int(row.get('motor_id', 0)) & 0xFF:02X}",
-            }
-        )
-    return out
-
-
-def collect_cfg(proxy: HostProxy) -> Dict[str, Any]:
-    """Full NVM v2 view: actuator slots + periph (neck/LED/listen_pdu)."""
-    with pause_plant_stream(proxy.hub):
-        table = proxy.hub.debug.cfg_get_table()
-        try:
-            periph = dict(proxy.hub.debug.cfg_get_periph())
-            periph_ok = True
-            periph_error = None
-        except Exception as exc:  # noqa: BLE001
-            periph = {}
-            periph_ok = False
-            periph_error = str(exc)
-    rows = _normalize_table(table)
-    enabled = [r for r in rows if r["enabled"]]
-    out: Dict[str, Any] = {
-        "slots": rows,
-        "enabled_count": len(enabled),
-        "total": len(rows),
-        "periph_ok": periph_ok,
-    }
-    if periph_ok:
-        out["listen_pdu"] = bool(periph.get("listen_pdu", False))
-        out["flags"] = int(periph.get("flags", 0))
-        out["servos"] = list(periph.get("servos") or [])
-        out["led"] = dict(periph.get("led") or {})
-    else:
-        out["periph_error"] = periph_error
-    return out
-
-
-def collect_bandwidth(proxy: HostProxy) -> Dict[str, Any]:
-    """Plant / periph lap timing from latest FB + host stream rates."""
-    hub = proxy.hub
-    conn = hub._connection  # noqa: SLF001
-    hot = getattr(conn, "_hot_stats", None) or {}
-    telem = getattr(hub, "telemetry", None)
-    snap = None
-    if telem is not None:
-        try:
-            snap = telem.snapshot()
-        except Exception:  # noqa: BLE001
-            snap = None
-
-    def _from_snap(name: str) -> Optional[Any]:
-        if snap is None:
-            return None
-        return getattr(snap, name, None)
-
-    return {
-        "stream_hz": hub.stream_hz,
-        "telemetry_hz": hub.telemetry_hz,
-        "act_lap_ms": _from_snap("lap_ms") if _from_snap("lap_ms") is not None else hot.get("lap_ms"),
-        "act_lap_peak_ms": (
-            _from_snap("lap_max_ms")
-            if _from_snap("lap_max_ms") is not None
-            else hot.get("lap_max_ms")
-        ),
-        "periph_lap_ms": (
-            _from_snap("periph_lap_ms")
-            if _from_snap("periph_lap_ms") is not None
-            else hot.get("periph_lap_ms")
-        ),
-        "periph_lap_peak_ms": (
-            _from_snap("periph_lap_max_ms")
-            if _from_snap("periph_lap_max_ms") is not None
-            else hot.get("periph_lap_max_ms")
-        ),
-        "ticks_pending": (
-            _from_snap("ticks_pending")
-            if _from_snap("ticks_pending") is not None
-            else hot.get("ticks_pending")
-        ),
-        "note": "lap_* from plant FB / telemetry; stream_hz is host TX rate",
-    }
-
-
 def collect_status(proxy: HostProxy) -> Dict[str, Any]:
+    """Alias of ``proxy.doctor()`` (kept for suite CLI / older imports)."""
     return proxy.doctor()
 
 

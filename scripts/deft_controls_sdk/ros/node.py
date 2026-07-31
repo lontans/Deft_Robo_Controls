@@ -1,11 +1,14 @@
 """ControlsPcbHostNode — ROS 2 node adapter wrapping a single HostProxy.
 
-    ROS topics/services -> ControlsPcbHostNode -> HostProxy -> Hub -> USB CDC
+    ROS topics/services -> ControlsPcbHostNode -> HostProxy.set_section -> Hub
 
 One process, one COM: this node constructs (or wraps, for tests) exactly one
-``HostProxy`` and never a per-peripheral one. Commands go through the same
-``actions.ActuatorAction`` / ``LedAction`` / ``ServoAction`` every other host
-app uses — no Damiao/RobStride motion drivers live here.
+``HostProxy`` and never a per-peripheral one. Product commands demux via
+``set_section`` — publishers author full MIT fields (p/v/kp/kd/τ); this node
+does not invent gains.
+
+Command wire per actuator section: ``Float64MultiArray`` length ``5 * n``
+interleaved ``[p, v, kp, kd, τ] * n`` (see ``bridges.desires_from_mit_command``).
 
 Debug RPC (CFG, discover, cal) is intentionally not exposed: this node
 defaults to ``mode="bandwidth"`` and refuses ``mode="soft_dfu"``. Use
@@ -21,25 +24,25 @@ from std_msgs.msg import Float64MultiArray, String
 
 from deft_controls_sdk.config import (
     NECK_PITCH_DXL_ID,
-    NECK_PITCH_SERVO_SLOT,
     NECK_YAW_DXL_ID,
-    NECK_YAW_SERVO_SLOT,
-    bench_continuous_profile,
-    yam_product_profile,
+    PRODUCT_ACTUATOR_SECTIONS,
+    bench_continuous_assembly,
+    yam_product_assembly,
 )
 from deft_controls_sdk.host_proxy import HostProxy
+from deft_controls_sdk.link import ServoDesire
 
 from . import bridges, topics
 
-_DEFAULT_COMPONENTS: Sequence[str] = ("left_arm", "right_arm", "base", "lift")
-_PROFILE_BUILDERS = {
-    "product": yam_product_profile,
-    "bench": bench_continuous_profile,
+_DEFAULT_COMPONENTS: Sequence[str] = PRODUCT_ACTUATOR_SECTIONS
+_ASSEMBLY_BUILDERS = {
+    "product": yam_product_assembly,
+    "bench": bench_continuous_assembly,
 }
 
 
 class ControlsPcbHostNode(Node):
-    """Teleop node: per-component JointState feedback + position commands."""
+    """Teleop node: per-section JointState feedback + MIT section commands."""
 
     def __init__(
         self,
@@ -60,8 +63,12 @@ class ControlsPcbHostNode(Node):
         self.declare_parameter(
             "stream_hz", float(stream_hz) if stream_hz is not None else 200.0
         )
+        profile_default = str(profile or "product")
+        # Product teleop listens for PDU soft-kill by default; bench does not.
+        default_listen = True if profile_default == "product" else False
         self.declare_parameter(
-            "listen_pdu", bool(listen_pdu) if listen_pdu is not None else False
+            "listen_pdu",
+            bool(listen_pdu) if listen_pdu is not None else default_listen,
         )
         self.declare_parameter("mode", mode or "bandwidth")
         # Comma-joined string, not a string-array parameter: rclpy can't infer
@@ -85,14 +92,14 @@ class ControlsPcbHostNode(Node):
         else:
             profile_name = str(self.get_parameter("profile").value)
             try:
-                profile_obj = _PROFILE_BUILDERS[profile_name]()
+                assembly = _ASSEMBLY_BUILDERS[profile_name]()
             except KeyError:
-                known = ", ".join(sorted(_PROFILE_BUILDERS))
+                known = ", ".join(sorted(_ASSEMBLY_BUILDERS))
                 raise ValueError(f"unknown profile {profile_name!r}; known: {known}") from None
             resolved_port = str(self.get_parameter("port").value) or None
             self._proxy = HostProxy.connect(
                 resolved_port,
-                profile=profile_obj,
+                assembly=assembly,
                 stream_hz=float(self.get_parameter("stream_hz").value),
                 listen_pdu=bool(self.get_parameter("listen_pdu").value),
                 mode=resolved_mode,
@@ -143,15 +150,17 @@ class ControlsPcbHostNode(Node):
         return self._proxy
 
     def _make_actuator_command_cb(self, name: str):
+        n = len(self._proxy.section_slots(name))
+
         def _cb(msg) -> None:
             try:
-                positions = bridges.positions_from_command(msg)
-            except TypeError as exc:
+                desires = bridges.desires_from_mit_command(msg, n=n)
+            except (TypeError, ValueError) as exc:
                 self.get_logger().error(f"{name}: {exc}")
                 return
             try:
-                self._proxy.actuators(name).hold(positions, send=False)
-            except ValueError as exc:
+                self._proxy.set_section(name, desires, send=False)
+            except (KeyError, ValueError) as exc:
                 self.get_logger().error(f"{name}: {exc}")
 
         return _cb
@@ -169,9 +178,24 @@ class ControlsPcbHostNode(Node):
         except ValueError as exc:
             self.get_logger().error(str(exc))
             return
-        servo = self._proxy.servo()
-        servo.set(NECK_PITCH_SERVO_SLOT, servo_id=NECK_PITCH_DXL_ID, position=pitch, send=False)
-        servo.set(NECK_YAW_SERVO_SLOT, servo_id=NECK_YAW_DXL_ID, position=yaw, send=False)
+        self._proxy.set_servo_section(
+            "neck",
+            [
+                ServoDesire(
+                    servo_id=NECK_PITCH_DXL_ID,
+                    native_step_position=int(pitch),
+                    torque_enable=True,
+                    operating_mode=3,
+                ),
+                ServoDesire(
+                    servo_id=NECK_YAW_DXL_ID,
+                    native_step_position=int(yaw),
+                    torque_enable=True,
+                    operating_mode=3,
+                ),
+            ],
+            send=False,
+        )
 
     def _on_timer(self) -> None:
         # HostProxy already owns a background plant-TX thread at stream_hz
@@ -181,13 +205,21 @@ class ControlsPcbHostNode(Node):
         # only publishes feedback.
         stamp = self.get_clock().now().to_msg()
         for name, pub in self._state_pubs.items():
-            positions = self._proxy.actuators(name).positions()
-            if positions is None:
+            states = self._proxy.section_feedback(name)
+            if all(st is None for st in states):
                 continue
             msg = JointState()
             msg.header.stamp = stamp
-            msg.name = bridges.joint_names(len(positions))
-            msg.position = [float(p) for p in positions]
+            msg.name = bridges.joint_names(len(states))
+            msg.position = [
+                float(st.position) if st is not None else 0.0 for st in states
+            ]
+            msg.velocity = [
+                float(st.velocity) if st is not None else 0.0 for st in states
+            ]
+            msg.effort = [
+                float(st.torque) if st is not None else 0.0 for st in states
+            ]
             pub.publish(msg)
 
     def destroy_node(self) -> None:

@@ -18,8 +18,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m deft_controls_sdk.ros",
         description=(
-            "ROS 2 teleop node wrapping one HostProxy — actuators/led/servo "
-            "topics over ActuatorAction/LedAction/ServoAction."
+            "ROS 2 teleop node wrapping one HostProxy — section MIT commands "
+            "via set_section (Float64MultiArray 5*n interleaved p/v/kp/kd/τ)."
         ),
     )
     p.add_argument("--port", default=None, help="CDC COM port (auto if omitted)")
@@ -27,7 +27,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--profile",
         default="product",
         choices=("product", "bench"),
-        help="HostProxy demux profile (default: product)",
+        help="HostProxy demux assembly (default: product)",
     )
     p.add_argument(
         "--stream-hz",
@@ -38,7 +38,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--listen-pdu",
         action="store_true",
-        help="honor PDB kill bytes for soft-kill + LED (default off, bench-safe)",
+        help=(
+            "force PDU soft-kill listen on (product already defaults on; "
+            "use for bench when a PDU peer is present)"
+        ),
     )
     p.add_argument(
         "--mode",
@@ -50,8 +53,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--components",
         default=None,
         help=(
-            "comma-separated profile-component allow-list "
-            "(default: left_arm,right_arm,base,lift when present in the profile)"
+            "comma-separated section allow-list (default product: "
+            "left_arm,right_arm,base_wheel_1,base_wheel_2,base_wheel_3,torso)"
         ),
     )
     p.add_argument("--node-name", default="controls_pcb_host")
@@ -71,7 +74,8 @@ def main(argv: "list[str] | None" = None) -> int:
         port=args.port,
         profile=args.profile,
         stream_hz=args.stream_hz,
-        listen_pdu=bool(args.listen_pdu),
+        # None → node defaults (product: True, bench: False)
+        listen_pdu=True if args.listen_pdu else None,
         mode=args.mode,
         components=args.components.split(",") if args.components else None,
     )

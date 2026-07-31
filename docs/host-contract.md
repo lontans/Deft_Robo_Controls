@@ -98,7 +98,7 @@ Lane 0 (RobStride) / lane 3 (Damiao) / lane 7 (CFG) use the same 32 B layouts pr
 
 Old path: tags in `pdb[0..31]` at offset 630 on `DBGC`/`DBGF`. Still accepted by FW when debug-lanes header is absent; **SDK host TX no longer emits this path**. Soft-DFU tag `DFU!` remains a deprecated alias for mode 2.
 
-Hardware inventory: `python -m pcb_lab inventory` / `hub.debug.inventory(preset=…)` — DEBUG discover over lanes (ID ranges required) plus servos/PDU.
+Hardware inventory: `python -m pcb_lab.debug test --inventory` / `hub.debug.inventory(preset=…)` — DEBUG discover over lanes (ID ranges required) plus servos/PDU.
 
 ## Soft-DFU (USB flash, no ST-Link)
 

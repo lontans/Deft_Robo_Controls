@@ -1,15 +1,16 @@
-"""``test`` subcommand: Assembly workshop by default + domain flags.
+"""``test`` subcommand: board bringup by default + filtered peripheral menus.
 
 Ownership: all leaves live under ``debug.suite`` (no ``vbeta`` imports).
 
-| Entry        | Link mode   | Pass gates                          |
-|--------------|-------------|-------------------------------------|
-| test (bare)  | debug       | Assembly workshop (profiles / operate)|
-| --bandwidth  | bandwidth   | measure_hold (ack_lag / fb_hz / mode)|
-| --actuators  | debug       | functional discover/CFG + motion     |
-| --led        | debug       | functional observe only              |
-| --servo      | debug       | functional observe only              |
-| --pdu-link   | debug       | wire + policy observe only           |
+| Entry           | Link mode   | Menu / pass gates                    |
+|-----------------|-------------|--------------------------------------|
+| test (bare)     | debug       | board + peripheral entry (a/s/l/i)   |
+| --actuators     | debug       | actuators menu only                  |
+| --servos/--servo| debug       | servos menu only                     |
+| --led           | debug       | LED menu only                        |
+| --bandwidth     | bandwidth   | measure_hold (ack_lag / fb_hz / mode)|
+| --inventory     | debug       | full inventory CLI                   |
+| --pdu-link      | debug       | wire + policy observe                |
 """
 from __future__ import annotations
 
@@ -21,8 +22,8 @@ def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     t = sub.add_parser(
         "test",
         help=(
-            "Assembly workshop (default), or domain flags: "
-            "--bandwidth|--actuators|--led|--servo|--pdu-link"
+            "Board bringup menu (default), or filter with "
+            "--actuators|--servos|--led|--bandwidth|--inventory|--pdu-link"
         ),
     )
     g = t.add_mutually_exclusive_group()
@@ -32,19 +33,26 @@ def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="timing prove via measure_hold (reconnects mode=bandwidth)",
     )
     g.add_argument(
+        "--inventory",
+        action="store_true",
+        help="probe connected hardware (actuators / servos / PDU; mode=debug)",
+    )
+    g.add_argument(
         "--actuators",
         action="store_true",
-        help="actuator discover / CFG / motion menu (mode=debug)",
+        help="actuators-only menu: discover / CFG / hold / teleop (mode=debug)",
     )
     g.add_argument(
         "--led",
         action="store_true",
-        help="LED preset hold + doctor observe (mode=debug)",
+        help="LED-only menu: presets + doctor (mode=debug)",
     )
     g.add_argument(
+        "--servos",
         "--servo",
+        dest="servos",
         action="store_true",
-        help="neck servo FB sample via pcb_tui helpers (mode=debug)",
+        help="servos-only menu: FB + neck teleop (mode=debug)",
     )
     g.add_argument(
         "--pdu-link",
@@ -52,19 +60,12 @@ def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="pdb_status wire + listen_pdu policy (mode=debug)",
     )
 
-    # Assembly workshop knobs (bare ``test``)
+    # Board-verify knobs (bare ``test``) — stock demux only; no assembly editor
     t.add_argument(
         "--assembly",
-        default="product",
-        metavar="NAME",
-        help="with bare test (workshop): stock assembly product|bench (default product)",
-    )
-    t.add_argument(
-        "--cfg-map",
         default="bench",
-        dest="cfg_map",
-        metavar="MAP",
-        help="with bare test (workshop): teleop SlotSpec map bench|product (default bench)",
+        metavar="NAME",
+        help="with bare test: stock demux assembly bench|product (default bench)",
     )
 
     # bandwidth knobs
@@ -142,9 +143,9 @@ def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="with --bandwidth: single hold at --hz (all 26 slots), skip interactive TUI",
     )
 
-    # led knobs
+    # led knobs (--led-preset; inventory owns --preset for ID ranges)
     t.add_argument(
-        "--preset",
+        "--led-preset",
         default="idle",
         choices=("idle", "pdu", "follow", "gen_2"),
         help="with --led: suite LED_PRESETS name (default idle)",
@@ -156,12 +157,10 @@ def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="with --led: hold desire seconds (default 2)",
     )
 
-    # pdu-link knobs
-    t.add_argument(
-        "--peer",
-        action="store_true",
-        help="with --pdu-link: require non-stale pdb wire (peer present)",
-    )
+    # inventory range / probe knobs (+ --peer / --no-tui / --json shared)
+    from .inventory_cmd import add_inventory_arguments
+
+    add_inventory_arguments(t, omit=("--no-tui",))
 
     t.set_defaults(_cmd="test")
     return t
@@ -170,12 +169,14 @@ def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def _domain_from_args(args: argparse.Namespace) -> Optional[str]:
     if args.bandwidth:
         return "bandwidth"
+    if getattr(args, "inventory", False):
+        return "inventory"
     if args.actuators:
         return "actuators"
     if args.led:
         return "led"
-    if args.servo:
-        return "servo"
+    if getattr(args, "servos", False) or getattr(args, "servo", False):
+        return "servos"
     if getattr(args, "pdu_link", False):
         return "pdu-link"
     return None
@@ -184,14 +185,14 @@ def _domain_from_args(args: argparse.Namespace) -> Optional[str]:
 def run_test(args: argparse.Namespace) -> int:
     domain = _domain_from_args(args)
     if domain is None:
-        # Bare ``test`` → Assembly workshop (not the domain picker).
-        return _run_workshop(args)
+        return _run_board_verify(args)
 
     runners: dict[str, Callable[[argparse.Namespace], int]] = {
         "bandwidth": _run_bandwidth,
+        "inventory": _run_inventory,
         "actuators": _run_actuators,
         "led": _run_led,
-        "servo": _run_servo,
+        "servos": _run_servos,
         "pdu-link": _run_pdu_link,
     }
     fn = runners.get(domain)
@@ -201,10 +202,10 @@ def run_test(args: argparse.Namespace) -> int:
     return int(fn(args))
 
 
-def _run_workshop(args: argparse.Namespace) -> int:
-    from .workshop import run_assembly_workshop
+def _run_board_verify(args: argparse.Namespace) -> int:
+    from .board_verify import run_bringup
 
-    return run_assembly_workshop(args)
+    return run_bringup(args, scope="board")
 
 
 def _run_bandwidth(args: argparse.Namespace) -> int:
@@ -213,22 +214,28 @@ def _run_bandwidth(args: argparse.Namespace) -> int:
     return run_bandwidth_test(args)
 
 
-def _run_actuators(args: argparse.Namespace) -> int:
-    from .test_actuators import run_actuators_test
+def _run_inventory(args: argparse.Namespace) -> int:
+    from .inventory_cmd import run_inventory_cli
 
-    return run_actuators_test(args)
+    return run_inventory_cli(args)
+
+
+def _run_actuators(args: argparse.Namespace) -> int:
+    from .board_verify import run_bringup
+
+    return run_bringup(args, scope="actuators")
 
 
 def _run_led(args: argparse.Namespace) -> int:
-    from .test_led import run_led_test
+    from .board_verify import run_bringup
 
-    return run_led_test(args)
+    return run_bringup(args, scope="led")
 
 
-def _run_servo(args: argparse.Namespace) -> int:
-    from .test_servo import run_servo_test
+def _run_servos(args: argparse.Namespace) -> int:
+    from .board_verify import run_bringup
 
-    return run_servo_test(args)
+    return run_bringup(args, scope="servos")
 
 
 def _run_pdu_link(args: argparse.Namespace) -> int:

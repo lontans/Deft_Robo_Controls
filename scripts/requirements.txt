@@ -1,3 +1,4 @@
 pyserial>=3.5
 numpy>=1.22
+libusb1>=3.0
 pytest>=7.0

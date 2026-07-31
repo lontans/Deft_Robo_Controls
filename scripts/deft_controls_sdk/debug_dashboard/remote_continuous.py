@@ -41,11 +41,14 @@ SYNC_FILES = (
     ("deft_controls_sdk/debug/robstride.py", "deft_controls_sdk/debug/robstride.py"),
     ("deft_controls_sdk/debug/robstride_motion.py", "deft_controls_sdk/debug/robstride_motion.py"),
     ("deft_controls_sdk/debug/rs02_motion.py", "deft_controls_sdk/debug/rs02_motion.py"),
-    ("deft_controls_sdk/vbeta/slots.py", "deft_controls_sdk/vbeta/slots.py"),
-    ("deft_controls_sdk/vbeta/session.py", "deft_controls_sdk/vbeta/session.py"),
+    ("deft_controls_sdk/config/actuator.py", "deft_controls_sdk/config/actuator.py"),
     (
-        "deft_controls_sdk/vbeta/yam_bench_clear_left.py",
-        "deft_controls_sdk/vbeta/yam_bench_clear_left.py",
+        "deft_controls_sdk/config/yam_bench_clear_left.py",
+        "deft_controls_sdk/config/yam_bench_clear_left.py",
+    ),
+    (
+        "deft_controls_sdk/config/yam_limits.py",
+        "deft_controls_sdk/config/yam_limits.py",
     ),
     ("deft_controls_sdk/telemetry/cache.py", "deft_controls_sdk/telemetry/cache.py"),
 )

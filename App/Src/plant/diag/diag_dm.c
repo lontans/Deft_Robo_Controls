@@ -22,54 +22,6 @@ void diag_dm_clear_actuator_mirror(void)
 	actuator_capture_state();
 }
 
-void diag_dm_publish_actuator_state(void)
-{
-	uint8_t slot = ACTUATOR_COUNT;
-
-	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
-		if (!actuator_table[i].enabled)
-			continue;
-		if (actuator_table[i].protocol != PROTO_DAMIAO)
-			continue;
-		if (actuator_table[i].bus != g_dm_pending_bus)
-			continue;
-		slot = i;
-		break;
-	}
-
-	if (slot >= ACTUATOR_COUNT) {
-		for (uint8_t i = 0; i < ACTUATOR_COUNT; i++) {
-			if (actuator_table[i].enabled &&
-			    actuator_table[i].protocol == PROTO_DAMIAO) {
-				slot = i;
-				break;
-			}
-		}
-	}
-
-	if (slot >= ACTUATOR_COUNT)
-		return;
-
-	actuator_state_t *st = &actuator_state_live[slot];
-
-	st->position    = g_last_dm_probe.position;
-	st->velocity    = g_last_dm_probe.velocity;
-	st->torque      = g_last_dm_probe.torque;
-	st->temperature = g_last_dm_probe.temperature;
-	if (g_last_dm_probe.probe_kind != 0u) {
-		st->velocity    = (float)g_last_dm_probe.motor_id;
-		st->torque      = (float)g_last_dm_probe.discovered_id;
-		st->temperature = (float)g_last_dm_probe.master_id;
-	}
-	st->fault = PLANT_DM_FB_MAGIC |
-	            ((uint32_t)(g_last_dm_probe.found ? 1u : 0u) << 23) |
-	            ((uint32_t)g_last_dm_probe.tx_frames_sent << 16) |
-	            ((uint32_t)g_last_dm_probe.raw_frames_seen << 8) |
-	            (uint32_t)g_last_dm_probe.err;
-
-	actuator_capture_state();
-}
-
 bool plant_diag_is_dm_command(const host_command_image_t *cmd)
 {
 	if (cmd == NULL)

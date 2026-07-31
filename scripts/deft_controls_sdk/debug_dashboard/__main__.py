@@ -71,9 +71,21 @@ def main(argv: list[str] | None = None) -> int:
     print(f"plant TX {args.hz:.0f} Hz · telemetry publish {args.telemetry_hz:.0f} Hz (latest-wins)")
 
     if args.port:
-        print(f"Connecting {args.port} in observe mode (plant_apply=0, no auto soft-kill)...")
-        state.connect(args.port, mode="observe")
-        print("Connected (observe). Use Enable control in the UI for plant_apply.")
+        peer = state.peer_com_owner()
+        if peer is not None:
+            print(
+                f"Not opening {args.port}: peer already owns COM via {peer['path']} "
+                f"(port={peer.get('port') or '?'}, age={peer['age_s']:.1f}s).\n"
+                "UI will follow state.json — stop the peer before Connect.",
+                flush=True,
+            )
+        else:
+            print(
+                f"Connecting {args.port} in observe mode "
+                "(plant_apply=0, no auto soft-kill)..."
+            )
+            state.connect(args.port, mode="observe")
+            print("Connected (observe). Use Enable control in the UI for plant_apply.")
     else:
         sp = state.telemetry.state_path
         print(

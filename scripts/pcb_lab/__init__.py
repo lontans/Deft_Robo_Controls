@@ -1,15 +1,20 @@
-"""pcb_lab — board toolkit (Soft-DFU / scan / health) + HostProxy doctor.
+"""pcb_lab — board toolkit CLI (Soft-DFU / scan / bandwidth).
 
-    python -m pcb_lab              # interactive menu
-    python -m pcb_lab -h
+    python -m pcb_lab
     python -m pcb_lab scan|status|leave|flash|images|build
-    python -m pcb_lab show defaults|health
-    python -m pcb_lab doctor
-    python -m pcb_lab.continuous --port COM5 --duration 20
-    python -m pcb_lab.debug --port COM5 show --pcb
 
-``pcb_lab.debug`` is a thin alias of ``deft_controls_sdk.debug.suite``
-(always ``mode=debug``). Owns COM exclusively — disconnect the dashboard first.
+Peripherals / CFG (CLI alias of ``deft_controls_sdk.debug.suite``)::
+
+    python -m pcb_lab.debug {show|set|test}
+
+**Programmatic API is the SDK** — do not import helpers from ``pcb_lab``::
+
+    from deft_controls_sdk import HostProxy
+    from deft_controls_sdk.actions import ActuatorAction
+    from deft_controls_sdk.config import assembly_from_name
+    from deft_controls_sdk.debug import as_hex, collect_cfg, run_inventory
+
+``LabRobot`` remains a thin optional script façade over ``HostProxy``.
 """
 from __future__ import annotations
 

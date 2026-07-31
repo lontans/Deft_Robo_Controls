@@ -22,6 +22,8 @@ if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
 from deft_controls_sdk.debug_dashboard.app import AppState, serve
+from deft_controls_sdk.host_proxy import HostProxy
+from deft_controls_sdk.link import McuState
 
 
 @pytest.fixture()
@@ -49,6 +51,48 @@ def _post(base: str, path: str, body=None):
             return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
+
+
+def _install_fake_proxy_connect(monkeypatch, fake):
+    """Patch AppState's HostProxy.connect to wrap ``fake`` (no real COM).
+
+    Mimics ``HostProxy.connect(..., armed=False)`` side effects the dashboard
+    and these tests assert on (stream + plant_apply off).
+    """
+    import deft_controls_sdk.debug_dashboard.app as app_module
+
+    if not hasattr(fake, "send_once"):
+        fake.send_once = lambda: None  # type: ignore[attr-defined]
+    if not hasattr(fake, "set_led"):
+        fake.set_led = lambda *a, **k: None  # type: ignore[attr-defined]
+    if not hasattr(fake, "stop_streaming"):
+        fake.stop_streaming = lambda: None  # type: ignore[attr-defined]
+    if not hasattr(fake, "plant_apply"):
+        fake.plant_apply = False  # type: ignore[attr-defined]
+
+    def _connect(cls, port, **kwargs):
+        if hasattr(fake, "start_streaming"):
+            fake.start_streaming(
+                hz=float(kwargs.get("stream_hz", 50.0)),
+                telemetry_hz=float(kwargs.get("telemetry_hz", 10.0)),
+                auto_soft_kill=False,
+            )
+        if hasattr(fake, "set_mcu_state"):
+            fake.set_mcu_state(McuState.NORMAL, send=False)
+        if hasattr(fake, "set_plant_apply"):
+            fake.set_plant_apply(False, send=True)
+            fake.plant_apply = False
+        proxy = HostProxy(
+            fake,
+            owns_hub=True,
+            listen_pdu=False,
+            telemetry_hz=float(kwargs.get("telemetry_hz", 10.0)),
+        )
+        proxy._stream_hz = float(kwargs.get("stream_hz", 50.0))
+        return proxy
+
+    monkeypatch.setattr(app_module.HostProxy, "connect", classmethod(_connect))
+    return fake
 
 
 def test_index_serves_html(server) -> None:
@@ -82,7 +126,6 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
     """/api/state must distinguish an actively-held non-zero command from an
     idle-hold zero desire from a never-commanded slot — that distinction is
     the whole point of the "active plant control state" clarity ask."""
-    import deft_controls_sdk.debug_dashboard.app as app_module
     from deft_controls_sdk.link import ActuatorDesire
 
     class _FakeHub:
@@ -122,9 +165,7 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
             pass
 
     fake = _FakeHub()
-    monkeypatch.setattr(
-        app_module.ControlsPcbHub, "connect", staticmethod(lambda port, **kw: fake)
-    )
+    _install_fake_proxy_connect(monkeypatch, fake)
 
     state, base = server
     state.connect("COM5")  # observe default
@@ -187,8 +228,6 @@ def test_soft_kill_park_without_connection_writes_peer_request(server) -> None:
 
 
 def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
-    import deft_controls_sdk.debug_dashboard.app as app_module
-
     class _FakeHub:
         port = "COM5"
         is_streaming = True
@@ -221,7 +260,7 @@ def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
             pass
 
     fake = _FakeHub()
-    monkeypatch.setattr(app_module.ControlsPcbHub, "connect", staticmethod(lambda port, **kw: fake))
+    _install_fake_proxy_connect(monkeypatch, fake)
 
     state, base = server
     state.connect("COM5")
@@ -233,9 +272,6 @@ def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
 
 
 def test_observe_blocks_plant_commands_until_enable_control(server, monkeypatch) -> None:
-    import deft_controls_sdk.debug_dashboard.app as app_module
-    from deft_controls_sdk.link import McuState
-
     class _FakeHub:
         port = "COM5"
         is_streaming = True
@@ -268,9 +304,7 @@ def test_observe_blocks_plant_commands_until_enable_control(server, monkeypatch)
             pass
 
     fake = _FakeHub()
-    monkeypatch.setattr(
-        app_module.ControlsPcbHub, "connect", staticmethod(lambda port, **kw: fake)
-    )
+    _install_fake_proxy_connect(monkeypatch, fake)
     state, base = server
     state.connect("COM5", mode="observe")
     status, data = _post(base, "/api/mcu_state", {"state": 0})
@@ -381,12 +415,65 @@ def test_unknown_route_is_404(server) -> None:
 # -- AppState in isolation (double-connect guard, locking) -----------------------------
 
 
+def test_connect_refuses_while_peer_owns_com(server, monkeypatch) -> None:
+    """Dashboard must not HostProxy.connect over a live CDC owner — follow
+    state.json instead of colliding on the COM port."""
+    state, base = server
+    # Fresh peer publish in the shared session dir.
+    state.telemetry.set_connected(True, port="COM5")
+    state.telemetry.flush(timeout_s=1.0)
+    assert state.peer_com_owner() is not None
+
+    called = {"n": 0}
+
+    def _boom(cls, port, **kwargs):
+        called["n"] += 1
+        raise AssertionError("HostProxy.connect must not run while peer owns COM")
+
+    import deft_controls_sdk.debug_dashboard.app as app_module
+
+    monkeypatch.setattr(app_module.HostProxy, "connect", classmethod(_boom))
+    status, data = _post(base, "/api/connect", {"port": "COM5"})
+    assert status == 400
+    assert "already owned" in data["error"]
+    assert called["n"] == 0
+    assert state.connected is False
+
+
+def test_connect_allowed_when_peer_state_is_stale(server, monkeypatch) -> None:
+    """Abandoned state.json (crashed peer) must not block Connect forever."""
+    import deft_controls_sdk.debug_dashboard.app as app_module
+
+    state, base = server
+    sp = state.telemetry.state_path
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(
+        json.dumps(
+            {
+                "connected": True,
+                "port": "COM5",
+                "updated_at": time.time() - (app_module.PEER_OWNER_MAX_AGE_S + 1.0),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert state.peer_com_owner() is None
+    fake = _TeleopFakeHub()
+    _install_fake_proxy_connect(monkeypatch, fake)
+    status, data = _post(base, "/api/connect", {"port": "COM5"})
+    assert status == 200
+    assert data == {"ok": True}
+    assert state.connected is True
+
+
 def test_app_state_rejects_double_connect_via_lock(monkeypatch) -> None:
     """Two rapid Connect clicks must not open two Connections — the second
     caller must see 'already connected', not silently replace the first."""
     import deft_controls_sdk.debug_dashboard.app as app_module
 
     class _FakeHub:
+        is_streaming = True
+
         def __init__(self, port):
             self.port = port
 
@@ -400,7 +487,7 @@ def test_app_state_rejects_double_connect_via_lock(monkeypatch) -> None:
             pass
 
         def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
-            pass
+            self.plant_apply = bool(enable)
 
         def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
@@ -408,10 +495,18 @@ def test_app_state_rejects_double_connect_via_lock(monkeypatch) -> None:
         def close(self):
             pass
 
-    def fake_connect(port, *, baud=None, telemetry=None):
-        return _FakeHub(port)
+    def _connect_fresh(cls, port, **kwargs):
+        fake = _FakeHub(port)
+        fake.send_once = lambda: None
+        fake.set_led = lambda *a, **k: None
+        fake.stop_streaming = lambda: None
+        fake.plant_apply = False
+        fake.start_streaming(auto_soft_kill=False)
+        fake.set_mcu_state(McuState.NORMAL, send=False)
+        fake.set_plant_apply(False, send=True)
+        return HostProxy(fake, owns_hub=True, listen_pdu=False)
 
-    monkeypatch.setattr(app_module.ControlsPcbHub, "connect", staticmethod(fake_connect))
+    monkeypatch.setattr(app_module.HostProxy, "connect", classmethod(_connect_fresh))
 
     state = app_module.AppState(persist_telemetry=False)
     state.connect("COM5")
@@ -484,10 +579,8 @@ class _TeleopFakeHub:
 
 
 def _connect_fake_teleop_hub(monkeypatch, state, base):
-    import deft_controls_sdk.debug_dashboard.app as app_module
-
     fake = _TeleopFakeHub()
-    monkeypatch.setattr(app_module.ControlsPcbHub, "connect", staticmethod(lambda port, **kw: fake))
+    _install_fake_proxy_connect(monkeypatch, fake)
     state.connect("COM5", mode="control")
     return fake
 
