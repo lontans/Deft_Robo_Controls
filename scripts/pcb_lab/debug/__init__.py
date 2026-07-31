@@ -4,6 +4,7 @@
     python -m pcb_lab.debug --port COM5 show --cfg
     python -m pcb_lab.debug --port COM5 show --pcb
     python -m pcb_lab.debug --port COM5 set --cfg
+    python -m pcb_lab.debug test                 # Assembly workshop
     python -m pcb_lab.debug test --bandwidth
     python -m pcb_lab.debug test --actuators|--led|--servo|--pdu-link
 

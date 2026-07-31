@@ -1,11 +1,25 @@
-"""Actuator prove — ``mode=debug`` discover / CFG / RobStride cal (no timing floors)."""
+"""Actuator prove — ``mode=debug`` discover / CFG / cal + plant motion.
+
+Discover / CFG / RobStride cal use debug lanes. Movement uses plant CMDH via
+``ActuatorAction`` (joint vs wheel gain kinds). No timing floors.
+"""
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from typing import Dict, Iterable, List, Sequence, Tuple
+import time
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from deft_controls_sdk.actions import ActuatorAction
+from deft_controls_sdk.config import (
+    ActuatorKind,
+    ActuatorProfile,
+    Assembly,
+    kind_for_component,
+    single_profile,
+    yam_product_assembly,
+)  # ActuatorProfile used when overriding section kind
 from deft_controls_sdk.debug.discover import (
     DEFAULT_ID_RANGE,
     parse_bus_list,
@@ -13,6 +27,7 @@ from deft_controls_sdk.debug.discover import (
     summarize_queued,
 )
 from deft_controls_sdk.host_proxy import HostProxy
+from deft_controls_sdk.link import McuState
 
 from .proto import protocol_name
 from .show import format_cfg_table
@@ -26,18 +41,21 @@ def _hex_ids(ids: Iterable[int]) -> List[str]:
     return [_hex_id(i) for i in ids]
 
 
-def _connect_debug(args: argparse.Namespace) -> HostProxy:
+def _connect_debug(args: argparse.Namespace) -> tuple[HostProxy, Assembly]:
     stream_hz = float(getattr(args, "stream_hz", 200.0))
     tel = getattr(args, "telemetry_hz", None)
     telemetry_hz = float(tel) if tel is not None else stream_hz
-    return HostProxy.connect(
+    assembly = yam_product_assembly()
+    proxy = HostProxy.connect(
         getattr(args, "port", None),
         stream_hz=stream_hz,
         telemetry_hz=telemetry_hz,
         idle_first=True,
         listen_pdu=bool(getattr(args, "listen_pdu", False)),
         mode="debug",
+        profile=assembly.to_demux_profile(),
     )
+    return proxy, assembly
 
 
 def _prompt(msg: str, default: str = "") -> str:
@@ -56,6 +74,13 @@ def _prompt_yn(msg: str, *, default: bool = False) -> bool:
     if not ans:
         return default
     return ans in ("y", "yes")
+
+
+def _prompt_float(msg: str, default: float) -> Optional[float]:
+    raw = _prompt(msg, f"{default:g}")
+    if not raw:
+        return None
+    return float(raw)
 
 
 def _show_cfg(proxy: HostProxy, *, only_enabled: bool = False) -> None:
@@ -200,16 +225,349 @@ def _cfg_hint(proxy: HostProxy) -> None:
     )
 
 
+# -- plant motion (CMDH via ActuatorAction) ------------------------------------
+
+
+def parse_single_target(target: str) -> ActuatorProfile:
+    """Parse ``single:SLOT:PROTO:MOTOR:BUS[:kind]`` into ``single_profile``."""
+    parts = [p.strip() for p in str(target).split(":")]
+    if len(parts) < 5 or parts[0].lower() != "single":
+        raise ValueError(
+            "single target form: single:SLOT:PROTO:MOTOR:BUS[:joint|wheel] "
+            "(e.g. single:22:robstride:0x70:5:wheel)"
+        )
+    slot = int(parts[1], 0)
+    proto = parts[2]
+    motor_id = int(parts[3], 0)
+    bus = int(parts[4], 0)
+    kind: ActuatorKind = "joint"
+    if len(parts) >= 6 and parts[5]:
+        k = parts[5].lower()
+        if k not in ("joint", "wheel"):
+            raise ValueError(f"kind must be joint|wheel, got {parts[5]!r}")
+        kind = k  # type: ignore[assignment]
+    return single_profile(
+        slot, protocol=proto, motor_id=motor_id, bus=bus, kind=kind
+    )
+
+
+def resolve_motion_target(
+    proxy: HostProxy,
+    target: str,
+    *,
+    kind: Optional[ActuatorKind] = None,
+    assembly: Optional[Assembly] = None,
+) -> ActuatorAction:
+    """Build an ``ActuatorAction`` from assembly section, single, or slot.
+
+    Examples: ``left_arm``, ``base``, ``22``, ``slot:22``,
+    ``single:22:robstride:0x70:5:wheel``.
+    """
+    raw = str(target).strip()
+    if not raw:
+        raise ValueError("empty motion target")
+    lower = raw.lower()
+    if lower.startswith("single:"):
+        prof = parse_single_target(raw)
+        return ActuatorAction.from_actuator_profile(proxy, prof)
+    if lower.startswith("slot:"):
+        slot = int(lower.split(":", 1)[1].strip(), 0)
+        k: ActuatorKind = kind if kind is not None else "joint"
+        return ActuatorAction.from_slots(proxy, (slot,), name=f"slot_{slot}", kind=k)
+    try:
+        slot = int(raw, 0)
+    except ValueError:
+        slot = None
+    if slot is not None:
+        k = kind if kind is not None else "joint"
+        return ActuatorAction.from_slots(proxy, (slot,), name=f"slot_{slot}", kind=k)
+    if assembly is not None and raw in assembly.actuators:
+        prof = assembly.actuator(raw)
+        if kind is not None and kind != prof.kind:
+            from deft_controls_sdk.config import ActuatorProfile as AP
+
+            prof = AP(name=prof.name, slots=prof.slots, kind=kind, cfg=prof.cfg)
+        return ActuatorAction.from_actuator_profile(proxy, prof)
+    return ActuatorAction(
+        proxy,
+        proxy.profile,
+        raw,
+        kind=kind if kind is not None else kind_for_component(raw),
+    )
+
+
+def ensure_plant_control(proxy: HostProxy, *, enable: bool = True) -> None:
+    """Arm or disarm plant apply (required for motors to track desires)."""
+    proxy.hub.set_mcu_state(McuState.NORMAL, send=False)
+    proxy.hub.set_plant_apply(bool(enable), send=False)
+    proxy.send_once()
+
+
+def apply_hold(
+    proxy: HostProxy,
+    action: ActuatorAction,
+    positions: Sequence[float],
+    *,
+    hold_s: float = 1.0,
+    kp: Optional[float] = None,
+    kd: Optional[float] = None,
+    enable_control: bool = True,
+) -> None:
+    """Hold positions on ``action`` (kind defaults unless kp/kd set)."""
+    if enable_control:
+        ensure_plant_control(proxy, enable=True)
+    action.hold(positions, kp=kp, kd=kd, send=False)
+    proxy.send_once()
+    if hold_s > 0:
+        time.sleep(float(hold_s))
+
+
+def apply_step(
+    proxy: HostProxy,
+    action: ActuatorAction,
+    *,
+    index: int = 0,
+    delta: float = 0.05,
+    hold_s: float = 1.0,
+    kp: Optional[float] = None,
+    kd: Optional[float] = None,
+    enable_control: bool = True,
+) -> List[float]:
+    """Step one index in the group by ``delta`` rad from FB (or 0)."""
+    if enable_control:
+        ensure_plant_control(proxy, enable=True)
+    pos = action.nudge(index=index, delta=delta, kp=kp, kd=kd, send=False)
+    proxy.send_once()
+    if hold_s > 0:
+        time.sleep(float(hold_s))
+    return pos
+
+
+def apply_blank(proxy: HostProxy, action: ActuatorAction, *, send: bool = True) -> None:
+    action.blank(send=False)
+    if send:
+        proxy.send_once()
+
+
+def _prompt_kind(default: ActuatorKind) -> ActuatorKind:
+    raw = _prompt("kind (joint|wheel)", default).strip().lower()
+    if raw in ("joint", "j"):
+        return "joint"
+    if raw in ("wheel", "w"):
+        return "wheel"
+    return default
+
+
+def _print_action_fb(action: ActuatorAction) -> None:
+    pos = action.positions()
+    print(
+        f"  {action.name}  kind={action.kind}  slots={list(action.slots)}  "
+        f"fb={pos if pos is not None else '(no FB yet)'}"
+    )
+
+
+def _motion_hold_menu(proxy: HostProxy, assembly: Assembly) -> None:
+    known = ", ".join(sorted(assembly.actuators))
+    target = _prompt(
+        f"target (section: {known} | slot N | single:SLOT:PROTO:MOTOR:BUS[:kind])",
+        "base",
+    )
+    if not target:
+        return
+    default_kind: ActuatorKind = (
+        "wheel"
+        if target.strip().lower() in ("base", "base_product")
+        or target.strip().isdigit()
+        or target.strip().lower().startswith("single:")
+        else kind_for_component(target)
+    )
+    kind = None
+    if not target.strip().lower().startswith("single:"):
+        kind = _prompt_kind(default_kind)
+    try:
+        action = resolve_motion_target(
+            proxy, target, kind=kind, assembly=assembly
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"target: {exc}", file=sys.stderr)
+        return
+    _print_action_fb(action)
+    n = len(action.slots)
+    fb = action.positions()
+    default_pos = "fb" if fb is not None else ",".join(["0"] * n)
+    pos_s = _prompt(f"positions ({n} floats, or 'fb')", default_pos)
+    if not pos_s:
+        return
+    if pos_s.strip().lower() == "fb":
+        if fb is None:
+            print("no feedback yet — enter numeric positions", file=sys.stderr)
+            return
+        positions = list(fb)
+    else:
+        parts = [p.strip() for p in pos_s.replace(" ", ",").split(",") if p.strip()]
+        if len(parts) == 1 and n > 1:
+            positions = [float(parts[0])] * n
+        else:
+            positions = [float(p) for p in parts]
+    hold_s = _prompt_float("hold seconds", 2.0)
+    if hold_s is None:
+        return
+    ov = _prompt_yn("override kp/kd (else kind defaults)", default=False)
+    kp = kd = None
+    if ov:
+        kp = _prompt_float("kp", 20.0 if action.kind == "wheel" else 40.0)
+        kd = _prompt_float("kd", 1.0 if action.kind == "wheel" else 2.5)
+        if kp is None or kd is None:
+            return
+    print(
+        f"\nhold  target={action.name}  kind={action.kind}  slots={list(action.slots)}  "
+        f"plant_apply=ON  hold_s={hold_s:g}"
+    )
+    if not _prompt_yn("proceed (motors will move)", default=False):
+        print("cancelled")
+        return
+    apply_hold(proxy, action, positions, hold_s=hold_s, kp=kp, kd=kd)
+    _print_action_fb(action)
+
+
+def _motion_step_menu(proxy: HostProxy, assembly: Assembly) -> None:
+    target = _prompt("target (section | slot N | single:…)", "22")
+    if not target:
+        return
+    default_kind: ActuatorKind = (
+        "wheel"
+        if target.strip().lower() in ("base", "base_product")
+        or target.strip().isdigit()
+        else kind_for_component(target)
+    )
+    kind = None if target.strip().lower().startswith("single:") else _prompt_kind(
+        default_kind
+    )
+    try:
+        action = resolve_motion_target(
+            proxy, target, kind=kind, assembly=assembly
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"target: {exc}", file=sys.stderr)
+        return
+    _print_action_fb(action)
+    idx = int(_prompt("index within group (0-based)", "0") or "0")
+    delta = _prompt_float("delta rad", 0.05)
+    if delta is None:
+        return
+    hold_s = _prompt_float("hold seconds", 1.0)
+    if hold_s is None:
+        return
+    print(
+        f"\nnudge  target={action.name}  kind={action.kind}  index={idx}  "
+        f"delta={delta:g}  plant_apply=ON"
+    )
+    if not _prompt_yn("proceed (motors will move)", default=False):
+        print("cancelled")
+        return
+    pos = apply_step(proxy, action, index=idx, delta=delta, hold_s=hold_s)
+    print(f"  commanded={pos}")
+    _print_action_fb(action)
+
+
+def _motion_blank_menu(proxy: HostProxy, assembly: Assembly) -> None:
+    known = ", ".join(sorted(assembly.actuators))
+    target = _prompt(f"target to blank ({known} | slot N)", "base")
+    if not target:
+        return
+    try:
+        action = resolve_motion_target(proxy, target, assembly=assembly)
+    except Exception as exc:  # noqa: BLE001
+        print(f"target: {exc}", file=sys.stderr)
+        return
+    print(f"\nblank  target={action.name}  slots={list(action.slots)}")
+    if not _prompt_yn("proceed", default=True):
+        print("cancelled")
+        return
+    apply_blank(proxy, action)
+    print("blanked (zero desires). Use observe (menu 10) to clear plant_apply.")
+
+
+def _motion_fb_menu(proxy: HostProxy, assembly: Assembly) -> None:
+    known = ", ".join(sorted(assembly.actuators))
+    target = _prompt(f"target ({known} | slot N | all)", "all")
+    if not target:
+        return
+    if target.strip().lower() == "all":
+        for name in sorted(assembly.actuators):
+            action = resolve_motion_target(proxy, name, assembly=assembly)
+            _print_action_fb(action)
+        return
+    try:
+        action = resolve_motion_target(proxy, target, assembly=assembly)
+    except Exception as exc:  # noqa: BLE001
+        print(f"target: {exc}", file=sys.stderr)
+        return
+    _print_action_fb(action)
+
+
+def _cfg_apply_single_menu(proxy: HostProxy) -> None:
+    """Build single_profile and RAM-apply CFG (optional persist)."""
+    target = _prompt(
+        "single:SLOT:PROTO:MOTOR:BUS[:kind]",
+        "single:22:robstride:0x70:5:wheel",
+    )
+    if not target:
+        return
+    try:
+        prof = parse_single_target(target)
+        row = prof.as_cfg_row()
+    except Exception as exc:  # noqa: BLE001
+        print(f"single: {exc}", file=sys.stderr)
+        return
+    persist = _prompt_yn("persist to NVM (flash SAVE)", default=False)
+    print(f"\ncfg_set_slot  {row}  persist={persist}")
+    if not _prompt_yn("proceed", default=False):
+        print("cancelled")
+        return
+    resp = proxy.hub.debug.cfg_set_slot(**row, persist=persist)
+    print(json.dumps(resp, indent=2, default=str))
+
+
+def _motion_observe_menu(proxy: HostProxy) -> None:
+    """plant_apply off — stop mounting desires (safe observe)."""
+    print("observe: plant_apply=OFF (desires not mounted)")
+    ensure_plant_control(proxy, enable=False)
+    print("ok")
+
+
 def run_actuators_test(args: argparse.Namespace) -> int:
-    print("test --actuators  mode=debug  (functional only — no ack_lag/fb_hz gates)")
-    with _connect_debug(args) as proxy:
+    """Entry for ``test --actuators`` — discover / CFG / motion menu.
+
+    Full Assembly workshop is bare ``pcb_lab.debug test`` (see ``workshop.py``).
+    """
+    print(
+        "test --actuators  mode=debug  "
+        "(CFG/discover/cal + plant motion via ActuatorAction; no timing floors)"
+    )
+    print(
+        "note: connect uses idle_first (plant_apply off). "
+        "Motion menus arm plant_apply after confirm. "
+        "For Assembly workshop (profiles / NVM nudge / operate): "
+        "run bare ``test`` (no --actuators)."
+    )
+    proxy, assembly = _connect_debug(args)
+    with proxy:
         while True:
             print(
-                "\n  1) show CFG table\n"
+                "\n  --- identity / device ---\n"
+                "  1) show CFG table\n"
                 "  2) show enabled CFG only\n"
                 "  3) discover (multi-bus / multi-protocol)\n"
                 "  4) calibrate robstride (encoder cal)\n"
                 "  5) CFG enabled hint (JSON)\n"
+                "  11) CFG apply single_profile (RAM / optional NVM)\n"
+                "  --- plant motion (CMDH) ---\n"
+                "  6) hold (section / slot / single:…)\n"
+                "  7) nudge one joint/slot (+delta rad)\n"
+                "  8) blank group/slot desires\n"
+                "  9) show FB positions\n"
+                "  10) observe (plant_apply OFF)\n"
                 "  q) quit"
             )
             choice = _prompt("choice", "q").lower()
@@ -226,6 +584,18 @@ def run_actuators_test(args: argparse.Namespace) -> int:
                     _calibrate_robstride_menu(proxy)
                 elif choice in ("5", "hint"):
                     _cfg_hint(proxy)
+                elif choice in ("6", "hold", "h"):
+                    _motion_hold_menu(proxy, assembly)
+                elif choice in ("7", "step", "s", "nudge"):
+                    _motion_step_menu(proxy, assembly)
+                elif choice in ("8", "blank", "b"):
+                    _motion_blank_menu(proxy, assembly)
+                elif choice in ("9", "fb", "pos"):
+                    _motion_fb_menu(proxy, assembly)
+                elif choice in ("10", "observe", "o"):
+                    _motion_observe_menu(proxy)
+                elif choice in ("11", "cfg_single"):
+                    _cfg_apply_single_menu(proxy)
                 else:
                     print(f"unknown choice {choice!r}")
             except Exception as exc:  # noqa: BLE001

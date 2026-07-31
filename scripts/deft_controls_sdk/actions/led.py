@@ -17,14 +17,15 @@ from deft_controls_sdk.link import (
     LedDesire,
 )
 
+from .plant import PlantAction
 from .sink import LedSink
 
 
-class LedAction:
+class LedAction(PlantAction):
     """Board LED strip commands via plant ``LedDesire``."""
 
     def __init__(self, sink: LedSink) -> None:
-        self._sink = sink
+        super().__init__(sink)
 
     def set(
         self,

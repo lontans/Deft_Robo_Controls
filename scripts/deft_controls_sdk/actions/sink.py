@@ -1,4 +1,4 @@
-"""PlantSink — minimal protocol for plant desire TX + feedback readback."""
+"""PlantSink — minimal protocols for plant desire TX + feedback readback."""
 from __future__ import annotations
 
 from typing import Mapping, Optional, Protocol, runtime_checkable
@@ -8,7 +8,7 @@ from deft_controls_sdk.link import ActuatorDesire, FeedbackImage, LedDesire, Ser
 
 @runtime_checkable
 class PlantSink(Protocol):
-    """HostProxy and ControlsPcbHub both satisfy this for ComponentAction."""
+    """HostProxy and ControlsPcbHub both satisfy this for ActuatorAction."""
 
     def set_actuators(
         self, desires: Mapping[int, ActuatorDesire], *, send: bool = False

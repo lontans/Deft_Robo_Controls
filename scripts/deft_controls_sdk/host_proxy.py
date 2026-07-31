@@ -1,12 +1,13 @@
 """HostProxy — platform demux on top of ControlsPcbHub.
 
-One COM owner. Apps (pcb_lab, vbeta, i2rt bridge) talk in *components*
+One COM owner. Apps (pcb_lab, vbeta, i2rt bridge) talk in profile *components*
 (left_arm, base, …), not raw slot indexes. Does not import vbeta.
 
 Demux is **not** runtime auto-detect. Two layers decide where packets go:
 
 1. **Profile (``config.Profile``, at HostProxy construction)** — name → slots.
-   ``proxy.component("left_arm")`` returns ``actions.ComponentAction``.
+   ``proxy.actuators("left_arm")`` / ``proxy.component(...)`` returns
+   ``actions.ActuatorAction``.
 2. **CFG (MCU flash, via hub.debug / ensure_*_cfg)** — each slot's
    ``{bus, protocol, motor_id, master_id, enabled}``.
 
@@ -19,7 +20,12 @@ from __future__ import annotations
 import time
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
-from deft_controls_sdk.actions import ComponentAction, ComponentView, LedAction, ServoAction
+from deft_controls_sdk.actions import (
+    ActuatorAction,
+    LedAction,
+    PduLinkAction,
+    ServoAction,
+)
 from deft_controls_sdk.config import (
     BASE_DRIVE_SLOTS,
     BASE_SLOTS,
@@ -41,12 +47,11 @@ from deft_controls_sdk.link.api_types import infer_effective_led
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, DEFAULT_BAUD
 
 __all__ = [
+    "ActuatorAction",
     "BASE_DRIVE_SLOTS",
     "BASE_SLOTS",
     "BASE_STEER_SLOTS",
     "BENCH_BASE_SLOTS",
-    "ComponentAction",
-    "ComponentView",
     "HostProxy",
     "LEFT_ARM_SLOTS",
     "LIFT_SLOT",
@@ -200,15 +205,22 @@ class HostProxy:
     def profile(self) -> Profile:
         return self._profile
 
-    def component(self, name: str) -> ComponentAction:
-        """Named plant component — shared ``actions.ComponentAction`` type."""
-        return ComponentAction(self, self._profile, name)
+    def actuators(self, name: str) -> ActuatorAction:
+        """Named profile actuator group — ``actions.ActuatorAction``."""
+        return ActuatorAction(self, self._profile, name)
+
+    def component(self, name: str) -> ActuatorAction:
+        """Alias of :meth:`actuators` (profile demux name → slot group)."""
+        return self.actuators(name)
 
     def led(self) -> LedAction:
         return LedAction(self)
 
     def servo(self) -> ServoAction:
         return ServoAction(self)
+
+    def pdu_link(self) -> PduLinkAction:
+        return PduLinkAction(self)
 
     def close(self) -> None:
         if self._closed:

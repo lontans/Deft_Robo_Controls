@@ -122,16 +122,16 @@ Soft MEMRMP into system memory is unreliable here; option-byte boot is the suppo
 
 ```python
 from deft_controls_sdk import ControlsPcbHub, HostProxy, ActuatorDesire
-from deft_controls_sdk.actions import ComponentAction
+from deft_controls_sdk.actions import ActuatorAction
 from deft_controls_sdk.config import yam_product_profile
 
 # Plant / bandwidth — no debug-lanes frame
 with ControlsPcbHub.connect("COM5", mode="bandwidth") as hub:
     hub.start_streaming(hz=200.0)
 
-# Named plant motion (shared ComponentAction; proxy or hub sink)
+# Named plant motion (shared ActuatorAction; proxy or hub sink)
 with HostProxy.connect("COM5", mode="bandwidth") as proxy:
-    proxy.component("left_arm").hold([0.0] * 7, kp=8.0, kd=0.5)
+    proxy.actuators("left_arm").hold([0.0] * 7, kp=8.0, kd=0.5)
 
 # Debug — debug_lanes + hub.debug.*
 with ControlsPcbHub.connect("COM5", mode="debug") as hub:
@@ -140,7 +140,7 @@ with ControlsPcbHub.connect("COM5", mode="debug") as hub:
 
 - One COM owner; prefer `send=False` while streaming.
 - Plant top-level on hub; `hub.debug` requires `mode="debug"`; `hub.telemetry` = FB cache.
-- **actions** = plant behaviour (`ComponentAction` / LED / servo); **config** = profiles & identity; **debug** = board RPC (may call actions for normal behaviour).
+- **actions** = plant behaviour (`ActuatorAction` / LED / servo / PDU link); **config** = profiles & identity; **debug** = board RPC (may call actions for normal behaviour).
 - Flash host **and** firmware together after a layout bump.
 
 Package layout: `actions/` · `config/` · `debug/` · `telemetry/` · `link/` · façades `ControlsPcbHub` / `HostProxy`; lab = `pcb_lab/`.
