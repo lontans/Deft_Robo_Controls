@@ -127,8 +127,9 @@ void diag_stale_host_watchdog(void)
 	if (g_probe_in_progress || g_rs2_probe_pending)
 		return;
 
+	/* Stale host while a bench lease is held — drop RS2 and DM the same way. */
 	if (!host_link_command_is_fresh(DIAG_HOST_STALE_MS)) {
-		if (g_dm_session_active)
+		if (g_dm_session_active || g_rs2_session_active)
 			plant_diag_release_actuator_can();
 	}
 }

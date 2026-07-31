@@ -10,13 +10,14 @@ Pillars:
 Facades:
     ControlsPcbHub — board USB (slots, hub.debug, telemetry)
     HostProxy      — profile demux over hub (preferred plant API)
-    vbeta/         — YAM drivers on HostProxy
 
-    from deft_controls_sdk import HostProxy, ControlsPcbHub, ActuatorDesire
-    from deft_controls_sdk.actions import ActuatorAction
-    from deft_controls_sdk.config import yam_product_profile
+    from deft_controls_sdk import HostProxy
+    # connect(mode=..., armed=False) → arm_plant() → command → disarm_plant()
 
-Lab app (outside this package): ``python -m pcb_lab``
+Product YAM drivers live in parent deft_vbeta — not in this package.
+
+Lab CLI (outside this package): ``python -m pcb_lab`` / ``python -m pcb_lab.debug``.
+Notebooks import this package — not pcb_lab helpers.
 
 Canonical docs: docs/host-contract.md, docs/integration.md.
 """

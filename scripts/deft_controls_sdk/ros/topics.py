@@ -1,7 +1,7 @@
 """Topic name constants + QoS helpers for ``ControlsPcbHostNode``.
 
-Namespaced by profile *component* name (``left_arm``, ``base``, …), not bus
-number — matches ``HostProxy.actuators(name)`` / ``docs/host-contract.md``.
+Namespaced by product *section* name (``left_arm``, ``base_wheel_1``, …), not
+bus number — matches ``HostProxy.set_section`` / ``docs/integration.md``.
 
 Name constants have no ``rclpy`` dependency; the QoS helpers import ``rclpy``
 lazily so importing this module alone still works without ROS installed.

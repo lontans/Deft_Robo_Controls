@@ -1,10 +1,11 @@
-"""CFG / NVM identity helpers — pure checks over ``cfg_get_table`` rows.
+"""CFG identity helpers — pure checks over live ``cfg_get_table`` rows.
 
-Used by the Assembly workshop nudge gate; dashboard / ROS can reuse the same
-predicates without importing the suite TUI.
+These compare a profile to the **live RAM table**, not flash. There is no
+dirty bit on the wire; use ``hub.debug.cfg_load_nvm`` if you need RAM = flash.
 """
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -28,7 +29,7 @@ def cfg_row_matches(
     *,
     require_enabled: bool = True,
 ) -> bool:
-    """True when live NVM/RAM CFG matches an expected ``as_cfg_row`` dict."""
+    """True when live RAM CFG matches an expected ``as_cfg_row`` dict."""
     if live is None:
         return False
     if require_enabled and not bool(live.get("enabled", False)):
@@ -48,7 +49,7 @@ def profile_cfg_status(
     profile: "ActuatorProfile",
     table: Sequence[Optional[Mapping[str, Any]]],
 ) -> List[Tuple[int, bool, str]]:
-    """Per-slot match status for ``profile.as_cfg_rows()`` against live table.
+    """Per-slot match status for ``profile.as_cfg_rows()`` against live RAM table.
 
     Returns ``(slot, ok, detail)``. Slots without a profile cfg entry are
     reported as ``ok=False`` with detail ``no_profile_cfg`` (operator must
@@ -95,17 +96,31 @@ def profile_cfg_status(
     return out
 
 
-def profile_in_nvm(
+def profile_in_table(
     profile: "ActuatorProfile",
     table: Sequence[Optional[Mapping[str, Any]]],
 ) -> bool:
-    """True when every profile slot has CFG and matches live (enabled)."""
+    """True when every profile CFG row matches the live RAM table (enabled)."""
     status = profile_cfg_status(profile, table)
     if not status:
         return False
     if not profile.as_cfg_rows():
         return False
     return all(ok for _, ok, _ in status)
+
+
+def profile_in_nvm(
+    profile: "ActuatorProfile",
+    table: Sequence[Optional[Mapping[str, Any]]],
+) -> bool:
+    """Deprecated alias of :func:`profile_in_table` (live RAM, not flash)."""
+    warnings.warn(
+        "profile_in_nvm is deprecated; use profile_in_table "
+        "(compares live RAM CFG, not flash NVM)",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return profile_in_table(profile, table)
 
 
 def format_slot_cfg_lines(
@@ -136,5 +151,6 @@ __all__ = [
     "format_slot_cfg_lines",
     "profile_cfg_status",
     "profile_in_nvm",
+    "profile_in_table",
     "table_by_slot",
 ]

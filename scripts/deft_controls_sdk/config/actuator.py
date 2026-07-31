@@ -1,7 +1,8 @@
-"""Actuator CFG row builders + plant gain kinds (identity / defaults).
+"""Actuator CFG row builders + optional teleop gain helpers.
 
-CFG rows are applied via ``hub.debug.cfg_*`` wire RPC. Gain kinds (``joint`` /
-``wheel``) are host teleop defaults for ``ActuatorAction.hold`` — not NVM.
+CFG rows are applied via ``hub.debug.cfg_*`` wire RPC (identity only).
+``joint`` / ``wheel`` gain kinds are host teleop sugar (``TeleopEngine`` /
+suite prompts) — not NVM and not part of ``ActuatorProfile`` / ``ActuatorAction``.
 """
 from __future__ import annotations
 
@@ -55,9 +56,13 @@ DEFAULT_WHEEL_TORQUE = 0.0
 COMPONENT_ACTUATOR_KIND: Dict[str, ActuatorKind] = {
     "left_arm": "joint",
     "right_arm": "joint",
-    "lift": "joint",
+    "torso": "joint",
+    "lift": "joint",  # bench alias of torso
     "base": "wheel",
     "base_product": "wheel",
+    "base_wheel_1": "wheel",
+    "base_wheel_2": "wheel",
+    "base_wheel_3": "wheel",
 }
 
 
@@ -91,6 +96,41 @@ def gains_for_kind(kind: ActuatorKind) -> ActuatorGains:
     raise ValueError(f"unknown ActuatorKind {kind!r}; use joint|wheel")
 
 
+# Neutral hold defaults when ``ActuatorAction.hold`` omits kp/kd (bringup-safe).
+DEFAULT_HOLD_KP = DEFAULT_WHEEL_KP
+DEFAULT_HOLD_KD = DEFAULT_WHEEL_KD
+DEFAULT_HOLD_TORQUE = 0.0
+
+
+def resolve_hold_gains(
+    n: int,
+    *,
+    kp: float | Sequence[float] | None = None,
+    kd: float | Sequence[float] | None = None,
+    torque: float | Sequence[float] | None = None,
+) -> Tuple[Tuple[float, ...], Tuple[float, ...], Tuple[float, ...]]:
+    """Broadcast hold gains — no joint/wheel kind. Pass kp/kd for product teleop."""
+
+    def _vec(
+        override: float | Sequence[float] | None,
+        default_scalar: float,
+    ) -> Tuple[float, ...]:
+        if override is None:
+            return tuple(float(default_scalar) for _ in range(n))
+        if isinstance(override, (int, float)):
+            return tuple(float(override) for _ in range(n))
+        out = tuple(float(x) for x in override)
+        if len(out) != n:
+            raise ValueError(f"expected {n} gain values, got {len(out)}")
+        return out
+
+    return (
+        _vec(kp, DEFAULT_HOLD_KP),
+        _vec(kd, DEFAULT_HOLD_KD),
+        _vec(torque, DEFAULT_HOLD_TORQUE),
+    )
+
+
 def resolve_gain_vectors(
     kind: ActuatorKind,
     n: int,
@@ -99,7 +139,7 @@ def resolve_gain_vectors(
     kd: float | Sequence[float] | None = None,
     torque: float | Sequence[float] | None = None,
 ) -> Tuple[Tuple[float, ...], Tuple[float, ...], Tuple[float, ...]]:
-    """Broadcast scalars or pad arm tables to length ``n`` for a hold."""
+    """Teleop helper: broadcast scalars or pad arm tables by ``joint``/``wheel`` kind."""
     gains = gains_for_kind(kind)
 
     def _vec(
@@ -222,6 +262,9 @@ __all__ = [
     "DEFAULT_DRIVE_KD",
     "DEFAULT_JOINT_KD",
     "DEFAULT_JOINT_KP",
+    "DEFAULT_HOLD_KD",
+    "DEFAULT_HOLD_KP",
+    "DEFAULT_HOLD_TORQUE",
     "DEFAULT_JOINT_TORQUE",
     "DEFAULT_STEER_KD",
     "DEFAULT_STEER_KP",
@@ -244,6 +287,7 @@ __all__ = [
     "gains_for_kind",
     "kind_for_component",
     "resolve_gain_vectors",
+    "resolve_hold_gains",
     "slots_by_bus",
     "yam_left_arm_rows",
     "yam_product_rows",

@@ -1,9 +1,8 @@
 """Teleop cruise engine — general plant action (not suite-specific).
 
 Host-side slew: engage a target and ramp held ``ActuatorDesire`` /
-``ServoDesire`` at a bounded cruise rate. Used by the pcb_lab Assembly
-workshop; ``debug_dashboard.teleop`` remains a parallel copy until the
-dashboard is switched to import from here.
+``ServoDesire`` at a bounded cruise rate. Shared by board verify,
+``debug_dashboard``, and notebook helpers via ``make_teleop_engine``.
 
 Ranges/gains mirror bench-verified constants (arm clear ranges, RS/DM base).
 Slots without live-verified ranges stay ``verified=False`` (gates target
@@ -36,8 +35,7 @@ from deft_controls_sdk.config.servo import NECK_PITCH_DXL_ID, NECK_YAW_DXL_ID
 from deft_controls_sdk.link import ActuatorDesire, ServoDesire
 from deft_controls_sdk.link.exchange import parse_servo_feedback
 
-# Left-arm clear envelope — keep in sync with ``vbeta/yam_bench_clear_left.py``
-# (imported from config-layer constants here to avoid ``vbeta`` package __init__).
+# Left-arm clear envelope — keep in sync with ``config/yam_bench_clear_left.py``.
 ARM_LEFT_LO = (
     -1.4621,
     -4.5929,

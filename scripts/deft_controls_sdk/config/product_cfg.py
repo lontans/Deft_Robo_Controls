@@ -1,11 +1,15 @@
-"""Apply / verify YAM product actuator CFG (RAM)."""
+"""Apply / verify static YAM product actuator CFG (RAM).
+
+Platform truth for product teleop — HostProxy may call these; product
+drivers (deft_vbeta) must not invent alternate slot maps.
+"""
 from __future__ import annotations
 
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Dict, Iterator, List, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Sequence, Tuple
 
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT
-from deft_controls_sdk.vbeta.slots import yam_left_arm_rows, yam_product_rows
+
+from .actuator import yam_left_arm_rows, yam_product_rows
 
 if TYPE_CHECKING:
     from deft_controls_sdk import ControlsPcbHub
@@ -50,20 +54,6 @@ def table_matches_yam_left(table: Sequence) -> bool:
     return _table_matches(table, yam_left_arm_rows())
 
 
-@contextmanager
-def pause_plant_stream(hub: "ControlsPcbHub") -> Iterator[None]:
-    """Pause plant TX/FB drain around CFG / DEBUG exchange_raw calls.
-
-    Canonical implementation: ``deft_controls_sdk.debug.stream_pause``.
-    """
-    from deft_controls_sdk.debug.stream_pause import (
-        pause_plant_stream as _pause,
-    )
-
-    with _pause(hub):
-        yield
-
-
 def _apply_rows(
     hub: "ControlsPcbHub",
     expect: Sequence[Tuple[int, bool, int, int, int]],
@@ -73,6 +63,8 @@ def _apply_rows(
     persist: bool,
     quiet: bool,
 ) -> Dict[int, List[int]]:
+    from deft_controls_sdk.debug.stream_pause import pause_plant_stream
+
     with pause_plant_stream(hub):
         table = hub.debug.cfg_get_table()
         matches = _table_matches(table, expect)
@@ -112,7 +104,7 @@ def ensure_yam_product_cfg(
     persist: bool = False,
     quiet: bool = False,
 ) -> Dict[int, List[int]]:
-    """RAM-apply full YAM product CFG if needed. Slot 20 (lift) stays disabled."""
+    """RAM-apply full YAM product CFG if needed. Slot 20 (torso) stays disabled."""
     return _apply_rows(
         hub,
         yam_product_rows(),
@@ -139,3 +131,11 @@ def ensure_yam_left_arm_cfg(
         persist=persist,
         quiet=quiet,
     )
+
+
+__all__ = [
+    "ensure_yam_left_arm_cfg",
+    "ensure_yam_product_cfg",
+    "table_matches_yam",
+    "table_matches_yam_left",
+]

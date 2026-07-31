@@ -4,6 +4,8 @@ from __future__ import annotations
 import io
 from contextlib import redirect_stdout
 
+import pytest
+
 from deft_controls_sdk.link.exchange.wire_layout import (
     LINK_MODE_ALIASES,
     STM32_MODE_BANDWIDTH,
@@ -30,20 +32,23 @@ def test_parser_board_subcommands() -> None:
         "flash",
         "images",
         "build",
-        "doctor",
-        "inventory",
+        "debug",
     ):
-        args = p.parse_args([name])
+        args = p.parse_args([name] if name != "debug" else ["debug", "--", "show"])
         assert args._cmd == name
-    inv = p.parse_args(["inventory", "--preset", "bench", "--buses", "1"])
-    assert inv.preset == "bench"
-    assert inv.buses == "1"
     args = p.parse_args(["show", "defaults"])
     assert args._cmd == "show"
     assert args.show_what == "defaults"
     args = p.parse_args(["--port", "COM5"])
     assert args.cmd is None
     assert args.port == "COM5"
+
+
+def test_parser_rejects_peripheral_cmds() -> None:
+    p = _build_parser()
+    for name in ("inventory", "doctor", "continuous", "hold", "step", "blank", "demux"):
+        with pytest.raises(SystemExit):
+            p.parse_args([name])
 
 
 def test_help_exits_zero() -> None:
@@ -68,14 +73,3 @@ def test_list_images_shape() -> None:
     rows = list_firmware_images(repo_root())
     assert {r["config"] for r in rows} == {"Release", "Debug"}
     assert all("elf" in r for r in rows)
-
-
-def test_legacy_component_cmds_removed_from_cli() -> None:
-    import pytest
-
-    p = _build_parser()
-    for name in ("hold", "step", "blank", "demux"):
-        with pytest.raises(SystemExit):
-            p.parse_args([name])
-    args = p.parse_args(["doctor"])
-    assert args._cmd == "doctor"

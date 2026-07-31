@@ -1,4 +1,4 @@
-"""Offline tests for deft_controls_sdk.vbeta.yam_limits (no COM)."""
+"""Offline tests for deft_controls_sdk.config.yam_limits (no COM)."""
 from __future__ import annotations
 
 import os
@@ -7,18 +7,12 @@ import sys
 import numpy as np
 import pytest
 
-_PCB_LAB = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_SCRIPTS = os.path.abspath(os.path.join(_PCB_LAB, ".."))
-_LEGACY = os.path.join(_PCB_LAB, "legacy")
-for _p in (_LEGACY, _SCRIPTS):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
 
-from deft_controls_sdk.vbeta.slots import yam_left_arm_rows, yam_product_rows  # noqa: E402
-from deft_controls_sdk.vbeta.yam_limits import (  # noqa: E402
+from deft_controls_sdk.config import (  # noqa: E402
     ARM_JOINT_COUNT,
-    J7_MOTOR_HI,
-    J7_MOTOR_LO,
     SOFT_MARGIN,
     apply_clear_inset,
     clamp_q7,
@@ -27,8 +21,13 @@ from deft_controls_sdk.vbeta.yam_limits import (  # noqa: E402
     plan_hold_q7,
     plan_jog_q7,
     soft_limits_q7,
+    yam_left_arm_rows,
+    yam_product_rows,
 )
-from vbeta_smoke_lib import plan_arm_smoke_target  # noqa: E402
+from deft_controls_sdk.config.yam_limits import J7_MOTOR_HI, J7_MOTOR_LO  # noqa: E402
+import deft_controls_sdk.config.yam_limits as yam_limits_mod  # noqa: E402
+
+
 def test_load_table_has_14_joints_and_mirror():
     table = load_yam_limits()
     assert set(table.keys()) == set(range(1, 15))
@@ -77,33 +76,19 @@ def test_plan_hold_and_jog():
     assert isinstance(note, str)
 
 
-def test_plan_arm_smoke_modes_offline():
-    q = np.zeros(7, dtype=np.float32)
-    q[1] = 1.0
-    q[2] = 1.0
-    q[6] = 1.5
-    th, nh = plan_arm_smoke_target(q, side="left", mode="hold")
-    tj, _nj = plan_arm_smoke_target(q, side="left", mode="jog", joint=0, delta=0.05)
-    assert "hold" in nh
-    assert float(tj[0]) == pytest.approx(float(th[0]) + 0.05, abs=1e-3)
-
-
 def test_apply_clear_inset_conservative():
     lo, hi = apply_clear_inset(-1.0, 1.0, inset=0.08, home=0.0)
     assert lo == pytest.approx(-0.92, abs=1e-6)
     assert hi == pytest.approx(0.92, abs=1e-6)
-    # Narrow span → inset capped at 10% of half-span
     lo2, hi2 = apply_clear_inset(0.0, 0.2, inset=0.08, home=0.1)
     assert hi2 - lo2 < 0.2
     assert lo2 < 0.1 < hi2
 
 
 def test_bench_clear_tightens_left(monkeypatch: pytest.MonkeyPatch):
-    import deft_controls_sdk.vbeta.yam_limits as mod
-
     blo = np.array([-0.2, 0.9, 0.9, -0.1, -0.1, -0.1, 1.4], dtype=np.float64)
     bhi = np.array([0.2, 1.1, 1.1, 0.1, 0.1, 0.1, 1.6], dtype=np.float64)
-    monkeypatch.setattr(mod, "load_bench_clear_left", lambda **_k: (blo, bhi))
+    monkeypatch.setattr(yam_limits_mod, "load_bench_clear_left", lambda **_k: (blo, bhi))
     lo, hi = soft_limits_q7("left", use_bench_clear=True)
     np.testing.assert_allclose(lo, blo)
     np.testing.assert_allclose(hi, bhi)

@@ -43,6 +43,23 @@ def test_positions_from_command_rejects_unknown_shape():
         bridges.positions_from_command(SimpleNamespace(foo=1))
 
 
+def test_desires_from_mit_command_roundtrip():
+    from deft_controls_sdk.link import ActuatorDesire
+
+    desires = [
+        ActuatorDesire(position=0.1, velocity=0.2, kp=3.0, kd=0.4, torque=0.5),
+        ActuatorDesire(position=1.0, velocity=0.0, kp=10.0, kd=1.0, torque=0.0),
+    ]
+    packed = bridges.mit_command_from_desires(desires)
+    assert len(packed) == 10
+    out = bridges.desires_from_mit_command(SimpleNamespace(data=packed), n=2)
+    assert out[0].position == pytest.approx(0.1)
+    assert out[0].kp == pytest.approx(3.0)
+    assert out[1].velocity == pytest.approx(0.0)
+    with pytest.raises(ValueError, match="expects 10"):
+        bridges.desires_from_mit_command(SimpleNamespace(data=packed[:5]), n=2)
+
+
 def test_joint_names():
     assert bridges.joint_names(3) == ["j0", "j1", "j2"]
 
@@ -68,6 +85,6 @@ def test_neck_positions_requires_two_values():
 
 def test_topic_names():
     assert topics.command_topic("left_arm") == "actuators/left_arm/command"
-    assert topics.state_topic("base") == "actuators/base/state"
+    assert topics.state_topic("base_wheel_1") == "actuators/base_wheel_1/state"
     assert topics.LED_COMMAND_TOPIC == "led/command"
     assert topics.SERVO_NECK_COMMAND_TOPIC == "servo/neck/command"

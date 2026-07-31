@@ -1,11 +1,12 @@
 """ros — optional ROS 2 adapter: construct HostProxy as a node.
 
-    ROS topics/services -> ros/ node adapter -> HostProxy -> Hub -> USB CDC
+    ROS topics/services -> ros/ node adapter -> HostProxy.set_section -> Hub
 
 ``ControlsPcbHostNode`` (``node.py``) owns exactly one ``HostProxy`` (one COM
-owner) and maps topic traffic onto ``actions.ActuatorAction`` /
-``actions.LedAction`` / ``actions.ServoAction`` — the same plant behaviour
-``pcb_lab`` and ``vbeta`` use. It does not invent a parallel motion engine.
+owner). Actuator commands are full MIT section payloads
+(``Float64MultiArray`` length ``5 * n`` interleaved ``[p, v, kp, kd, τ] * n``)
+demuxed via ``HostProxy.set_section`` — same contract as in-process deft_vbeta.
+This package does not invent gains or a parallel motion engine.
 
 Default connect ``mode="bandwidth"`` (timing-safe teleop). CFG / discover /
 cal stay off this node: use ``mode="debug"`` via ``pcb_lab`` / ``hub.debug``

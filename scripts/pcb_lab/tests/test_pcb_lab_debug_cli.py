@@ -10,8 +10,8 @@ if _SCRIPTS not in sys.path:
 
 import pytest
 
-from pcb_lab.debug.proto import parse_protocol, protocol_name
-from pcb_lab.debug.show import format_cfg_table
+from deft_controls_sdk.debug.suite.proto import parse_protocol, protocol_name
+from deft_controls_sdk.debug.suite.show import format_cfg_table
 
 
 def test_parse_protocol_names():
@@ -49,15 +49,16 @@ def test_format_cfg_table_enabled_only():
     assert protocol_name(1) == "robstride"
 
 
-def test_debug_parser_scan():
-    from pcb_lab.debug.cli import _build_parser
+def test_debug_parser_rejects_scan():
+    """Board USB scan lives on ``python -m pcb_lab scan``, not debug suite."""
+    from deft_controls_sdk.debug.suite.cli import _build_parser
 
-    args = _build_parser().parse_args(["scan"])
-    assert args._cmd == "scan"
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["scan"])
 
 
 def test_debug_parser_show_flags():
-    from pcb_lab.debug.cli import _build_parser
+    from deft_controls_sdk.debug.suite.cli import _build_parser
 
     args = _build_parser().parse_args(
         ["--port", "COM5", "show", "--cfg", "--bandwidth", "--json"]
@@ -68,14 +69,14 @@ def test_debug_parser_show_flags():
 
 
 def test_debug_parser_show_rejects_status():
-    from pcb_lab.debug.cli import _build_parser
+    from deft_controls_sdk.debug.suite.cli import _build_parser
 
     with pytest.raises(SystemExit):
         _build_parser().parse_args(["show", "--status"])
 
 
 def test_debug_parser_set_oneshot():
-    from pcb_lab.debug.cli import _build_parser
+    from deft_controls_sdk.debug.suite.cli import _build_parser
 
     args = _build_parser().parse_args(
         [
@@ -98,7 +99,7 @@ def test_debug_parser_set_oneshot():
 
 
 def test_debug_parser_test_bandwidth_knobs():
-    from pcb_lab.debug.cli import _build_parser
+    from deft_controls_sdk.debug.suite.cli import _build_parser
 
     args = _build_parser().parse_args(
         [
@@ -151,58 +152,100 @@ def test_debug_parser_test_bandwidth_knobs():
 
 
 def test_debug_parser_test_domains_mutex():
-    from pcb_lab.debug.cli import _build_parser
+    from deft_controls_sdk.debug.suite.cli import _build_parser
 
     p = _build_parser()
-    for flag in ("--actuators", "--led", "--servo", "--pdu-link"):
+    for flag in (
+        "--inventory",
+        "--actuators",
+        "--led",
+        "--servos",
+        "--servo",
+        "--pdu-link",
+    ):
         args = p.parse_args(["test", flag])
         assert args._cmd == "test"
     with pytest.raises(SystemExit):
         p.parse_args(["test", "--bandwidth", "--actuators"])
+    with pytest.raises(SystemExit):
+        p.parse_args(["test", "--inventory", "--actuators"])
 
 
-def test_bare_test_enters_workshop(monkeypatch):
-    """Bare ``test`` (no domain flag) runs Assembly workshop, not --actuators."""
+def test_bare_test_and_peripheral_scopes(monkeypatch):
+    """Bare ``test`` → board; flags open filtered peripheral menus."""
     from deft_controls_sdk.debug.suite import test_cmd as tc
 
     called = {}
 
-    def _fake_workshop(args):
-        called["workshop"] = True
-        called["assembly"] = getattr(args, "assembly", None)
+    def _fake_board(args):
+        called["board"] = True
         return 0
 
-    def _fake_actuators(args):
+    def _fake_act(args):
         called["actuators"] = True
         return 0
 
-    monkeypatch.setattr(tc, "_run_workshop", _fake_workshop)
-    monkeypatch.setattr(tc, "_run_actuators", _fake_actuators)
+    def _fake_servos(args):
+        called["servos"] = True
+        return 0
 
-    from pcb_lab.debug.cli import _build_parser
+    def _fake_led(args):
+        called["led"] = True
+        return 0
+
+    monkeypatch.setattr(tc, "_run_board_verify", _fake_board)
+    monkeypatch.setattr(tc, "_run_actuators", _fake_act)
+    monkeypatch.setattr(tc, "_run_servos", _fake_servos)
+    monkeypatch.setattr(tc, "_run_led", _fake_led)
+
+    from deft_controls_sdk.debug.suite.cli import _build_parser
 
     bare = _build_parser().parse_args(["test", "--assembly", "bench"])
     assert tc._domain_from_args(bare) is None
     assert tc.run_test(bare) == 0
-    assert called.get("workshop") is True
-    assert called.get("actuators") is None
-    assert called["assembly"] == "bench"
+    assert called.get("board") is True
 
     act = _build_parser().parse_args(["test", "--actuators"])
     assert tc._domain_from_args(act) == "actuators"
     assert tc.run_test(act) == 0
     assert called.get("actuators") is True
 
+    srv = _build_parser().parse_args(["test", "--servos"])
+    assert tc._domain_from_args(srv) == "servos"
+    assert tc.run_test(srv) == 0
+    assert called.get("servos") is True
+
+    # --servo is an alias of --servos
+    srv2 = _build_parser().parse_args(["test", "--servo"])
+    assert tc._domain_from_args(srv2) == "servos"
+
+    led = _build_parser().parse_args(["test", "--led"])
+    assert tc._domain_from_args(led) == "led"
+    assert tc.run_test(led) == 0
+    assert called.get("led") is True
+
 
 def test_debug_parser_test_led_preset():
-    from pcb_lab.debug.cli import _build_parser
+    from deft_controls_sdk.debug.suite.cli import _build_parser
 
     args = _build_parser().parse_args(
-        ["test", "--led", "--preset", "pdu", "--hold-s", "0.5"]
+        ["test", "--led", "--led-preset", "pdu", "--hold-s", "0.5"]
     )
     assert args.led is True
-    assert args.preset == "pdu"
+    assert args.led_preset == "pdu"
     assert args.hold_s == 0.5
+
+
+def test_debug_parser_test_inventory():
+    from deft_controls_sdk.debug.suite.cli import _build_parser
+
+    args = _build_parser().parse_args(
+        ["test", "--inventory", "--preset", "bench", "--buses", "5,6", "--no-tui"]
+    )
+    assert args.inventory is True
+    assert args.preset == "bench"
+    assert args.buses == "5,6"
+    assert args.no_tui is True
 
 
 def test_parse_slot_list_optional():
@@ -305,22 +348,19 @@ def test_actuators_resolve_motion_target_and_hold():
     )
 
     arm = ta.resolve_motion_target(proxy, "left_arm", assembly=asm)  # type: ignore[arg-type]
-    assert arm.kind == "joint"
     assert arm.slots == LEFT_ARM_SLOTS
     assert arm.actuator_profile is not None
 
-    wheel = ta.resolve_motion_target(proxy, "22", kind="wheel")  # type: ignore[arg-type]
-    assert wheel.kind == "wheel"
+    wheel = ta.resolve_motion_target(proxy, "22")  # type: ignore[arg-type]
     assert wheel.slots == (22,)
 
     single = ta.resolve_motion_target(
-        proxy, "single:22:robstride:0x70:5:wheel"
+        proxy, "single:22:robstride:0x70:5"
     )  # type: ignore[arg-type]
-    assert single.kind == "wheel"
     assert single.actuator_profile is not None
     assert single.actuator_profile.as_cfg_row()["protocol"] == PROTO_ROBSTRIDE
 
-    ta.apply_hold(proxy, wheel, [0.3], hold_s=0.0)  # type: ignore[arg-type]
+    ta.apply_hold(proxy, wheel, [0.3], hold_s=0.0, kp=DEFAULT_WHEEL_KP)  # type: ignore[arg-type]
     assert hub._plant_apply is True
     assert hub._connection.actuators[22].position == pytest.approx(0.3)
     assert hub._connection.actuators[22].kp == pytest.approx(DEFAULT_WHEEL_KP)
@@ -345,6 +385,17 @@ def test_actuators_parse_bus_and_protocol_queue():
     assert parse_protocol_queue("rs,dm") == ["robstride", "damiao"]
     with pytest.raises(ValueError):
         parse_protocol_queue("zeroerr")
+
+
+def test_as_hex_formats_discover_ids():
+    from deft_controls_sdk.debug import as_hex, hex_id
+
+    assert hex_id(112) == "0x70"
+    assert as_hex([112, 116, 117]) == ["0x70", "0x74", "0x75"]
+    assert as_hex({5: [112, 116], 6: [117]}) == {
+        5: ["0x70", "0x74"],
+        6: ["0x75"],
+    }
 
 
 def test_discover_queued_order_and_summary(monkeypatch):
@@ -383,14 +434,14 @@ def test_discover_queued_order_and_summary(monkeypatch):
     assert any(r.get("ids") == ["0x70"] for r in summary["results"])
 
 
-def test_suite_test_modules_avoid_vbeta_imports():
-    """Guard: suite test_* must not pull product vbeta helpers."""
+def test_suite_modules_avoid_vbeta_imports():
+    """Guard: debug.suite must not import removed nested vbeta package."""
     import ast
     from pathlib import Path
 
     suite = Path(_SCRIPTS) / "deft_controls_sdk" / "debug" / "suite"
     offenders = []
-    for path in sorted(suite.glob("test_*.py")):
+    for path in sorted(suite.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

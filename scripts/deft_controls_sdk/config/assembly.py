@@ -9,17 +9,20 @@ from .typed_profiles import (
     ActuatorProfile,
     ServoProfile,
     arm_profile,
+    base_wheel_profile,
     lift_profile,
     neck_profile,
+    torso_profile,
     wheel_profile,
 )
 
 
 @dataclass(frozen=True)
 class Assembly:
-    """Named composition of typed profiles (pcb_lab identity).
+    """Named composition of typed profiles for HostProxy / controls.
 
-    Actuator profiles and servo profiles stay separate — never one mixed map.
+    SDK config substrate (not pcb_lab-owned). Actuator and servo profiles
+    stay separate — never one mixed map.
     """
 
     name: str
@@ -90,14 +93,16 @@ class Assembly:
 
 
 def yam_product_assembly() -> Assembly:
-    """Stock YAM product: arms + base + lift actuators, neck servos."""
+    """Stock YAM product demux: arms + base wheels + torso, neck servos."""
     return Assembly(
         name="yam_product",
         actuators={
             "left_arm": arm_profile("yam", side="left"),
             "right_arm": arm_profile("yam", side="right"),
-            "base": wheel_profile(name="base", bench=False),
-            "lift": lift_profile(),
+            "base_wheel_1": base_wheel_profile(1),
+            "base_wheel_2": base_wheel_profile(2),
+            "base_wheel_3": base_wheel_profile(3),
+            "torso": torso_profile(),
         },
         servos={"neck": neck_profile()},
     )

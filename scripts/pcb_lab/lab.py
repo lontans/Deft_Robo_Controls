@@ -1,11 +1,11 @@
-"""pcb_lab — board toolkit + thin HostProxy doctor / debug forwarders.
+"""pcb_lab — board-only toolkit (USB / Soft-DFU / bandwidth health).
 
 Bare invocation opens an interactive menu:
 
     python -m pcb_lab
     python -m pcb_lab -h
 
-Board commands (no HostProxy demux):
+Board commands (no peripherals / no CFG demux):
 
     python -m pcb_lab scan
     python -m pcb_lab status
@@ -15,21 +15,15 @@ Board commands (no HostProxy demux):
     python -m pcb_lab build [--config Debug]
     python -m pcb_lab show defaults|health
 
-Also:
+Peripheral / CFG / motion proves live under ``pcb_lab.debug`` only:
 
-    python -m pcb_lab inventory          # TUI: pick ID ranges + probe hardware
-    python -m pcb_lab inventory --preset bench --buses 5,6
-    python -m pcb_lab doctor
-    python -m pcb_lab continuous -- --duration 20
-    python -m pcb_lab debug -- show --pcb
-
-Component hold/step/blank/demux live under ``pcb_lab.debug`` / HostProxy APIs,
-not as top-level ``pcb_lab`` subcommands.
+    python -m pcb_lab.debug --port COM5 show --pcb
+    python -m pcb_lab.debug --port COM5 set --cfg
+    python -m pcb_lab.debug --port COM5 test
 """
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from typing import List, Optional, Sequence
@@ -39,24 +33,28 @@ from deft_controls_sdk.config import (
     Assembly,
     Profile,
     assembly_from_name,
-    yam_product_assembly,
-    yam_product_profile,
 )
 from deft_controls_sdk.host_proxy import HostProxy
 
 
-def _resolve_assembly(name: str) -> Assembly:
-    try:
-        return assembly_from_name(name)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-
-
 class LabRobot:
-    """Lab façade over HostProxy — plant motion via ``actions.ActuatorAction``.
+    """Optional thin script façade over ``HostProxy`` + assembly demux.
 
-    Prefer ``assembly=`` (typed actuator/servo profiles). ``profile=`` remains
-    the HostProxy demux shim.
+    Prefer the SDK in notebooks::
+
+        from deft_controls_sdk import HostProxy
+        from deft_controls_sdk.actions import ActuatorAction
+        from deft_controls_sdk.config import assembly_from_name
+
+        with HostProxy.connect(
+            "COM5", mode="debug", armed=False, assembly=assembly_from_name("bench")
+        ) as proxy:
+            proxy.arm_plant()
+            view = proxy.actuators("base")  # or ActuatorAction.from_slots(...)
+            view.hold(send=True)  # sample FB → stay put
+            proxy.disarm_plant()
+
+    ``LabRobot`` only wraps that pattern. Not a controls / teleop stack.
     """
 
     def __init__(
@@ -76,27 +74,22 @@ class LabRobot:
         profile: Optional[Profile] = None,
         assembly: Optional[Assembly] = None,
         stream_hz: float = 200.0,
-        apply_yam_cfg: bool = False,
         listen_pdu: bool = False,
         mode: str = "bandwidth",
+        assembly_name: str = "bench",
     ) -> "LabRobot":
-        if apply_yam_cfg and mode == "bandwidth":
-            mode = "debug"
-        if assembly is not None:
-            demux = assembly.to_demux_profile()
-        else:
-            demux = profile or yam_product_profile()
-            if profile is None:
-                assembly = yam_product_assembly()
+        if assembly is None and profile is None:
+            assembly = assembly_from_name(assembly_name)
         proxy = HostProxy.connect(
             port,
             stream_hz=stream_hz,
-            profile=demux,
-            apply_yam_cfg=apply_yam_cfg,
+            assembly=assembly,
+            profile=profile,
+            armed=False,
             listen_pdu=listen_pdu,
             mode=mode,
         )
-        return cls(proxy, assembly=assembly)
+        return cls(proxy, assembly=assembly or proxy.assembly)
 
     def close(self) -> None:
         self.proxy.close()
@@ -144,6 +137,7 @@ class LabRobot:
         return self.proxy.pdu_link()
 
     def doctor(self) -> dict:
+        """HostProxy health snapshot (scripts / notebooks)."""
         return self.proxy.doctor()
 
     def hold(
@@ -155,14 +149,8 @@ class LabRobot:
         kd: Optional[float] = None,
         hold_s: float = 2.0,
     ) -> None:
-        """Hold a profile group; gains default from actuator kind (joint/wheel)."""
+        """Thin wrapper: ``actuators(component).hold`` + sleep. Prefer ``proxy.actions``."""
         view = self.actuators(component)
-        if positions is None:
-            fb = view.positions()
-            if fb is None:
-                positions = [0.0] * len(view.slots)
-            else:
-                positions = fb
         view.hold(positions, kp=kp, kd=kd, send=False)
         self.proxy.send_once()
         time.sleep(max(0.0, float(hold_s)))
@@ -177,12 +165,9 @@ class LabRobot:
         kd: Optional[float] = None,
         hold_s: float = 1.0,
     ) -> None:
+        """Thin wrapper around ``ActuatorAction.nudge``."""
         view = self.actuators(component)
-        pos = view.positions() or [0.0] * len(view.slots)
-        if not (0 <= joint < len(pos)):
-            raise ValueError(f"joint {joint} out of range 0..{len(pos) - 1}")
-        pos[joint] = float(pos[joint]) + float(delta)
-        view.hold(pos, kp=kp, kd=kd, send=False)
+        view.nudge(index=joint, delta=delta, kp=kp, kd=kd, send=False)
         self.proxy.send_once()
         time.sleep(max(0.0, float(hold_s)))
 
@@ -195,8 +180,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pcb_lab",
         description=(
-            "Controls PCB board toolkit. Run with no subcommand for an "
-            "interactive menu; use -h for all commands."
+            "Controls PCB board toolkit (USB / Soft-DFU / bandwidth). "
+            "Peripherals + CFG: python -m pcb_lab.debug {show|set|test}."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -205,9 +190,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "  python -m pcb_lab scan\n"
             "  python -m pcb_lab status --port COM5\n"
             "  python -m pcb_lab flash\n"
-            "  python -m pcb_lab inventory --preset bench\n"
-            "  python -m pcb_lab show defaults\n"
             "  python -m pcb_lab.debug --port COM5 show --pcb\n"
+            "  python -m pcb_lab.debug --port COM5 test\n"
         ),
     )
     p.add_argument("--port", default=None, help="CDC COM port (auto if omitted)")
@@ -217,19 +201,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="USB serial when multiple boards are present",
     )
     p.add_argument(
-        "--cfg",
-        action="store_true",
-        help="(doctor) apply YAM product CFG before snapshot",
-    )
-    p.add_argument(
-        "--profile",
-        default="product",
-        help="(doctor) HostProxy demux profile: product | bench",
-    )
-    p.add_argument(
         "--listen-pdu",
         action="store_true",
-        help="honor PDB kill bytes (soft-kill + LED); default off for bench",
+        help="honor PDB kill bytes during status (default off for bench)",
     )
     sub = p.add_subparsers(dest="cmd", required=False)
 
@@ -292,40 +266,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sh.set_defaults(_cmd="show")
 
-    d = sub.add_parser(
-        "doctor",
-        help="HostProxy health snapshot (CFG needs mode=debug)",
-    )
-    d.set_defaults(_cmd="doctor")
-
-    inv = sub.add_parser(
-        "inventory",
-        help="probe connected hardware (actuators / servos / PDU)",
-    )
-    from deft_controls_sdk.debug.suite.inventory_cmd import add_inventory_arguments
-
-    add_inventory_arguments(inv)
-    inv.set_defaults(_cmd="inventory")
-
-    c = sub.add_parser(
-        "continuous",
-        help="HostProxy bench cruise (forwards to pcb_lab.continuous)",
-    )
-    c.add_argument(
-        "cont_args",
-        nargs=argparse.REMAINDER,
-        help="args after -- forwarded to continuous (e.g. -- --duration 20)",
-    )
-    c.set_defaults(_cmd="continuous")
-
     dbg = sub.add_parser(
         "debug",
-        help="CFG/NVM show|set (forwards to pcb_lab.debug / suite)",
+        help="peripheral/CFG suite (forwards to pcb_lab.debug show|set|test)",
     )
     dbg.add_argument(
         "debug_args",
         nargs=argparse.REMAINDER,
-        help="args after -- e.g. -- show --cfg / -- test --bandwidth",
+        help="args after -- e.g. -- show --pcb / -- test --bandwidth",
     )
     dbg.set_defaults(_cmd="debug")
     return p
@@ -345,16 +293,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_menu(port=args.port)
 
     cmd = args._cmd
-
-    if cmd == "continuous":
-        from pcb_lab.continuous import main as cont_main
-
-        extra = list(args.cont_args or [])
-        if extra and extra[0] == "--":
-            extra = extra[1:]
-        if args.port is not None:
-            extra = ["--port", args.port, *extra]
-        return cont_main(extra)
 
     if cmd == "debug":
         from deft_controls_sdk.debug.suite import main as debug_main
@@ -404,23 +342,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             hz=float(getattr(args, "hz", 200.0)),
             listen_pdu=bool(args.listen_pdu),
         )
-
-    if cmd == "doctor":
-        asm = _resolve_assembly(args.profile)
-        with LabRobot.connect(
-            args.port,
-            assembly=asm,
-            apply_yam_cfg=bool(args.cfg),
-            listen_pdu=bool(args.listen_pdu),
-            mode="debug",
-        ) as lab:
-            print(json.dumps(lab.doctor(), indent=2))
-            return 0
-
-    if cmd == "inventory":
-        from deft_controls_sdk.debug.suite.inventory_cmd import run_inventory_cli
-
-        return run_inventory_cli(args)
 
     return 1
 

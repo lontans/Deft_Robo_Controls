@@ -104,7 +104,7 @@ def resolve_ranges(
             "actuator inventory needs ID ranges for: "
             + ", ".join(missing)
             + ". Pass ranges=…, preset='bench'|'product'|'full', or use the TUI "
-            "(python -m pcb_lab inventory). Wide defaults are intentionally not used."
+            "(python -m pcb_lab.debug test --inventory). Wide defaults are intentionally not used."
         )
     return {p: out[p] for p in protocols}
 
@@ -138,7 +138,7 @@ def _collect_servos(proxy: "HostProxy") -> dict:
         servo_connected,
         servo_connection_summary,
     )
-    from deft_controls_sdk.debug.suite.show import collect_cfg
+    from deft_controls_sdk.debug.snapshot import collect_cfg
 
     try:
         cfg = collect_cfg(proxy)

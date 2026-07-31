@@ -21,8 +21,8 @@ from typing import Any, Dict, List, Set
 from deft_controls_sdk.host_proxy import HostProxy
 from deft_controls_sdk.link.api_types import LED_MODE_IDLE_CORNFLOWER, led_mode_name
 from deft_controls_sdk.link.exchange import CFG_FLAG_LISTEN_PDU
-from deft_controls_sdk.vbeta.cfg import pause_plant_stream
-from deft_controls_sdk.vbeta.slots import (
+from deft_controls_sdk.debug.stream_pause import pause_plant_stream
+from deft_controls_sdk.config import (
     PROTO_DAMIAO,
     SERVO_MODEL_NAMES,
     SERVO_MODEL_XL330_M288,

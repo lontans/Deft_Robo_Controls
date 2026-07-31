@@ -1,4 +1,4 @@
-"""Offline preset helpers for pcb_lab.debug."""
+"""Offline preset helpers for deft_controls_sdk.debug.suite."""
 from __future__ import annotations
 
 import os
@@ -10,7 +10,7 @@ if _SCRIPTS not in sys.path:
 
 import pytest
 
-from pcb_lab.debug.presets import (
+from deft_controls_sdk.debug.suite.presets import (
     ARM_PRESETS,
     apply_actuator_preset_to_rows,
     parse_slot_list,

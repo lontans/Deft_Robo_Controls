@@ -1,14 +1,18 @@
-"""Protocol name ↔ int for CFG CLI."""
+"""Protocol name ↔ int for CFG CLI.
+
+Canonical constants: ``deft_controls_sdk.config`` (PROTO_*).
+Programmatic parse: ``config.typed_profiles.parse_protocol``.
+"""
 from __future__ import annotations
 
 from typing import Dict
 
-from deft_controls_sdk.debug import PROTO_ZEROERR
-from deft_controls_sdk.vbeta.slots import (
+from deft_controls_sdk.config import (
     PROTO_CUBEMARS,
     PROTO_DAMIAO,
     PROTO_NONE,
     PROTO_ROBSTRIDE,
+    PROTO_ZEROERR,
 )
 
 PROTO_BY_NAME: Dict[str, int] = {

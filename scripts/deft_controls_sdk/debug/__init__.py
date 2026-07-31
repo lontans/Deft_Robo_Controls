@@ -1,18 +1,25 @@
 """DebugAPI — DEBUG-mode bench ops (discover / config / calibrate), under a lease
 on the same Connection plant streaming already uses. No second serial port.
 
-    with ControlsPcbHub.connect("COM5") as hub:
+    with ControlsPcbHub.connect("COM5", mode="debug") as hub:
         hit = hub.debug.discover_robstride(bus=2)
         table = hub.debug.cfg_get_table()
 
-Plant CFG / LED / scan CLI suite (HostProxy)::
+Notebook helpers (same data the suite TUI uses)::
+
+    from deft_controls_sdk import HostProxy
+    from deft_controls_sdk.debug import (
+        as_hex, collect_cfg, pause_plant_stream, run_inventory,
+    )
+
+Plant CFG / LED CLI suite (HostProxy)::
 
     python -m deft_controls_sdk.debug.suite --port COM5 show --pcb
-    python -m pcb_lab.debug --port COM5 show --pcb   # lab alias
+    python -m pcb_lab.debug --port COM5 show --pcb   # lab CLI alias
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import config as _config
 from . import damiao as _damiao
@@ -22,8 +29,11 @@ from . import robstride as _robstride
 from . import robstride_calibrate as _robstride_calibrate
 from . import soft_dfu as _soft_dfu
 from . import zeroerr as _zeroerr
+from .discover import as_hex, hex_id
 from .inventory import run_inventory
 from .lease import lease
+from .snapshot import collect_bandwidth, collect_cfg
+from .stream_pause import pause_plant_stream
 
 if TYPE_CHECKING:
     from deft_controls_sdk.link import Connection
@@ -31,7 +41,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DebugAPI",
+    "as_hex",
+    "collect_bandwidth",
+    "collect_cfg",
+    "hex_id",
     "lease",
+    "pause_plant_stream",
     "run_inventory",
     "PROTO_ZEROERR",
     "find_cdc_port",
@@ -244,7 +259,7 @@ class DebugAPI:
 
         **Requires** ``ranges=`` or ``preset='bench'|'product'|'full'`` — no
         silent wide ID sweep. For servos + PDU as well, use
-        ``run_inventory(proxy, …)`` / ``python -m pcb_lab inventory``.
+        ``run_inventory(proxy, …)`` / ``python -m pcb_lab.debug test --inventory``.
         """
         self._require_debug("hub.debug.inventory")
         return _inventory.inventory_smoke(
@@ -264,7 +279,7 @@ class DebugAPI:
     # -- Config (CFG PDU — actuator table get/set/save) -------------------------------
 
     def cfg_get_table(self, *, timeout_s: float = 1.5) -> List[dict]:
-        """Read the MCU's actuator_table[] (paged)."""
+        """Read live RAM actuator_table[] (paged). Not a flash/persist indicator."""
         self._require_debug("hub.debug.cfg_get_table")
         return _config.fetch_table(self._connection, timeout_s=timeout_s)
 
@@ -298,10 +313,53 @@ class DebugAPI:
             timeout_s=timeout_s,
         )
 
+    def cfg_apply_table(
+        self,
+        rows: Sequence[Optional[Mapping[str, Any]]],
+        *,
+        disable_missing: bool = True,
+        timeout_s: float = 1.5,
+    ) -> List[dict]:
+        """RAM-apply a full table (blank missing slots when ``disable_missing``)."""
+        self._require_debug("hub.debug.cfg_apply_table")
+        return _config.apply_table(
+            self._connection,
+            rows,
+            disable_missing=disable_missing,
+            timeout_s=timeout_s,
+        )
+
+    def cfg_fetch_bundle(self, *, timeout_s: float = 1.5) -> Dict[str, Any]:
+        """Live RAM snapshot: ``{actuators, periph}`` (host memory; not flash)."""
+        self._require_debug("hub.debug.cfg_fetch_bundle")
+        return _config.fetch_bundle(self._connection, timeout_s=timeout_s)
+
+    def cfg_apply_bundle(
+        self,
+        bundle: Mapping[str, Any],
+        *,
+        disable_missing: bool = True,
+        timeout_s: float = 1.5,
+    ) -> Dict[str, Any]:
+        """RAM-apply actuators+periph bundle (no flash SAVE)."""
+        self._require_debug("hub.debug.cfg_apply_bundle")
+        return _config.apply_bundle(
+            self._connection,
+            bundle,
+            telemetry=self._telemetry,
+            disable_missing=disable_missing,
+            timeout_s=timeout_s,
+        )
+
     def cfg_save_nvm(self, *, timeout_s: float = 8.0) -> dict:
         """Flash-persist the full NVM v2 image (actuators + periph + flags)."""
         self._require_debug("hub.debug.cfg_save_nvm")
         return _config.save_nvm(self._connection, timeout_s=timeout_s)
+
+    def cfg_load_nvm(self, *, timeout_s: float = 1.5) -> dict:
+        """Reload flash → RAM (wipes unsaved RAM edits)."""
+        self._require_debug("hub.debug.cfg_load_nvm")
+        return _config.load_nvm(self._connection, timeout_s=timeout_s)
 
     def cfg_get_periph(self, *, timeout_s: float = 1.5) -> dict:
         """Read neck servos + LED defaults + listen_pdu flag (RAM)."""

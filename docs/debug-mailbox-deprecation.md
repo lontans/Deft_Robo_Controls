@@ -13,7 +13,7 @@ remains a deprecated alias.
 Parsers accept either debug lanes or the legacy mailbox on inbound frames
 (dual-path for older FW replies).
 
-**Hardware inventory:** `python -m pcb_lab inventory` (TUI or `--preset bench`)
+**Hardware inventory:** `python -m pcb_lab.debug test --inventory` (TUI or `--preset bench`)
 — actuators (DEBUG discover; **ID ranges required**) + servos + PDU wire.
 SDK: `hub.debug.inventory(preset=…)` / `run_inventory(proxy, …)`.
 

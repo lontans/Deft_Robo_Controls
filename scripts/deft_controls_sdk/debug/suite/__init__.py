@@ -2,14 +2,14 @@
 
 Canonical entry::
 
-    python -m deft_controls_sdk.debug.suite [--port COM5] scan|show|set|test …
+    python -m deft_controls_sdk.debug.suite [--port COM5] show|set|test …
+    python -m pcb_lab.debug …   # identical CLI alias
 
-Lab alias (identical argv)::
+Programmatic (notebooks): ``HostProxy`` + ``deft_controls_sdk.debug`` /
+``actions`` — not this package. Suite is interactive CLI/TUI only.
 
-    python -m pcb_lab.debug …
-
-``test`` domains own connect/mode (bandwidth vs debug). Suite tests must not
-import ``vbeta.*`` — reuse suite presets / pcb_tui / hub.debug / debug.metrics.
+``test`` domains own connect/mode (bandwidth vs debug). Suite uses
+``config`` / ``actions`` / ``HostProxy`` only — no product-driver package.
 """
 from __future__ import annotations
 

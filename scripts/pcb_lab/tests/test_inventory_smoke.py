@@ -148,12 +148,13 @@ def test_builders_default_to_debug_lanes() -> None:
 
 
 def test_inventory_cli_parser_has_preset() -> None:
-    from pcb_lab.lab import _build_parser
+    from deft_controls_sdk.debug.suite.cli import _build_parser
 
     args = _build_parser().parse_args(
-        ["inventory", "--preset", "bench", "--buses", "5,6", "--no-tui"]
+        ["test", "--inventory", "--preset", "bench", "--buses", "5,6", "--no-tui"]
     )
-    assert args._cmd == "inventory"
+    assert args._cmd == "test"
+    assert args.inventory is True
     assert args.preset == "bench"
     assert args.buses == "5,6"
     assert args.no_tui is True

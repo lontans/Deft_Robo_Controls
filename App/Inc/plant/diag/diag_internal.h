@@ -28,4 +28,3 @@ void diag_mcp_wake_sync(uint8_t motor_id, can_bus_id_t bus);
 void diag_mcp_disable_sync(uint8_t motor_id, can_bus_id_t bus);
 
 void diag_dm_clear_actuator_mirror(void);
-void diag_dm_publish_actuator_state(void);

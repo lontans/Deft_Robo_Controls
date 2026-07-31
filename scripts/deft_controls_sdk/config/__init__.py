@@ -1,11 +1,12 @@
-"""config — assembly / typed profiles, CFG row builders, firmware paths.
+"""config — assemblies / typed profiles / CFG row builders (controls substrate).
 
 Identity layers (peripheral-homogeneous)::
 
     ActuatorProfile / ServoProfile  — one family only
-    Assembly                        — composition + overlap checks (pcb_lab)
+    Assembly                        — composition + overlap checks for HostProxy
     Profile                         — actuator demux shim for HostProxy
 
+Assemblies are SDK config for controls — not pcb_lab-owned identity.
 Not plant command TX (see ``actions``) and not DEBUG wire RPC (see ``debug.config``).
 """
 from __future__ import annotations
@@ -17,6 +18,9 @@ from .actuator import (
     DEFAULT_ARM_KD,
     DEFAULT_ARM_KP,
     DEFAULT_DRIVE_KD,
+    DEFAULT_HOLD_KD,
+    DEFAULT_HOLD_KP,
+    DEFAULT_HOLD_TORQUE,
     DEFAULT_JOINT_KD,
     DEFAULT_JOINT_KP,
     DEFAULT_JOINT_TORQUE,
@@ -37,6 +41,7 @@ from .actuator import (
     gains_for_kind,
     kind_for_component,
     resolve_gain_vectors,
+    resolve_hold_gains,
     slots_by_bus,
     yam_left_arm_rows,
     yam_product_rows,
@@ -57,14 +62,20 @@ from .profile import (
     BASE_DRIVE_SLOTS,
     BASE_SLOTS,
     BASE_STEER_SLOTS,
+    BASE_WHEEL_1_SLOTS,
+    BASE_WHEEL_2_SLOTS,
+    BASE_WHEEL_3_SLOTS,
+    BASE_WHEEL_SLOTS,
     BENCH_BASE_SLOTS,
     LEFT_ARM_SLOTS,
     LIFT_SLOT,
     NECK_PITCH_SERVO_SLOT,
     NECK_YAW_SERVO_SLOT,
+    PRODUCT_ACTUATOR_SECTIONS,
     Profile,
     RIGHT_ARM_SLOTS,
     SPARE_SLOTS,
+    TORSO_SLOT,
     bench_continuous_profile,
     yam_product_profile,
 )
@@ -75,18 +86,42 @@ from .servo import (
     SERVO_MODEL_XL330_M288,
     SERVO_MODEL_XL430,
 )
+from .product_cfg import (
+    ensure_yam_left_arm_cfg,
+    ensure_yam_product_cfg,
+    table_matches_yam,
+    table_matches_yam_left,
+)
 from .typed_profiles import (
     ActuatorProfile,
     CfgSlotSpec,
     ServoEntry,
     ServoProfile,
     arm_profile,
+    base_wheel_profile,
+    cfg_specs_from_table,
+    cfg_specs_from_yam_slots,
     lift_profile,
     neck_profile,
     parse_protocol,
     parse_slots_spec,
     single_profile,
+    torso_profile,
     wheel_profile,
+)
+from . import yam_bench_clear_left
+from .yam_limits import (
+    ARM_JOINT_COUNT,
+    SOFT_MARGIN,
+    apply_clear_inset,
+    clamp_absolute,
+    clamp_delta,
+    clamp_q7,
+    limits_for_side,
+    load_yam_limits,
+    plan_hold_q7,
+    plan_jog_q7,
+    soft_limits_q7,
 )
 
 __all__ = [
@@ -97,6 +132,10 @@ __all__ = [
     "BASE_DRIVE_SLOTS",
     "BASE_SLOTS",
     "BASE_STEER_SLOTS",
+    "BASE_WHEEL_1_SLOTS",
+    "BASE_WHEEL_2_SLOTS",
+    "BASE_WHEEL_3_SLOTS",
+    "BASE_WHEEL_SLOTS",
     "BENCH_BASE_SLOTS",
     "COMPONENT_ACTUATOR_KIND",
     "CfgSlotSpec",
@@ -104,6 +143,9 @@ __all__ = [
     "DEFAULT_ARM_KP",
     "DEFAULT_BENCH_LISTEN_PDU",
     "DEFAULT_DRIVE_KD",
+    "DEFAULT_HOLD_KD",
+    "DEFAULT_HOLD_KP",
+    "DEFAULT_HOLD_TORQUE",
     "DEFAULT_JOINT_KD",
     "DEFAULT_JOINT_KP",
     "DEFAULT_JOINT_TORQUE",
@@ -122,6 +164,7 @@ __all__ = [
     "NECK_PITCH_SERVO_SLOT",
     "NECK_YAW_DXL_ID",
     "NECK_YAW_SERVO_SLOT",
+    "PRODUCT_ACTUATOR_SECTIONS",
     "PROTO_CUBEMARS",
     "PROTO_DAMIAO",
     "PROTO_NONE",
@@ -135,6 +178,7 @@ __all__ = [
     "SPARE_SLOTS",
     "ServoEntry",
     "ServoProfile",
+    "TORSO_SLOT",
     "WHEEL_GAINS",
     "arm_profile",
     "arm_slots",
@@ -142,10 +186,15 @@ __all__ = [
     "assembly_put_actuator",
     "assembly_put_servo",
     "assembly_remove_actuator",
+    "base_wheel_profile",
     "bench_continuous_assembly",
     "bench_continuous_profile",
+    "cfg_specs_from_table",
+    "cfg_specs_from_yam_slots",
     "cubemars_yam_rows",
     "default_firmware_elf",
+    "ensure_yam_left_arm_cfg",
+    "ensure_yam_product_cfg",
     "gains_for_kind",
     "kind_for_component",
     "lift_profile",
@@ -153,11 +202,27 @@ __all__ = [
     "parse_protocol",
     "parse_slots_spec",
     "resolve_gain_vectors",
+    "resolve_hold_gains",
     "single_profile",
     "slots_by_bus",
+    "table_matches_yam",
+    "table_matches_yam_left",
+    "torso_profile",
     "wheel_profile",
+    "yam_bench_clear_left",
     "yam_left_arm_rows",
     "yam_product_assembly",
     "yam_product_profile",
     "yam_product_rows",
+    "ARM_JOINT_COUNT",
+    "SOFT_MARGIN",
+    "apply_clear_inset",
+    "clamp_absolute",
+    "clamp_delta",
+    "clamp_q7",
+    "limits_for_side",
+    "load_yam_limits",
+    "plan_hold_q7",
+    "plan_jog_q7",
+    "soft_limits_q7",
 ]

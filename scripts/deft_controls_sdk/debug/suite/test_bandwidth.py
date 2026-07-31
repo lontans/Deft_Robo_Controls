@@ -2,7 +2,7 @@
 
 Interactive TUI nests under **virtual** (board CDC, treat as no motors —
 ``rx_sim`` on) vs **hardware** (live motors — ``rx_sim`` off). Both need a
-board over CDC. Hardware inventory lives at ``python -m pcb_lab inventory``.
+board over CDC. Hardware inventory: ``python -m pcb_lab.debug test --inventory``.
 
 Non-interactive: ``--virtual`` / ``--hardware``, ``--matrix``, ``--scenario``.
 """
@@ -61,7 +61,7 @@ def _hold_once(
         port,
         stream_hz=stream_hz,
         telemetry_hz=stream_hz,
-        idle_first=True,
+        armed=False,
         listen_pdu=listen_pdu,
         mode="bandwidth",
     ) as proxy:
@@ -438,7 +438,7 @@ def _bandwidth_tui(args: argparse.Namespace) -> int:
         "\nbandwidth TUI  (board CDC required)\n"
         "  virtual  — treat as no motors; rx_sim ON (USB / plant TX stress)\n"
         "  hardware — live motors; rx_sim OFF (real FDCAN / MCP SPI path)\n"
-        "  (hardware inventory: python -m pcb_lab inventory)\n"
+        "  (hardware inventory: python -m pcb_lab.debug test --inventory)\n"
     )
 
     while True:

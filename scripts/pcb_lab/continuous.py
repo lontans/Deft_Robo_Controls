@@ -1,30 +1,18 @@
-"""Continuous cruise entry — HostProxy demux + legacy cruise loop.
+"""Deprecated — product cruise is not part of pcb_lab.
 
-Living surface (tracked). Full teleop/cruise logic still lives in
-``pcb_lab/legacy/yam_continuous_all.py`` (gitignored local / Jetson sync).
-That script already owns COM via ``PcbRobotSession`` → ``HostProxy``; this
-module selects ``bench_continuous_profile()`` (base = spare slots 22–25)
-before handing off.
+Board prove: ``python -m pcb_lab`` / ``python -m pcb_lab.debug test``.
+Controls cruise / teleop: ``deft_controls_sdk.actions`` + notebooks / dashboard.
 
-Demux reminder (see ``host_proxy`` docstring):
-  Profile  → which slots a component name means (host, at connect)
-  CFG      → bus/protocol/motor_id per slot (MCU; continuous writes BASE_ROWS)
-
-Explore without motion::
-
-    python -m pcb_lab --port COM5 demux --profile bench
-    python -m pcb_lab.continuous --help
-
-Run cruise (dashboard must release COM)::
-
-    python -m pcb_lab.continuous --port COM5 --duration 20
+Legacy handoff (gitignored local script) remains loadable if present, but this
+entry is no longer wired into ``python -m pcb_lab``.
 """
 from __future__ import annotations
 
 import importlib.util
 import sys
+import warnings
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 
 _LEGACY = Path(__file__).resolve().parent / "legacy" / "yam_continuous_all.py"
@@ -34,14 +22,13 @@ def _load_legacy_main():
     if not _LEGACY.is_file():
         raise FileNotFoundError(
             f"missing {_LEGACY}\n"
-            "Restore pcb_lab/legacy/yam_continuous_all.py locally "
-            "(gitignored) before running continuous."
+            "continuous is deprecated for pcb_lab. "
+            "Use pcb_lab.debug test for HW prove, or controls scripts for cruise."
         )
     spec = importlib.util.spec_from_file_location("yam_continuous_all", _LEGACY)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {_LEGACY}")
     mod = importlib.util.module_from_spec(spec)
-    # Legacy expects scripts/ and itself on path for sibling imports.
     scripts = Path(__file__).resolve().parent.parent
     legacy_dir = _LEGACY.parent
     for p in (str(scripts), str(legacy_dir)):
@@ -53,11 +40,16 @@ def _load_legacy_main():
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    warnings.warn(
+        "pcb_lab.continuous is deprecated — not part of the board-verify surface. "
+        "Use python -m pcb_lab.debug test (HW) or deft_controls_sdk.actions (controls).",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     print(
-        "continuous → HostProxy(bench_continuous_profile) → "
-        "legacy yam_continuous_all\n"
-        "  profile.base = slots 22-25 (CFG IDs from BASE_ROWS)\n"
-        "  explore: python -m pcb_lab --port COM5 demux --profile bench",
+        "DEPRECATED: pcb_lab.continuous is not a pcb_lab entrypoint.\n"
+        "  board:  python -m pcb_lab / python -m pcb_lab.debug test\n"
+        "  cruise: deft_controls_sdk.actions (TeleopEngine / spin_jog)\n",
         flush=True,
     )
     cont_main = _load_legacy_main()

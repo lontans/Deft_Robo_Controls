@@ -1,8 +1,7 @@
-"""Board-level helpers for ``pcb_lab`` (no HostProxy demux).
+"""Board-level helpers for ``pcb_lab`` (USB / Soft-DFU / bandwidth — no peripherals).
 
 Scan / Soft-DFU / bandwidth health / build images / factory defaults.
-Component CFG / hold / step stay under ``pcb_lab doctor|hold|…`` or
-``pcb_lab.debug``.
+CFG / discover / inventory / motion: ``python -m pcb_lab.debug {show|set|test}``.
 """
 from __future__ import annotations
 
@@ -219,47 +218,26 @@ def cmd_status(
     return 0 if report.get("ok") else 1
 
 
-def cmd_doctor(
-    *,
-    port: Optional[str] = None,
-    serial: Optional[str] = None,
-    listen_pdu: bool = False,
-    stream_hz: float = 200.0,
-) -> int:
-    """HostProxy doctor (CFG attempt needs reconnect in debug — use pcb_lab.debug)."""
-    from deft_controls_sdk.debug.soft_dfu import pcb_status
-
-    report = pcb_status(
-        port=port,
-        serial=serial,
-        listen_pdu=listen_pdu,
-        stream_hz=stream_hz,
-    )
-    print(json.dumps(report, indent=2, default=str))
-    return 0
-
-
 def run_menu(*, port: Optional[str] = None) -> int:
     """Interactive menu when ``python -m pcb_lab`` is run with no subcommand."""
     items = [
         ("1", "Scan USB (CDC / DFU)", "scan"),
         ("2", "Status / health (bandwidth stream)", "status"),
-        ("3", "Inventory (actuators / servos / PDU)", "inventory"),
-        ("4", "Leave Soft-DFU (recover CDC)", "leave"),
-        ("5", "Flash firmware", "flash"),
-        ("6", "List build images", "images"),
-        ("7", "Rebuild ELF (make / CubeIDE hint)", "build"),
-        ("8", "Show factory / default CFG scaffold", "defaults"),
-        ("9", "Open debug suite help (pcb_lab.debug)", "debug_help"),
+        ("3", "Leave Soft-DFU (recover CDC)", "leave"),
+        ("4", "Flash firmware", "flash"),
+        ("5", "List build images", "images"),
+        ("6", "Rebuild ELF (make / CubeIDE hint)", "build"),
+        ("7", "Show factory / default CFG scaffold", "defaults"),
+        ("8", "Open debug suite help (pcb_lab.debug)", "debug_help"),
         ("q", "Quit", "quit"),
     ]
 
     while True:
         print()
-        print("pcb_lab - board toolkit")
+        print("pcb_lab - board toolkit (USB / Soft-DFU / bandwidth)")
         if port:
             print(f"  default --port {port}")
-        print("  (component CFG / TUI: python -m pcb_lab.debug)")
+        print("  peripherals / CFG: python -m pcb_lab.debug {show|set|test}")
         print()
         for key, label, _ in items:
             print(f"  [{key}] {label}")
@@ -277,13 +255,15 @@ def run_menu(*, port: Optional[str] = None) -> int:
             return 0
         if action == "debug_help":
             print(
-                "Debug suite (HostProxy mode=debug):\n"
+                "Peripheral / CFG suite (HostProxy mode=debug):\n"
                 "  python -m pcb_lab.debug -h\n"
                 "  python -m pcb_lab.debug --port COMx show --pcb\n"
                 "  python -m pcb_lab.debug --port COMx show --cfg\n"
-                "Inventory:\n"
-                "  python -m pcb_lab inventory\n"
-                "  python -m pcb_lab inventory --preset bench --buses 5,6"
+                "  python -m pcb_lab.debug --port COMx set --cfg\n"
+                "  python -m pcb_lab.debug --port COMx test\n"
+                "  python -m pcb_lab.debug test --inventory --preset bench --buses 5,6\n"
+                "  python -m pcb_lab.debug test --bandwidth\n"
+                "  python -m pcb_lab.debug test --actuators"
             )
             continue
 
@@ -292,31 +272,6 @@ def run_menu(*, port: Optional[str] = None) -> int:
                 rc = cmd_scan(port=port)
             elif action == "status":
                 rc = cmd_status(port=port)
-            elif action == "inventory":
-                from deft_controls_sdk.debug.suite.inventory_cmd import run_inventory_cli
-                import argparse as _ap
-
-                inv_args = _ap.Namespace(
-                    port=port,
-                    listen_pdu=False,
-                    tui=True,
-                    no_tui=False,
-                    json=False,
-                    listen_ms=40,
-                    buses=None,
-                    protocols=None,
-                    preset=None,
-                    rs_range=None,
-                    dm_range=None,
-                    no_actuators=False,
-                    no_servos=False,
-                    no_pdu=False,
-                    actuators_only=False,
-                    servos_only=False,
-                    pdu_only=False,
-                    peer=False,
-                )
-                rc = run_inventory_cli(inv_args)
             elif action == "leave":
                 rc = cmd_leave(port=port)
             elif action == "flash":
