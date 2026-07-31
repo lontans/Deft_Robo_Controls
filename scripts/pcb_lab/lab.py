@@ -34,28 +34,39 @@ import sys
 import time
 from typing import List, Optional, Sequence
 
-from deft_controls_sdk.host_proxy import (
-    HostProxy,
+from deft_controls_sdk.actions import ActuatorAction, ServoAction
+from deft_controls_sdk.config import (
+    Assembly,
     Profile,
-    bench_continuous_profile,
+    assembly_from_name,
+    yam_product_assembly,
     yam_product_profile,
 )
+from deft_controls_sdk.host_proxy import HostProxy
 
 
-def _resolve_profile(name: str) -> Profile:
-    key = (name or "product").strip().lower()
-    if key in ("product", "yam", "yam_product"):
-        return yam_product_profile()
-    if key in ("bench", "continuous", "yam_bench_continuous"):
-        return bench_continuous_profile()
-    raise SystemExit(f"unknown --profile {name!r}; use product|bench")
+def _resolve_assembly(name: str) -> Assembly:
+    try:
+        return assembly_from_name(name)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 class LabRobot:
-    """Lab façade over HostProxy — plant motion via ``actions.ComponentAction``."""
+    """Lab façade over HostProxy — plant motion via ``actions.ActuatorAction``.
 
-    def __init__(self, proxy: HostProxy) -> None:
+    Prefer ``assembly=`` (typed actuator/servo profiles). ``profile=`` remains
+    the HostProxy demux shim.
+    """
+
+    def __init__(
+        self,
+        proxy: HostProxy,
+        *,
+        assembly: Optional[Assembly] = None,
+    ) -> None:
         self.proxy = proxy
+        self.assembly = assembly
 
     @classmethod
     def connect(
@@ -63,6 +74,7 @@ class LabRobot:
         port: Optional[str] = None,
         *,
         profile: Optional[Profile] = None,
+        assembly: Optional[Assembly] = None,
         stream_hz: float = 200.0,
         apply_yam_cfg: bool = False,
         listen_pdu: bool = False,
@@ -70,15 +82,21 @@ class LabRobot:
     ) -> "LabRobot":
         if apply_yam_cfg and mode == "bandwidth":
             mode = "debug"
+        if assembly is not None:
+            demux = assembly.to_demux_profile()
+        else:
+            demux = profile or yam_product_profile()
+            if profile is None:
+                assembly = yam_product_assembly()
         proxy = HostProxy.connect(
             port,
             stream_hz=stream_hz,
-            profile=profile or yam_product_profile(),
+            profile=demux,
             apply_yam_cfg=apply_yam_cfg,
             listen_pdu=listen_pdu,
             mode=mode,
         )
-        return cls(proxy)
+        return cls(proxy, assembly=assembly)
 
     def close(self) -> None:
         self.proxy.close()
@@ -94,17 +112,36 @@ class LabRobot:
         """ControlsPcbHub escape hatch (raw slots / debug)."""
         return self.proxy.hub
 
-    def component(self, name: str):
-        """Same ``ComponentAction`` as ``proxy.component`` (shared actions type)."""
-        from deft_controls_sdk.actions import ComponentAction
+    def actuator_profile(self, name: str):
+        """Typed ``ActuatorProfile`` from the bound assembly."""
+        if self.assembly is None:
+            raise RuntimeError("LabRobot has no Assembly; pass assembly= to connect()")
+        return self.assembly.actuator(name)
 
-        return ComponentAction(self.proxy, self.proxy.profile, name)
+    def actuators(self, name: str) -> ActuatorAction:
+        """``ActuatorAction`` from assembly section when present, else demux."""
+        if self.assembly is not None and name in self.assembly.actuators:
+            return ActuatorAction.from_actuator_profile(
+                self.proxy, self.assembly.actuator(name)
+            )
+        return self.proxy.actuators(name)
+
+    def component(self, name: str) -> ActuatorAction:
+        """Alias of :meth:`actuators` (section / demux name)."""
+        return self.actuators(name)
 
     def led(self):
         return self.proxy.led()
 
-    def servo(self):
+    def servo(self, name: str = "neck") -> ServoAction:
+        if self.assembly is not None and name in self.assembly.servos:
+            return ServoAction.from_servo_profile(
+                self.proxy, self.assembly.servo(name)
+            )
         return self.proxy.servo()
+
+    def pdu_link(self):
+        return self.proxy.pdu_link()
 
     def doctor(self) -> dict:
         return self.proxy.doctor()
@@ -114,11 +151,12 @@ class LabRobot:
         component: str,
         *,
         positions: Optional[Sequence[float]] = None,
-        kp: float = 8.0,
-        kd: float = 0.5,
+        kp: Optional[float] = None,
+        kd: Optional[float] = None,
         hold_s: float = 2.0,
     ) -> None:
-        view = self.component(component)
+        """Hold a profile group; gains default from actuator kind (joint/wheel)."""
+        view = self.actuators(component)
         if positions is None:
             fb = view.positions()
             if fb is None:
@@ -135,11 +173,11 @@ class LabRobot:
         *,
         joint: int = 0,
         delta: float = 0.05,
-        kp: float = 8.0,
-        kd: float = 0.5,
+        kp: Optional[float] = None,
+        kd: Optional[float] = None,
         hold_s: float = 1.0,
     ) -> None:
-        view = self.component(component)
+        view = self.actuators(component)
         pos = view.positions() or [0.0] * len(view.slots)
         if not (0 <= joint < len(pos)):
             raise ValueError(f"joint {joint} out of range 0..{len(pos) - 1}")
@@ -368,10 +406,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
 
     if cmd == "doctor":
-        profile = _resolve_profile(args.profile)
+        asm = _resolve_assembly(args.profile)
         with LabRobot.connect(
             args.port,
-            profile=profile,
+            assembly=asm,
             apply_yam_cfg=bool(args.cfg),
             listen_pdu=bool(args.listen_pdu),
             mode="debug",

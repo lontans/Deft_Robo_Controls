@@ -12,7 +12,13 @@ _SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
-from deft_controls_sdk.actions import ComponentAction, ComponentView  # noqa: E402
+from deft_controls_sdk.actions import (  # noqa: E402
+    ActuatorAction,
+    LedAction,
+    PlantAction,
+    PduLinkAction,
+    ServoAction,
+)
 from deft_controls_sdk.config import (  # noqa: E402
     BENCH_BASE_SLOTS,
     LEFT_ARM_SLOTS,
@@ -142,12 +148,14 @@ def test_demux_report_offline():
     assert report["cfg_ok"] is True
 
 
-def test_component_hold_writes_slots():
+def test_actuator_hold_writes_slots():
     hub = _FakeHub()
     proxy = HostProxy.wrap(hub, profile=yam_product_profile())
-    view = proxy.component("left_arm")
-    assert isinstance(view, ComponentAction)
-    assert ComponentView is ComponentAction
+    view = proxy.actuators("left_arm")
+    assert isinstance(view, ActuatorAction)
+    assert isinstance(view, PlantAction)
+    assert view.kind == "joint"
+    assert proxy.component("left_arm").slots == view.slots
     view.hold([0.1 * i for i in range(7)], kp=9.0, kd=0.4, send=False)
     for i, slot in enumerate(LEFT_ARM_SLOTS):
         d = hub._connection.actuators[slot]
@@ -156,8 +164,33 @@ def test_component_hold_writes_slots():
         assert d.kd == pytest.approx(0.4)
 
 
-def test_component_action_hub_sink():
-    """Same ComponentAction type works with ControlsPcbHub-shaped sink."""
+def test_actuator_kind_defaults_joint_vs_wheel():
+    from deft_controls_sdk.config import DEFAULT_ARM_KP, DEFAULT_WHEEL_KP, DEFAULT_WHEEL_KD
+
+    hub = _FakeHub()
+    proxy = HostProxy.wrap(hub, profile=yam_product_profile())
+    arm = proxy.actuators("left_arm")
+    assert arm.kind == "joint"
+    arm.hold([0.0] * 7, send=False)
+    for i, slot in enumerate(LEFT_ARM_SLOTS):
+        assert hub._connection.actuators[slot].kp == pytest.approx(DEFAULT_ARM_KP[i])
+
+    base = proxy.actuators("base")
+    assert base.kind == "wheel"
+    base.hold([0.1] * 6, send=False)
+    for slot in yam_product_profile().slots("base"):
+        d = hub._connection.actuators[slot]
+        assert d.kp == pytest.approx(DEFAULT_WHEEL_KP)
+        assert d.kd == pytest.approx(DEFAULT_WHEEL_KD)
+
+    wheel = ActuatorAction.from_slots(proxy, (22,), name="ch5", kind="wheel")
+    assert wheel.kind == "wheel"
+    wheel.hold([0.2], send=False)
+    assert hub._connection.actuators[22].kp == pytest.approx(DEFAULT_WHEEL_KP)
+
+
+def test_actuator_action_hub_sink():
+    """Same ActuatorAction type works with ControlsPcbHub-shaped sink."""
     hub = _FakeHub()
 
     def set_actuators(desires, *, send: bool = False) -> None:
@@ -168,21 +201,43 @@ def test_component_action_hub_sink():
 
     hub.set_actuators = set_actuators  # type: ignore[method-assign]
     hub.latest_feedback = latest_feedback  # type: ignore[method-assign]
-    action = ComponentAction(hub, yam_product_profile(), "base")
+    action = ActuatorAction(hub, yam_product_profile(), "base")
     action.blank(send=False)
     assert set(hub._connection.actuators) == set(yam_product_profile().slots("base"))
 
 
-def test_lab_robot_component_matches_proxy():
+def test_actuator_from_slots_single():
+    hub = _FakeHub()
+    proxy = HostProxy.wrap(hub, profile=yam_product_profile())
+    one = ActuatorAction.from_slots(proxy, (22,), name="slot_22", kind="wheel")
+    one.hold([0.5], kp=5.0, kd=0.2, send=False)
+    assert hub._connection.actuators[22].position == pytest.approx(0.5)
+
+
+def test_action_hierarchy_siblings():
+    hub = _FakeHub()
+    proxy = HostProxy.wrap(hub, profile=yam_product_profile())
+    assert isinstance(proxy.actuators("base"), ActuatorAction)
+    assert isinstance(proxy.led(), LedAction)
+    assert isinstance(proxy.servo(), ServoAction)
+    assert isinstance(proxy.pdu_link(), PduLinkAction)
+    assert all(
+        isinstance(x, PlantAction)
+        for x in (proxy.actuators("base"), proxy.led(), proxy.servo(), proxy.pdu_link())
+    )
+
+
+def test_lab_robot_actuators_matches_proxy():
     from pcb_lab.lab import LabRobot
 
     hub = _FakeHub()
     proxy = HostProxy.wrap(hub, profile=yam_product_profile())
     lab = LabRobot(proxy)
-    a = lab.component("left_arm")
-    b = lab.proxy.component("left_arm")
-    assert type(a) is type(b) is ComponentAction
-    assert a.slots == b.slots == LEFT_ARM_SLOTS
+    a = lab.actuators("left_arm")
+    b = lab.proxy.actuators("left_arm")
+    c = lab.component("left_arm")
+    assert type(a) is type(b) is type(c) is ActuatorAction
+    assert a.slots == b.slots == c.slots == LEFT_ARM_SLOTS
 
 
 def test_telemetry_package_exports_cache():

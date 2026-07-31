@@ -24,9 +24,10 @@ python -m pcb_lab.debug --port COM5 show          # CFG table
 python -m pcb_lab.debug --port COM5 show --bandwidth
 
 # Mode-disciplined proves (suite-owned; no vbeta imports)
-python -m pcb_lab.debug test                     # picker
+python -m pcb_lab.debug test                     # Assembly workshop (default)
+python -m pcb_lab.debug test --assembly bench
 python -m pcb_lab.debug test --bandwidth
-python -m pcb_lab.debug test --actuators
+python -m pcb_lab.debug test --actuators         # narrower discover/CFG/motion
 python -m pcb_lab.debug test --led --preset idle
 python -m pcb_lab.debug test --servo
 python -m pcb_lab.debug test --pdu-link
@@ -43,9 +44,15 @@ All `test` code lives under `deft_controls_sdk.debug.suite` (`pcb_lab.debug` is 
 | Prove | Link mode | Pass gates |
 |-------|-----------|------------|
 | `--bandwidth` | **bandwidth** (dedicated connect) | `debug.metrics.measure_hold` (ack_lag / fb_hz / stm32_mode) |
-| `--actuators` / `--led` / `--servo` / `--pdu-link` | **debug** | functional / observe only — **no** timing floors |
+| bare `test` | **debug** + plant CMDH | **Assembly workshop**: edit profiles, CFG apply/persist, nudge+NVM gate, operate (`spin` / `move_arm`) |
+| `--actuators` / `--led` / `--servo` / `--pdu-link` | **debug** | functional / observe only — **no** timing floors (`--actuators` = discover/CFG/motion menu) |
 
-**Plant motion** (programmatic): `LabRobot.component("left_arm")` returns the same `actions.ComponentAction` as `HostProxy.component` — profiles live in `deft_controls_sdk.config`.
+```powershell
+python -m pcb_lab.debug --port COM5 test
+python -m pcb_lab.debug test --assembly bench --cfg-map bench
+```
+
+**Plant motion** (programmatic): prefer `LabRobot.connect(assembly=yam_product_assembly())` then `lab.actuators("left_arm")` → `ActuatorAction` from a typed `ActuatorProfile`. Cruise/jog: `actions.make_teleop_engine` / `spin_jog` / `move_arm_cruise` (dashboard can import the same later). Assemblies compose actuator/servo profiles separately (no mixed peripheral maps). HostProxy still uses the actuator demux `Profile` shim (`assembly.to_demux_profile()`).
 
 **Inventory** (what’s plugged in) is a top-level command — not under bandwidth:
 

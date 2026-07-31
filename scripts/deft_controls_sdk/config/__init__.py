@@ -1,25 +1,54 @@
-"""config — component identity, profiles, CFG row builders, firmware paths.
+"""config — assembly / typed profiles, CFG row builders, firmware paths.
+
+Identity layers (peripheral-homogeneous)::
+
+    ActuatorProfile / ServoProfile  — one family only
+    Assembly                        — composition + overlap checks (pcb_lab)
+    Profile                         — actuator demux shim for HostProxy
 
 Not plant command TX (see ``actions``) and not DEBUG wire RPC (see ``debug.config``).
 """
 from __future__ import annotations
 
 from .actuator import (
+    ActuatorGains,
+    ActuatorKind,
+    COMPONENT_ACTUATOR_KIND,
     DEFAULT_ARM_KD,
     DEFAULT_ARM_KP,
     DEFAULT_DRIVE_KD,
+    DEFAULT_JOINT_KD,
+    DEFAULT_JOINT_KP,
+    DEFAULT_JOINT_TORQUE,
     DEFAULT_STEER_KD,
     DEFAULT_STEER_KP,
+    DEFAULT_WHEEL_KD,
+    DEFAULT_WHEEL_KP,
+    DEFAULT_WHEEL_TORQUE,
+    JOINT_GAINS,
     PROTO_CUBEMARS,
     PROTO_DAMIAO,
     PROTO_NONE,
     PROTO_ROBSTRIDE,
     PROTO_ZEROERR,
+    WHEEL_GAINS,
     arm_slots,
     cubemars_yam_rows,
+    gains_for_kind,
+    kind_for_component,
+    resolve_gain_vectors,
     slots_by_bus,
     yam_left_arm_rows,
     yam_product_rows,
+)
+from .assembly import (
+    Assembly,
+    assembly_from_name,
+    assembly_put_actuator,
+    assembly_put_servo,
+    assembly_remove_actuator,
+    bench_continuous_assembly,
+    yam_product_assembly,
 )
 from .firmware import default_firmware_elf
 from .led import LED_PRESETS, LedPreset
@@ -46,19 +75,45 @@ from .servo import (
     SERVO_MODEL_XL330_M288,
     SERVO_MODEL_XL430,
 )
+from .typed_profiles import (
+    ActuatorProfile,
+    CfgSlotSpec,
+    ServoEntry,
+    ServoProfile,
+    arm_profile,
+    lift_profile,
+    neck_profile,
+    parse_protocol,
+    parse_slots_spec,
+    single_profile,
+    wheel_profile,
+)
 
 __all__ = [
+    "ActuatorGains",
+    "ActuatorKind",
+    "ActuatorProfile",
+    "Assembly",
     "BASE_DRIVE_SLOTS",
     "BASE_SLOTS",
     "BASE_STEER_SLOTS",
     "BENCH_BASE_SLOTS",
+    "COMPONENT_ACTUATOR_KIND",
+    "CfgSlotSpec",
     "DEFAULT_ARM_KD",
     "DEFAULT_ARM_KP",
     "DEFAULT_BENCH_LISTEN_PDU",
     "DEFAULT_DRIVE_KD",
+    "DEFAULT_JOINT_KD",
+    "DEFAULT_JOINT_KP",
+    "DEFAULT_JOINT_TORQUE",
     "DEFAULT_PRODUCT_LISTEN_PDU",
     "DEFAULT_STEER_KD",
     "DEFAULT_STEER_KP",
+    "DEFAULT_WHEEL_KD",
+    "DEFAULT_WHEEL_KP",
+    "DEFAULT_WHEEL_TORQUE",
+    "JOINT_GAINS",
     "LEFT_ARM_SLOTS",
     "LED_PRESETS",
     "LIFT_SLOT",
@@ -78,12 +133,31 @@ __all__ = [
     "SERVO_MODEL_XL330_M288",
     "SERVO_MODEL_XL430",
     "SPARE_SLOTS",
+    "ServoEntry",
+    "ServoProfile",
+    "WHEEL_GAINS",
+    "arm_profile",
     "arm_slots",
+    "assembly_from_name",
+    "assembly_put_actuator",
+    "assembly_put_servo",
+    "assembly_remove_actuator",
+    "bench_continuous_assembly",
     "bench_continuous_profile",
     "cubemars_yam_rows",
     "default_firmware_elf",
+    "gains_for_kind",
+    "kind_for_component",
+    "lift_profile",
+    "neck_profile",
+    "parse_protocol",
+    "parse_slots_spec",
+    "resolve_gain_vectors",
+    "single_profile",
     "slots_by_bus",
+    "wheel_profile",
     "yam_left_arm_rows",
+    "yam_product_assembly",
     "yam_product_profile",
     "yam_product_rows",
 ]

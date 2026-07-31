@@ -1,4 +1,8 @@
-"""Host demux profiles — name → ordered actuator slots (identity, not motion)."""
+"""Host demux Profile (actuator-only) + slot constants.
+
+Canonical product identity is ``Assembly`` (``config.assembly``). ``Profile``
+remains the HostProxy demux shim: name → ordered actuator slots.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,7 +25,7 @@ NECK_YAW_SERVO_SLOT = 1
 
 @dataclass(frozen=True)
 class Profile:
-    """Named groups of actuator slots (host demux layer 1)."""
+    """Actuator-only demux map for HostProxy (not a mixed peripheral profile)."""
 
     name: str
     components: Mapping[str, Tuple[int, ...]]
@@ -43,30 +47,14 @@ class Profile:
 
 
 def yam_product_profile() -> Profile:
-    return Profile(
-        name="yam_product",
-        components={
-            "left_arm": LEFT_ARM_SLOTS,
-            "right_arm": RIGHT_ARM_SLOTS,
-            "base": BASE_SLOTS,
-            "lift": (LIFT_SLOT,),
-        },
-    )
+    """Back-compat demux shim — prefer ``yam_product_assembly()``."""
+    from .assembly import yam_product_assembly
+
+    return yam_product_assembly().to_demux_profile()
 
 
 def bench_continuous_profile() -> Profile:
-    """Host demux for continuous / bus56 bench (spare-slot base).
+    """Back-compat demux shim — prefer ``bench_continuous_assembly()``."""
+    from .assembly import bench_continuous_assembly
 
-    ``base`` here is slots 22–25 (CFG IDs set by continuous BASE_ROWS).
-    Product drivetrain map stays available as ``base_product`` (14–19).
-    """
-    return Profile(
-        name="yam_bench_continuous",
-        components={
-            "left_arm": LEFT_ARM_SLOTS,
-            "right_arm": RIGHT_ARM_SLOTS,
-            "base": BENCH_BASE_SLOTS,
-            "base_product": BASE_SLOTS,
-            "lift": (LIFT_SLOT,),
-        },
-    )
+    return bench_continuous_assembly().to_demux_profile()

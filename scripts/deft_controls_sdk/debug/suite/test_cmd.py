@@ -1,11 +1,12 @@
-"""``test`` subcommand: mode-disciplined prove picker + domain flags.
+"""``test`` subcommand: Assembly workshop by default + domain flags.
 
 Ownership: all leaves live under ``debug.suite`` (no ``vbeta`` imports).
 
-| Domain       | Link mode   | Pass gates                          |
+| Entry        | Link mode   | Pass gates                          |
 |--------------|-------------|-------------------------------------|
+| test (bare)  | debug       | Assembly workshop (profiles / operate)|
 | --bandwidth  | bandwidth   | measure_hold (ack_lag / fb_hz / mode)|
-| --actuators  | debug       | functional discover/CFG only         |
+| --actuators  | debug       | functional discover/CFG + motion     |
 | --led        | debug       | functional observe only              |
 | --servo      | debug       | functional observe only              |
 | --pdu-link   | debug       | wire + policy observe only           |
@@ -16,21 +17,12 @@ import argparse
 import sys
 from typing import Callable, Optional, Sequence
 
-_DOMAINS = (
-    ("bandwidth", "USB duplex / fb_hz / ack_lag (mode=bandwidth)"),
-    ("actuators", "discover + CFG table (mode=debug)"),
-    ("led", "LED presets / hub.set_led (mode=debug)"),
-    ("servo", "neck servo FB sample (mode=debug)"),
-    ("pdu-link", "pdb wire + listen_pdu policy (mode=debug)"),
-)
-
-
 def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     t = sub.add_parser(
         "test",
         help=(
-            "prove domains (picker or flags). "
-            "Timing: --bandwidth. Peripherals: --actuators|--led|--servo|--pdu-link"
+            "Assembly workshop (default), or domain flags: "
+            "--bandwidth|--actuators|--led|--servo|--pdu-link"
         ),
     )
     g = t.add_mutually_exclusive_group()
@@ -42,7 +34,7 @@ def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     g.add_argument(
         "--actuators",
         action="store_true",
-        help="actuator discover / CFG menu (mode=debug)",
+        help="actuator discover / CFG / motion menu (mode=debug)",
     )
     g.add_argument(
         "--led",
@@ -58,6 +50,21 @@ def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "--pdu-link",
         action="store_true",
         help="pdb_status wire + listen_pdu policy (mode=debug)",
+    )
+
+    # Assembly workshop knobs (bare ``test``)
+    t.add_argument(
+        "--assembly",
+        default="product",
+        metavar="NAME",
+        help="with bare test (workshop): stock assembly product|bench (default product)",
+    )
+    t.add_argument(
+        "--cfg-map",
+        default="bench",
+        dest="cfg_map",
+        metavar="MAP",
+        help="with bare test (workshop): teleop SlotSpec map bench|product (default bench)",
     )
 
     # bandwidth knobs
@@ -160,29 +167,6 @@ def add_test_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     return t
 
 
-def _pick_domain() -> Optional[str]:
-    print("pcb_lab.debug test — pick a domain:\n")
-    for i, (name, blurb) in enumerate(_DOMAINS, start=1):
-        print(f"  {i}) {name:<10}  {blurb}")
-    print("  q) quit")
-    try:
-        ans = input("\nchoice> ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return None
-    if ans in ("", "q", "quit", "exit"):
-        return None
-    if ans.isdigit():
-        idx = int(ans)
-        if 1 <= idx <= len(_DOMAINS):
-            return _DOMAINS[idx - 1][0]
-    for name, _ in _DOMAINS:
-        if ans == name or ans == name.replace("-", "_"):
-            return name
-    print(f"unknown choice: {ans!r}", file=sys.stderr)
-    return None
-
-
 def _domain_from_args(args: argparse.Namespace) -> Optional[str]:
     if args.bandwidth:
         return "bandwidth"
@@ -200,9 +184,8 @@ def _domain_from_args(args: argparse.Namespace) -> Optional[str]:
 def run_test(args: argparse.Namespace) -> int:
     domain = _domain_from_args(args)
     if domain is None:
-        domain = _pick_domain()
-    if domain is None:
-        return 0
+        # Bare ``test`` → Assembly workshop (not the domain picker).
+        return _run_workshop(args)
 
     runners: dict[str, Callable[[argparse.Namespace], int]] = {
         "bandwidth": _run_bandwidth,
@@ -216,6 +199,12 @@ def run_test(args: argparse.Namespace) -> int:
         print(f"unknown domain {domain!r}", file=sys.stderr)
         return 2
     return int(fn(args))
+
+
+def _run_workshop(args: argparse.Namespace) -> int:
+    from .workshop import run_assembly_workshop
+
+    return run_assembly_workshop(args)
 
 
 def _run_bandwidth(args: argparse.Namespace) -> int:

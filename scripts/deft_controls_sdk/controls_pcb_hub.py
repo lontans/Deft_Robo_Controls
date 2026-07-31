@@ -195,11 +195,11 @@ class ControlsPcbHub:
     def set_actuators(
         self, desires: Mapping[int, ActuatorDesire], *, send: bool = True
     ) -> None:
-        """Batch plant desires (PlantSink / ComponentAction)."""
+        """Batch plant desires (PlantSink / ActuatorAction)."""
         self._connection.set_actuators(desires, send=send)
 
     def latest_feedback(self) -> Optional[FeedbackImage]:
-        """Latest plant FB image (PlantSink / ComponentAction)."""
+        """Latest plant FB image (PlantSink / ActuatorAction)."""
         fb = self._connection.poll_feedback()
         if fb is not None:
             return fb

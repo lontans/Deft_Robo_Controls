@@ -1,7 +1,12 @@
-"""Actuator CFG row builders (identity) — apply via hub.debug.cfg_* wire RPC."""
+"""Actuator CFG row builders + plant gain kinds (identity / defaults).
+
+CFG rows are applied via ``hub.debug.cfg_*`` wire RPC. Gain kinds (``joint`` /
+``wheel``) are host teleop defaults for ``ActuatorAction.hold`` — not NVM.
+"""
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Literal, Sequence, Tuple
 
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT
 
@@ -26,12 +31,97 @@ DAMIAO_MASTER_IDS = (0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17)
 # Back-compat private alias (suite presets / older imports)
 _DAMIAO_MASTER = DAMIAO_MASTER_IDS
 
-# Dual-YAM teleop baseline
+# Dual-YAM teleop baseline (CH1/CH2 arm joints — load-bearing)
 DEFAULT_ARM_KP: Tuple[float, ...] = (40.0, 60.0, 90.0, 60.0, 25.0, 25.0, 20.0)
 DEFAULT_ARM_KD: Tuple[float, ...] = (2.5, 3.75, 5.6, 3.75, 1.5, 1.5, 1.25)
+# Product base steer (position hold on swerve) — stiffer than bench wheel cruise
 DEFAULT_STEER_KP = 40.0
 DEFAULT_STEER_KD = 1.0
 DEFAULT_DRIVE_KD = 2.0
+
+# --- plant action kinds (smooth arm teleop ≠ base/wheel teleop) ---------------
+# ``joint``: gravity / load-bearing (arms). ``wheel``: CH5–6 style base (often
+# not load-bearing the same way; gentler position gains from continuous/teleop).
+ActuatorKind = Literal["joint", "wheel"]
+
+DEFAULT_JOINT_KP = float(DEFAULT_ARM_KP[0])
+DEFAULT_JOINT_KD = float(DEFAULT_ARM_KD[0])
+DEFAULT_JOINT_TORQUE = 0.0
+# Bench / yam_continuous RobStride base (teleop RS_KP/RS_KD)
+DEFAULT_WHEEL_KP = 20.0
+DEFAULT_WHEEL_KD = 1.0
+DEFAULT_WHEEL_TORQUE = 0.0
+
+COMPONENT_ACTUATOR_KIND: Dict[str, ActuatorKind] = {
+    "left_arm": "joint",
+    "right_arm": "joint",
+    "lift": "joint",
+    "base": "wheel",
+    "base_product": "wheel",
+}
+
+
+@dataclass(frozen=True)
+class ActuatorGains:
+    """Scalar MIT desire defaults for one kind (per-slot sequences optional)."""
+
+    kp: float
+    kd: float
+    torque: float = 0.0
+
+
+JOINT_GAINS = ActuatorGains(
+    kp=DEFAULT_JOINT_KP, kd=DEFAULT_JOINT_KD, torque=DEFAULT_JOINT_TORQUE
+)
+WHEEL_GAINS = ActuatorGains(
+    kp=DEFAULT_WHEEL_KP, kd=DEFAULT_WHEEL_KD, torque=DEFAULT_WHEEL_TORQUE
+)
+
+
+def kind_for_component(name: str) -> ActuatorKind:
+    """Profile component → joint|wheel (unknown names default to joint)."""
+    return COMPONENT_ACTUATOR_KIND.get(str(name), "joint")
+
+
+def gains_for_kind(kind: ActuatorKind) -> ActuatorGains:
+    if kind == "wheel":
+        return WHEEL_GAINS
+    if kind == "joint":
+        return JOINT_GAINS
+    raise ValueError(f"unknown ActuatorKind {kind!r}; use joint|wheel")
+
+
+def resolve_gain_vectors(
+    kind: ActuatorKind,
+    n: int,
+    *,
+    kp: float | Sequence[float] | None = None,
+    kd: float | Sequence[float] | None = None,
+    torque: float | Sequence[float] | None = None,
+) -> Tuple[Tuple[float, ...], Tuple[float, ...], Tuple[float, ...]]:
+    """Broadcast scalars or pad arm tables to length ``n`` for a hold."""
+    gains = gains_for_kind(kind)
+
+    def _vec(
+        override: float | Sequence[float] | None,
+        default_scalar: float,
+        arm_table: Tuple[float, ...] | None,
+    ) -> Tuple[float, ...]:
+        if override is None:
+            if kind == "joint" and arm_table is not None and n == len(arm_table):
+                return arm_table
+            return tuple(float(default_scalar) for _ in range(n))
+        if isinstance(override, (int, float)):
+            return tuple(float(override) for _ in range(n))
+        out = tuple(float(x) for x in override)
+        if len(out) != n:
+            raise ValueError(f"expected {n} gain values, got {len(out)}")
+        return out
+
+    kps = _vec(kp, gains.kp, DEFAULT_ARM_KP)
+    kds = _vec(kd, gains.kd, DEFAULT_ARM_KD)
+    tqs = _vec(torque, gains.torque, None)
+    return kps, kds, tqs
 
 
 def arm_slots(side: str) -> Tuple[int, ...]:
@@ -121,14 +211,24 @@ def slots_by_bus(rows: Sequence[Tuple[int, bool, int, int, int]] | None = None) 
 
 
 __all__ = [
+    "ActuatorGains",
+    "ActuatorKind",
     "BASE_DRIVE_SLOTS",
     "BASE_SLOTS",
     "BASE_STEER_SLOTS",
+    "COMPONENT_ACTUATOR_KIND",
     "DEFAULT_ARM_KD",
     "DEFAULT_ARM_KP",
     "DEFAULT_DRIVE_KD",
+    "DEFAULT_JOINT_KD",
+    "DEFAULT_JOINT_KP",
+    "DEFAULT_JOINT_TORQUE",
     "DEFAULT_STEER_KD",
     "DEFAULT_STEER_KP",
+    "DEFAULT_WHEEL_KD",
+    "DEFAULT_WHEEL_KP",
+    "DEFAULT_WHEEL_TORQUE",
+    "JOINT_GAINS",
     "LEFT_ARM_SLOTS",
     "LIFT_SLOT",
     "PROTO_CUBEMARS",
@@ -138,8 +238,12 @@ __all__ = [
     "PROTO_ZEROERR",
     "RIGHT_ARM_SLOTS",
     "SPARE_SLOTS",
+    "WHEEL_GAINS",
     "arm_slots",
     "cubemars_yam_rows",
+    "gains_for_kind",
+    "kind_for_component",
+    "resolve_gain_vectors",
     "slots_by_bus",
     "yam_left_arm_rows",
     "yam_product_rows",
