@@ -25,8 +25,13 @@
 #define PLANT_CFG_STATUS_FLASH_ERR 2u
 #define PLANT_CFG_STATUS_BAD_CRC   3u
 
-/* NVM flags byte (image + RAM). Bit0: honor PDU kill for LED / policy. */
-#define PLANT_CFG_FLAG_LISTEN_PDU  (1u << 0)
+/* NVM / GET_PERIPH flags byte (image + RAM).
+ *   bit0     — honor PDU kill for LED / policy (LISTEN_PDU)
+ *   bit1..2  — SPI3 accessory role (see spi3_role_t: 0=LED, 1=THERMO, 2=NONE)
+ * Old images with only bit0 set keep LED (role 0) — correct product default. */
+#define PLANT_CFG_FLAG_LISTEN_PDU     (1u << 0)
+#define PLANT_CFG_SPI3_ROLE_SHIFT     1u
+#define PLANT_CFG_SPI3_ROLE_MASK      (3u << PLANT_CFG_SPI3_ROLE_SHIFT)
 /* Old name — same bit; kept so stray includes still compile during rename. */
 #define PLANT_CFG_FLAG_LISTEN_PDB  PLANT_CFG_FLAG_LISTEN_PDU
 
@@ -45,6 +50,9 @@ void plant_config_load_factory_defaults(void);
 /* RAM mirrors of NVM v2 peripheral block (valid after factory/load/set). */
 bool plant_config_listen_pdu(void);
 void plant_config_set_listen_pdu(bool enable);
+/* SPI3 LED vs MAX31855 role — also mirrored in periph flags bits 1..2. */
+uint8_t plant_config_spi3_role(void);
+void plant_config_set_spi3_role(uint8_t role);
 /* Aliases — prefer listen_pdu. */
 static inline bool plant_config_listen_pdb(void) { return plant_config_listen_pdu(); }
 static inline void plant_config_set_listen_pdb(bool enable)

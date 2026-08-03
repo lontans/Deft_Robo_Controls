@@ -649,6 +649,29 @@ def test_teleop_actuator_target_engages_and_slews(server, monkeypatch) -> None:
     assert frozen["target"] == frozen["pos"]  # froze in place, did not blank
 
 
+def test_teleop_stop_all_freezes_without_blanking(server, monkeypatch) -> None:
+    state, base = server
+    _connect_fake_teleop_hub(monkeypatch, state, base)
+    status, _ = _post(base, "/api/teleop/actuator/0", {"target": 0.5, "cruise": 0.3})
+    assert status == 200
+    time.sleep(0.15)
+    status, data = _post(base, "/api/teleop/stop_all")
+    assert status == 200
+    assert data.get("ok") is True
+    frozen = state.teleop.snapshot()["actuators"][0]
+    assert frozen["target"] == frozen["pos"]
+
+
+def test_teleop_stop_all_requires_control_mode(server, monkeypatch) -> None:
+    state, base = server
+    _connect_fake_teleop_hub(monkeypatch, state, base)
+    status, _ = _post(base, "/api/control_mode", {"mode": "observe"})
+    assert status == 200
+    status, data = _post(base, "/api/teleop/stop_all")
+    assert status == 400
+    assert "control" in data["error"].lower()
+
+
 def test_teleop_actuator_jog_clamps_to_verified_rail(server, monkeypatch) -> None:
     """Base RobStride slots (bench map) use the documented MIT rail with the
     RS_MARGIN inset — see base-robstride-mcp.md — not an unbounded jog."""

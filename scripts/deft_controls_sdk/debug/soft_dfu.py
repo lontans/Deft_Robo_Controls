@@ -25,7 +25,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 from deft_controls_sdk.link.exchange.wire_layout import (
     STM32_USB_CDC_PID,
@@ -905,6 +905,71 @@ def _program_usb_dfu(
                 pass
 
 
+def prove_soft_dfu_loop(
+    cycles: int,
+    *,
+    image: Optional[os.PathLike[str] | str] = None,
+    port: Optional[str] = None,
+    serial: Optional[str] = None,
+    require_usb_dfu: bool = True,
+    status_stream_hz: float = 50.0,
+) -> Dict[str, Any]:
+    """Run Soft-DFU flash ``cycles`` times; return a JSON-serializable summary.
+
+    Defaults to ``require_usb_dfu=True`` (no ST-Link SWD fallback) so prove
+    loops exercise the USB-only path. Each cycle: flash → wait CDC → light
+    ``pcb_status`` read. Does not raise on per-cycle failure; check ``passed``.
+    """
+    n = int(cycles)
+    if n < 1:
+        raise ValueError("cycles must be >= 1")
+    results: List[Dict[str, Any]] = []
+    cdc_port = port
+    for i in range(n):
+        row: Dict[str, Any] = {"cycle": i + 1}
+        t0 = time.monotonic()
+        try:
+            cdc_port = flash_firmware(
+                image,
+                port=cdc_port,
+                serial=serial,
+                confirm=True,
+                require_usb_dfu=bool(require_usb_dfu),
+            )
+            row["cdc"] = cdc_port
+            row["flash_s"] = round(time.monotonic() - t0, 3)
+            t1 = time.monotonic()
+            report = pcb_status(
+                port=cdc_port,
+                serial=serial,
+                stream_hz=float(status_stream_hz),
+            )
+            row["status_s"] = round(time.monotonic() - t1, 3)
+            row["mcu"] = (report.get("mcu") or {}).get("host_command_name")
+            row["ok"] = True
+        except Exception as exc:
+            row["ok"] = False
+            row["error"] = f"{type(exc).__name__}: {exc}"
+            row["elapsed_s"] = round(time.monotonic() - t0, 3)
+        else:
+            row["elapsed_s"] = round(time.monotonic() - t0, 3)
+        results.append(row)
+        print(
+            f"prove {i + 1}/{n}: "
+            + ("ok" if row["ok"] else f"FAIL {row.get('error')}")
+            + f"  {row.get('elapsed_s')}s",
+            flush=True,
+        )
+    passed = sum(1 for r in results if r.get("ok"))
+    return {
+        "cycles": n,
+        "passed": passed,
+        "failed": n - passed,
+        "require_usb_dfu": bool(require_usb_dfu),
+        "results": results,
+    }
+
+
 def flash_firmware(
     image: Optional[os.PathLike[str] | str] = None,
     *,
@@ -1147,6 +1212,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ),
     )
 
+    pr = sub.add_parser(
+        "prove",
+        help="N-cycle Soft-DFU flash + CDC status (USB-only by default)",
+    )
+    pr.add_argument(
+        "cycles",
+        nargs="?",
+        type=int,
+        default=3,
+        help="number of flash→status cycles (default 3)",
+    )
+    pr.add_argument("--image", default=None, help="path to .elf or .bin")
+    pr.add_argument("--port", default=None, help="app CDC port")
+    pr.add_argument("--serial", default=None, help="USB serial if multiple boards")
+    pr.add_argument(
+        "--allow-swd-fallback",
+        action="store_true",
+        help="allow ST-Link SWD if USB DFU fails (default: USB-only)",
+    )
+
     e = sub.add_parser("enter", help="reset board into ROM DFU")
     e.add_argument("--serial", default=None)
     e.add_argument("--port", default=None)
@@ -1199,7 +1284,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  port {port}: (not currently enumerated)")
             else:
                 print(
-                    f"  port {info.device} → sn={info.serial}  "
+                    f"  port {info.device} -> sn={info.serial}  "
                     f"stm32_cdc={info.is_stm32_cdc}  {info.description}"
                 )
         for row in list_cdc_ports(serial=serial):
@@ -1256,6 +1341,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             require_usb_dfu=bool(args.require_usb_dfu),
         )
         return 0
+
+    if args.cmd == "prove":
+        import json
+
+        summary = prove_soft_dfu_loop(
+            int(args.cycles),
+            image=args.image,
+            port=args.port,
+            serial=args.serial,
+            require_usb_dfu=not bool(args.allow_swd_fallback),
+        )
+        print(json.dumps(summary, indent=2))
+        return 0 if summary["failed"] == 0 else 1
 
     p.error(f"unknown cmd {args.cmd}")
     return 2

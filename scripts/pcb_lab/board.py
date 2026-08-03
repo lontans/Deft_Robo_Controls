@@ -147,10 +147,23 @@ def cmd_flash(
     serial: Optional[str] = None,
     image: Optional[str] = None,
     require_usb_dfu: bool = False,
+    prove: Optional[int] = None,
 ) -> int:
     from deft_controls_sdk.debug.soft_dfu import main as soft_main
 
-    argv: List[str] = ["flash"]
+    if prove is not None:
+        argv: List[str] = ["prove", str(int(prove))]
+        if port:
+            argv.extend(["--port", port])
+        if serial:
+            argv.extend(["--serial", serial])
+        if image:
+            argv.extend(["--image", image])
+        if not require_usb_dfu:
+            argv.append("--allow-swd-fallback")
+        return soft_main(argv)
+
+    argv = ["flash"]
     if port:
         argv.extend(["--port", port])
     if serial:

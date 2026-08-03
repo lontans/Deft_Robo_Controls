@@ -7,8 +7,9 @@
  * Both share SCK (PB3); LEDs use MOSI (PB5), thermo SO uses MISO (PB4) + soft CS.
  * Only one owner may touch hspi3 at a time — LED TX is continuous when active.
  *
- * Product default is LED. NVM board-config will persist this later; until then
- * SPI3_ROLE_DEFAULT selects the bring-up owner at compile time.
+ * Product default is LED. Persisted in NVM/CFG periph flags bits 1..2
+ * (see plant_config_nvm.h). SPI3_ROLE_DEFAULT is the compile-time factory
+ * default when NVM is blank / factory-reset.
  */
 typedef enum {
 	SPI3_ROLE_LED    = 0u,

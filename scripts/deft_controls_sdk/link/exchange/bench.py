@@ -389,6 +389,27 @@ CFG_STATUS_NAMES = {
 }
 
 CFG_FLAG_LISTEN_PDU = 1 << 0
+# Periph flags bits 1..2 — SPI3 accessory role (matches plant_config_nvm.h).
+CFG_SPI3_ROLE_SHIFT = 1
+CFG_SPI3_ROLE_MASK = 3 << CFG_SPI3_ROLE_SHIFT
+SPI3_ROLE_LED = 0
+SPI3_ROLE_THERMO = 1
+SPI3_ROLE_NONE = 2
+SPI3_ROLE_NAMES = {
+    SPI3_ROLE_LED: "led",
+    SPI3_ROLE_THERMO: "thermo",
+    SPI3_ROLE_NONE: "none",
+}
+
+
+def _parse_spi3_role(value) -> int:
+    if isinstance(value, str):
+        key = value.strip().lower()
+        for code, name in SPI3_ROLE_NAMES.items():
+            if name == key or key == str(code):
+                return code
+        raise ValueError(f"unknown spi3_role {value!r}; expected led|thermo|none")
+    return int(value) & 3
 
 
 def build_cfg_command(
@@ -421,6 +442,9 @@ def build_cfg_command(
                 flags |= CFG_FLAG_LISTEN_PDU
             else:
                 flags &= ~CFG_FLAG_LISTEN_PDU
+        if "spi3_role" in periph:
+            role = _parse_spi3_role(periph["spi3_role"])
+            flags = (flags & ~CFG_SPI3_ROLE_MASK) | ((role << CFG_SPI3_ROLE_SHIFT) & CFG_SPI3_ROLE_MASK)
         mbox[8] = flags & 0xFF
         servos = periph.get("servos") or []
         for i in range(2):
@@ -479,12 +503,15 @@ def parse_cfg_feedback(pdu: bytes) -> Optional[dict]:
                 }
             )
         loff = 9 + 16
+        spi3_role = (flags & CFG_SPI3_ROLE_MASK) >> CFG_SPI3_ROLE_SHIFT
         return {
             "op": op,
             "status": status,
             "status_name": CFG_STATUS_NAMES.get(status, f"unknown({status})"),
             "flags": flags,
             "listen_pdu": bool(flags & CFG_FLAG_LISTEN_PDU),
+            "spi3_role": spi3_role,
+            "spi3_role_name": SPI3_ROLE_NAMES.get(spi3_role, f"unknown({spi3_role})"),
             "servos": servos,
             "led": {
                 "default_count": pdu[loff] | (pdu[loff + 1] << 8),

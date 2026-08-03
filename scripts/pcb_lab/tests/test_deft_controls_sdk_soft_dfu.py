@@ -356,3 +356,43 @@ def test_soft_dfu_flash_entrypoint_defaults_to_flash() -> None:
     assert _dispatch_argv(["--serial", "ABC"]) == ["flash", "--serial", "ABC"]
     assert _dispatch_argv(["scan"]) == ["scan"]
     assert _dispatch_argv(["enter", "--port", "COM5"]) == ["enter", "--port", "COM5"]
+
+
+def test_prove_soft_dfu_loop_summarizes_cycles(monkeypatch: pytest.MonkeyPatch) -> None:
+    import deft_controls_sdk.debug.soft_dfu as mod
+
+    flashes = []
+
+    def _flash(image, *, port=None, serial=None, confirm=True, require_usb_dfu=False, **_k):
+        flashes.append({"port": port, "require_usb_dfu": require_usb_dfu})
+        return port or "COM5"
+
+    monkeypatch.setattr(mod, "flash_firmware", _flash)
+    monkeypatch.setattr(
+        mod,
+        "pcb_status",
+        lambda **kw: {"mcu": {"host_command_name": "NORMAL"}},
+    )
+    summary = mod.prove_soft_dfu_loop(2, port="COM5", require_usb_dfu=True)
+    assert summary["cycles"] == 2
+    assert summary["passed"] == 2
+    assert summary["failed"] == 0
+    assert len(flashes) == 2
+    assert flashes[0]["require_usb_dfu"] is True
+
+
+def test_main_prove_wires_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    import deft_controls_sdk.debug.soft_dfu as mod
+
+    called = {}
+
+    def _prove(cycles, **kwargs):
+        called["cycles"] = cycles
+        called.update(kwargs)
+        return {"cycles": cycles, "passed": cycles, "failed": 0, "results": []}
+
+    monkeypatch.setattr(mod, "prove_soft_dfu_loop", _prove)
+    assert main(["prove", "5", "--port", "COM5"]) == 0
+    assert called["cycles"] == 5
+    assert called["port"] == "COM5"
+    assert called["require_usb_dfu"] is True

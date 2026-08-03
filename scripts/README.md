@@ -24,8 +24,14 @@ python soft_dfu_flash.py
 python -m pcb_lab
 python -m pcb_lab scan
 python -m pcb_lab.debug test              # omit --port to auto-discover CDC
+python -m deft_controls_sdk.debug_dashboard   # sliders + keyboard teleop
+# Soft-DFU N-cycle USB prove (no ST-Link):
+#   python -m pcb_lab flash --prove 3 --require-usb-dfu
 pytest pcb_lab/tests
 ```
+
+Controls map (lab vs product, keys, Jetson): [`../docs/controls-map.md`](../docs/controls-map.md).
+
 
 ### Ubuntu / Jetson (once)
 

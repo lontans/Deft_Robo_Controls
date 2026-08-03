@@ -237,6 +237,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="fail instead of ST-Link SWD fallback",
     )
+    fl.add_argument(
+        "--prove",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "run N Soft-DFU flash→status cycles "
+            "(SWD fallback allowed; pass --require-usb-dfu for USB-only)"
+        ),
+    )
     fl.set_defaults(_cmd="flash")
 
     im = sub.add_parser("images", help="list Release/Debug build images")
@@ -322,11 +332,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     if cmd == "leave":
         return board.cmd_leave(port=args.port, serial=args.serial)
     if cmd == "flash":
+        prove = getattr(args, "prove", None)
+        # Soft-enter + program; SWD fallback when DF11 is not visible.
+        # Pass --require-usb-dfu to force the USB-only Soft-DFU path.
         return board.cmd_flash(
             port=args.port,
             serial=args.serial,
             image=args.image,
             require_usb_dfu=bool(args.require_usb_dfu),
+            prove=prove,
         )
     if cmd == "images":
         return board.print_images()

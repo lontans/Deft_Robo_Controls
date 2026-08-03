@@ -1,6 +1,7 @@
 #include "plant/plant_config_nvm.h"
 #include "plant/actuator.h"
 #include "plant/servo.h"
+#include "plant/spi3_role.h"
 #include "plant/plugins/damiao.h"
 #include "plant/plugins/dynamixel.h"
 #include "plant/plugins/sk9822.h"
@@ -380,6 +381,10 @@ static void build_nvm_image(plant_cfg_nvm_image_t *img)
 	img->version = PLANT_CFG_NVM_VERSION;
 	img->length = (uint16_t)sizeof(plant_cfg_nvm_image_t);
 	img->slot_count = ACTUATOR_COUNT;
+	/* Pack live SPI3 role into flags bits 1..2 before SAVE. */
+	s_listen_pdu_flags = (uint8_t)((s_listen_pdu_flags & (uint8_t)~PLANT_CFG_SPI3_ROLE_MASK) |
+	                               (((uint8_t)spi3_role_get() << PLANT_CFG_SPI3_ROLE_SHIFT) &
+	                                PLANT_CFG_SPI3_ROLE_MASK));
 	img->flags = s_listen_pdu_flags;
 	table_to_nvm_slots(img->slots);
 	table_to_nvm_periph(img->servos, &img->led);
@@ -462,8 +467,9 @@ void plant_config_load_factory_defaults(void)
 	led_table[0].default_mode = 8u; /* LED_MODE_IDLE_CORNFLOWER */
 	led_table[0].default_brightness = 8u;
 
-	/* Bench default: do not treat missing PDU as live kill policy. */
+	/* Bench default: do not treat missing PDU as live kill policy; SPI3 = LED. */
 	s_listen_pdu_flags = 0u;
+	spi3_role_set((spi3_role_t)SPI3_ROLE_DEFAULT);
 }
 
 bool plant_config_listen_pdu(void)
@@ -479,6 +485,25 @@ void plant_config_set_listen_pdu(bool enable)
 		s_listen_pdu_flags &= (uint8_t)~PLANT_CFG_FLAG_LISTEN_PDU;
 }
 
+uint8_t plant_config_spi3_role(void)
+{
+	return (uint8_t)spi3_role_get();
+}
+
+void plant_config_set_spi3_role(uint8_t role)
+{
+	spi3_role_set((spi3_role_t)role);
+	s_listen_pdu_flags = (uint8_t)((s_listen_pdu_flags & (uint8_t)~PLANT_CFG_SPI3_ROLE_MASK) |
+	                               ((role << PLANT_CFG_SPI3_ROLE_SHIFT) &
+	                                PLANT_CFG_SPI3_ROLE_MASK));
+}
+
+static void apply_spi3_role_from_flags(void)
+{
+	spi3_role_set((spi3_role_t)((s_listen_pdu_flags & PLANT_CFG_SPI3_ROLE_MASK) >>
+	                            PLANT_CFG_SPI3_ROLE_SHIFT));
+}
+
 bool plant_config_nvm_load(void)
 {
 	const plant_cfg_nvm_image_t *flash_v2 =
@@ -490,6 +515,7 @@ bool plant_config_nvm_load(void)
 		nvm_slots_to_table(flash_v2->slots);
 		nvm_periph_to_table(flash_v2->servos, &flash_v2->led);
 		s_listen_pdu_flags = flash_v2->flags;
+		apply_spi3_role_from_flags();
 		return true;
 	}
 
@@ -532,8 +558,9 @@ bool plant_config_is_command(const host_command_image_t *cmd)
 
 static void apply_periph_from_cmd(const uint8_t *p)
 {
-	/* Layout at p[8..]: flags, then servo0 (8 B), servo1 (8 B), led (4 B). */
+	/* Layout at p[8..]: flags (listen_pdu + SPI3 role), servo0/1, led. */
 	s_listen_pdu_flags = p[8];
+	apply_spi3_role_from_flags();
 	for (uint8_t i = 0; i < SERVO_COUNT; i++) {
 		const uint8_t *s = &p[9u + i * 8u];
 
@@ -646,7 +673,10 @@ void plant_config_feedback_fill(host_pdu_feedback_t *pdu)
 
 		table_to_nvm_periph(servos, &led);
 		pdu->data[5] = 1u; /* payload present */
-		pdu->data[8] = s_listen_pdu_flags;
+		/* Reflect live SPI3 role in flags bits 1..2 for the host. */
+		pdu->data[8] = (uint8_t)((s_listen_pdu_flags & (uint8_t)~PLANT_CFG_SPI3_ROLE_MASK) |
+		                          (((uint8_t)spi3_role_get() << PLANT_CFG_SPI3_ROLE_SHIFT) &
+		                           PLANT_CFG_SPI3_ROLE_MASK));
 		for (i = 0; i < SERVO_COUNT; i++) {
 			uint8_t off = (uint8_t)(9u + i * 8u);
 

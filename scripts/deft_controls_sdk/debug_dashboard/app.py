@@ -415,6 +415,19 @@ class AppState:
     def teleop_actuator_stop(self, slot: int) -> None:
         self.teleop.stop_actuator(slot)
 
+    def teleop_stop_all(self) -> None:
+        """Freeze every teleop slot in place (holding torque) — not idle/slack."""
+        for slot in list(self.actuator_specs.keys()):
+            try:
+                self.teleop.stop_actuator(int(slot))
+            except Exception:
+                pass
+        for slot in list(self.servo_specs.keys()):
+            try:
+                self.teleop.stop_servo(int(slot))
+            except Exception:
+                pass
+
     def _current_servo_position(self, slot: int) -> Optional[float]:
         hub = self.hub
         if hub is None:
@@ -508,78 +521,125 @@ _HTML = """<!DOCTYPE html>
 <title>Deft controls — telemetry</title>
 <style>
   :root {
-    --bg: #12141a;
-    --panel: #1c2030;
-    --text: #e8eaef;
+    --bg: #0e1015;
+    --panel: #1a1e2b;
+    --panel-2: #232838;
+    --text: #eceff4;
     --muted: #9aa3b5;
+    --muted-2: #6b7387;
+    --accent: #5b9cf6;
+    --accent-dim: color-mix(in srgb, var(--accent) 18%, transparent);
     --green: #3dcf8e;
     --yellow: #e6c35c;
-    --red: #e86a6a;
+    --red: #ea6a6a;
     --line: #2a3144;
+    --radius: 10px;
+    --header-h: 3.6rem;
   }
   * { box-sizing: border-box; }
+  ::selection { background: var(--accent-dim); }
   body {
     margin: 0; font-family: "Segoe UI", system-ui, sans-serif;
     background: var(--bg); color: var(--text);
-    min-height: 100vh;
+    min-height: 100vh; line-height: 1.45;
   }
+  a { color: var(--accent); }
   header {
-    padding: 1rem 1.25rem; border-bottom: 1px solid var(--line);
-    display: flex; flex-wrap: wrap; gap: 1rem; align-items: baseline;
+    position: sticky; top: 0; z-index: 20; height: var(--header-h);
+    padding: 0 1.25rem; border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: center;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
   }
-  header h1 { font-size: 1.1rem; font-weight: 600; margin: 0; letter-spacing: 0.02em; }
-  header .meta { color: var(--muted); font-size: 0.85rem; }
+  header h1 { font-size: 1rem; font-weight: 700; margin: 0; letter-spacing: 0.01em; }
+  header .meta { color: var(--muted); font-size: 0.82rem; }
+  .spacer { flex: 1 1 auto; }
   .grade {
     font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
-    padding: 0.2rem 0.55rem; border-radius: 4px; font-size: 0.75rem;
+    padding: 0.25rem 0.65rem; border-radius: 999px; font-size: 0.72rem;
+    border: 1px solid transparent;
   }
-  .grade.green { background: color-mix(in srgb, var(--green) 25%, transparent); color: var(--green); }
-  .grade.yellow { background: color-mix(in srgb, var(--yellow) 25%, transparent); color: var(--yellow); }
-  .grade.red { background: color-mix(in srgb, var(--red) 25%, transparent); color: var(--red); }
-  .grade.idle { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
+  .grade.green { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
+  .grade.yellow { background: color-mix(in srgb, var(--yellow) 20%, transparent); color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 40%, transparent); }
+  .grade.red { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+  .grade.idle { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); border-color: var(--line); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.72rem;
+    padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--muted); white-space: nowrap;
+  }
+  .pill.on { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, var(--line)); background: color-mix(in srgb, var(--green) 10%, transparent); }
+  .pill.active { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 40%, var(--line)); background: color-mix(in srgb, var(--yellow) 10%, transparent); }
   .banner {
-    margin: 0.55rem 0 0; padding: 0.45rem 0.65rem; border-radius: 6px;
-    background: color-mix(in srgb, var(--yellow) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--yellow) 35%, var(--line));
-    color: var(--text); font-size: 0.8rem; line-height: 1.35;
+    margin: 0.6rem 0 0; padding: 0.55rem 0.75rem; border-radius: 8px;
+    background: color-mix(in srgb, var(--yellow) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--yellow) 30%, var(--line));
+    color: var(--text); font-size: 0.8rem; line-height: 1.4;
   }
   .banner.ok {
-    background: color-mix(in srgb, var(--green) 10%, transparent);
-    border-color: color-mix(in srgb, var(--green) 30%, var(--line));
+    background: color-mix(in srgb, var(--green) 8%, transparent);
+    border-color: color-mix(in srgb, var(--green) 26%, var(--line));
   }
   .banner.warn {
-    background: color-mix(in srgb, var(--red) 12%, transparent);
-    border-color: color-mix(in srgb, var(--red) 35%, var(--line));
+    background: color-mix(in srgb, var(--red) 10%, transparent);
+    border-color: color-mix(in srgb, var(--red) 30%, var(--line));
   }
-  main { padding: 1.25rem; display: grid; gap: 1rem; max-width: 1200px; }
+  main { padding: 1.1rem 1.25rem 3rem; display: grid; gap: 0.9rem; max-width: 1180px; margin: 0 auto; }
   .card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-    padding: 1rem 1.1rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 1rem 1.15rem; box-shadow: 0 1px 0 rgba(0,0,0,0.15);
   }
-  .card h2 { margin: 0 0 0.75rem; font-size: 0.8rem; color: var(--muted);
-    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
-  .card summary { cursor: pointer; list-style-position: outside; }
+  .card.tight { padding: 0.75rem 0.9rem; }
+  .card h2 { margin: 0 0 0.75rem; font-size: 0.75rem; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.09em; font-weight: 700; }
+  .card summary { cursor: pointer; list-style-position: outside; padding: 0.1rem 0; }
+  .card summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
   .card summary h2 { display: inline; margin: 0; }
-  .card details[open] summary { margin-bottom: 0.25rem; }
+  .card details[open] > summary { margin-bottom: 0.6rem; }
+  .card details.sub { margin-top: 0.6rem; border-top: 1px dashed var(--line); padding-top: 0.6rem; }
+  .card details.sub summary { font-size: 0.72rem; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.75rem; }
-  .kv .k { display: block; color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  .kv .v { font-variant-numeric: tabular-nums; font-size: 1.05rem; margin-top: 0.15rem; }
+  .grid.compact { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 0.6rem; }
+  .kv .k { display: block; color: var(--muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .kv .v { font-variant-numeric: tabular-nums; font-size: 1.02rem; margin-top: 0.15rem; }
+  .grid.compact .kv .v { font-size: 0.88rem; }
   ul.context { margin: 0; padding-left: 1.1rem; color: var(--muted); }
   ul.context li { margin: 0.25rem 0; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.85rem; }
-  th, td { text-align: left; padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 500; font-size: 0.7rem; text-transform: uppercase; }
-  .summary { font-size: 1.15rem; margin: 0 0 0.5rem; }
+  th, td { text-align: left; padding: 0.4rem 0.45rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  tbody tr:hover { background: color-mix(in srgb, var(--panel-2) 60%, transparent); }
+  .summary { font-size: 1.1rem; margin: 0 0 0.5rem; font-weight: 600; }
   button, select, input {
-    font-family: inherit; font-size: 0.8rem; background: var(--bg); color: var(--text);
-    border: 1px solid var(--line); border-radius: 6px; padding: 0.35rem 0.6rem;
+    font-family: inherit; font-size: 0.82rem; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 7px; padding: 0.4rem 0.7rem;
   }
-  button { cursor: pointer; font-weight: 600; }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  select, input { background: var(--bg); }
+  button { cursor: pointer; font-weight: 600; transition: border-color 0.12s, background 0.12s, opacity 0.12s; }
+  button:hover:not(:disabled) { border-color: var(--muted-2); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button:disabled { opacity: 0.38; cursor: not-allowed; }
+  button.primary { background: color-mix(in srgb, var(--accent) 22%, var(--panel-2)); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); color: #eaf1ff; }
+  button.primary:hover:not(:disabled) { border-color: var(--accent); }
   button.record.on { background: color-mix(in srgb, var(--red) 25%, transparent); color: var(--red); border-color: var(--red); }
-  button.estop { color: var(--red); border-color: var(--red); }
+  button.estop, button.btn-danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 55%, var(--line)); }
+  button.estop:hover:not(:disabled), button.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 14%, transparent); }
+  button.btn-go { background: color-mix(in srgb, var(--accent) 20%, var(--panel-2)); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+  button.btn-stop { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--line)); }
+  button.btn-stop:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 12%, transparent); }
+  button.btn-idle { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 45%, var(--line)); }
+  button.btn-idle:hover:not(:disabled) { background: color-mix(in srgb, var(--yellow) 12%, transparent); }
+  button.btn-ghost { background: transparent; }
+  .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .segmented button { border: none; border-radius: 0; background: var(--panel-2); }
+  .segmented button:not(:last-child) { border-right: 1px solid var(--line); }
+  .segmented button.active { background: color-mix(in srgb, var(--accent) 24%, var(--panel-2)); color: #eaf1ff; }
   .fault-badge { color: var(--red); font-weight: 600; }
   .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .row.toolbar {
+    position: sticky; top: var(--header-h); z-index: 10; background: var(--panel);
+    padding: 0.5rem 0; margin: -0.2rem 0 0.7rem; border-bottom: 1px solid var(--line);
+  }
   .err { color: var(--red); font-size: 0.8rem; min-height: 1.1em; margin: 0.4rem 0 0; }
   input[type=number] { width: 4.5rem; }
   .streaming-badge { font-size: 0.8rem; color: var(--muted); margin-left: auto; }
@@ -588,17 +648,32 @@ _HTML = """<!DOCTYPE html>
   .active-badge.active { color: var(--yellow); }
   .active-badge.idle { color: var(--muted); }
   td.held { font-variant-numeric: tabular-nums; }
-  .teleop-row {
-    display: grid; grid-template-columns: 6rem 1fr 4.5rem 3.6rem auto 8rem;
-    gap: 0.5rem; align-items: center; padding: 0.3rem 0; border-bottom: 1px solid var(--line);
-    font-size: 0.8rem;
+
+  /* Teleop joint cards */
+  .joint-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.6rem; }
+  .joint-card {
+    border: 1px solid var(--line); border-radius: 9px; padding: 0.6rem 0.7rem;
+    background: var(--panel-2); font-size: 0.82rem; transition: border-color 0.12s, box-shadow 0.12s;
   }
-  .teleop-row.disabled { opacity: 0.45; }
-  .teleop-row input[type=range] { width: 100%; }
-  .teleop-row .val { font-variant-numeric: tabular-nums; text-align: right; }
-  .teleop-row button { padding: 0.25rem 0.4rem; font-size: 0.75rem; }
-  .teleop-row .btn-group { display: flex; gap: 0.3rem; }
-  .teleop-row .meta.flagged { color: var(--yellow); font-weight: 600; }
+  .joint-card.disabled { opacity: 0.5; }
+  .joint-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .joint-card .jc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.4rem; margin-bottom: 0.4rem; }
+  .joint-card .jc-label { font-weight: 700; }
+  .joint-card .jc-sub { color: var(--muted); font-size: 0.7rem; }
+  .joint-card .jc-slider { display: flex; align-items: center; gap: 0.5rem; margin: 0.35rem 0; }
+  .joint-card input[type=range] { flex: 1 1 auto; width: auto; accent-color: var(--accent); }
+  .joint-card .val { font-variant-numeric: tabular-nums; text-align: right; min-width: 3.4rem; color: var(--text); }
+  .joint-card .jc-foot { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  .joint-card .jc-foot input[type=number] { width: 4rem; }
+  .joint-card button { padding: 0.3rem 0.5rem; font-size: 0.76rem; }
+  .joint-card .btn-group { display: flex; gap: 0.3rem; }
+  .joint-card .cmd { flex-basis: 100%; color: var(--muted); font-size: 0.72rem; margin-top: 0.15rem; }
+  .joint-card .cmd.flagged { color: var(--yellow); font-weight: 600; }
+  .teleop-group { margin-top: 0.85rem; }
+  .teleop-group + .teleop-group { border-top: 1px solid var(--line); padding-top: 0.75rem; }
+  .teleop-group summary { display: flex; align-items: baseline; gap: 0.5rem; }
+  .teleop-group summary .group-title { font-size: 0.85rem; font-weight: 700; }
+  .teleop-group[open] summary { margin-bottom: 0.5rem; }
 </style>
 </head>
 <body>
@@ -606,50 +681,105 @@ _HTML = """<!DOCTYPE html>
   <h1>Deft controls telemetry</h1>
   <span id="grade" class="grade idle">idle</span>
   <span class="meta" id="meta">not connected</span>
+  <span class="spacer"></span>
+  <span class="streaming-badge" id="streamingBadge">streaming: —</span>
 </header>
 <main>
   <section class="card">
     <h2>Connection</h2>
     <div class="row">
       <select id="portSelect"></select>
-      <button id="connectBtn" onclick="connect()">Connect (observe)</button>
-      <button id="enableCtrlBtn" onclick="enableControl()" disabled title="Switch MCU to NORMAL and arm soft-kill auto-park">Enable control</button>
-      <button id="observeBtn" onclick="toObserve()" disabled title="Blank desires, plant_apply=0, no auto-park">Back to observe</button>
-      <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+      <button class="primary" id="connectBtn" onclick="connect()">Connect (observe)</button>
+      <span class="segmented">
+        <button id="enableCtrlBtn" onclick="enableControl()" disabled title="Switch MCU to NORMAL and arm soft-kill auto-park">Enable control</button>
+        <button id="observeBtn" onclick="toObserve()" disabled title="Blank desires, plant_apply=0, no auto-park">Back to observe</button>
+      </span>
+      <button class="btn-ghost" id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
       <span class="meta" id="connMeta">not connected</span>
     </div>
     <p class="banner ok" id="modeBanner">Idle — not owning COM. Connect opens observe mode (plant_apply=0); plant motors stay gated until Enable control.</p>
     <p class="err" id="connError"></p>
     <p class="meta" id="sessionMeta"></p>
   </section>
-  <section class="card">
-    <p class="summary" id="summary">—</p>
-    <ul class="context" id="context"></ul>
-  </section>
-  <section class="card">
-    <h2>Tier-1 health</h2>
-    <div class="grid" id="health"></div>
-  </section>
-  <section class="card">
-    <h2>Black box</h2>
-    <div class="grid" id="blackbox"></div>
-    <button class="record" id="recordBtn" onclick="toggleRecord()">● Record</button>
-    <span class="meta" id="recordMeta"></span>
-  </section>
+
   <section class="card">
     <h2>PDU / soft-kill</h2>
-    <div class="grid" id="pdu"></div>
-    <div class="row" style="margin-top:0.5rem">
+    <div class="grid compact" id="pduGlance"></div>
+    <div class="row" style="margin-top:0.6rem">
       <button class="estop" id="softKillBtn" onclick="softKillPark()"
         title="Independent of Enable control / ESTOP button — works in observe too, and in follow mode signals the CDC-owning peer">Soft-kill Park</button>
       <span class="meta" id="pdbMeta"></span>
     </div>
     <p class="err" id="pdbError"></p>
     <p class="meta" id="pdbResult"></p>
+    <details class="sub">
+      <summary>Raw PDB telemetry (pack/rail V·I, peer fields)</summary>
+      <div class="grid compact" id="pduAdvanced" style="margin-top:0.5rem"></div>
+    </details>
   </section>
+
+  <section class="card">
+    <h2>Teleop</h2>
+    <div class="row toolbar">
+      <label class="meta">CFG map
+        <select id="cfgMapSelect" onchange="setCfgMap()">
+          <option value="bench">bench (22–25, live-verified on this rig)</option>
+          <option value="product">product (14–19, not wired on this bench)</option>
+        </select>
+      </label>
+      <button class="btn-stop" onclick="teleopStopAll()" title="Freeze all teleop slots — keeps holding torque, does not go slack">&#9616;&#9616; Stop all (Space)</button>
+      <span class="spacer"></span>
+      <span class="meta">selected for keyboard: <b id="keysArmSel">—</b></span>
+    </div>
+    <div class="row">
+      <button class="btn-idle" onclick="idleGroup('arm_left')" title="Blanks ALL 7 left-arm joints at once — every joint loses holding torque simultaneously. For one joint, use that joint's own Idle button below.">Idle L-arm (all 7)</button>
+      <button class="btn-idle" onclick="idleGroup('arm_right')" title="Blanks ALL 7 right-arm joints at once.">Idle R-arm (all 7)</button>
+      <button class="btn-idle" onclick="idleGroup('base')">Idle base (all)</button>
+      <button class="btn-idle" onclick="idleGroup('neck')">Idle neck (both)</button>
+    </div>
+    <p class="banner warn" style="margin-top:0.5rem"><b>Stop</b> (green) freezes a joint in place, holding torque. <b>Idle</b> (yellow) zeroes torque — that joint goes slack and can swing/drop under gravity or a neighbor's load. Prefer Stop unless you actually want it slack. The group buttons above idle every joint in that group at once; use a card's own Idle for just one joint.</p>
+    <p class="banner" id="keysBanner" style="margin-top:0.4rem">Keyboard (Enable control; not while typing in a field): <code>Space</code> stop all · arrows neck · <code>1</code>–<code>7</code> select L-arm joint · <code>[</code>/<code>]</code> nudge selected arm · <code>z</code>/<code>x</code> <code>c</code>/<code>v</code> jog base</p>
+    <p class="err" id="teleopError"></p>
+
+    <details class="teleop-group" open>
+      <summary><span class="group-title">Arm — left</span><span class="meta">bench live-verified · drag = target, host walks there</span></summary>
+      <div class="joint-grid" id="armLeftRows"></div>
+    </details>
+    <details class="teleop-group">
+      <summary><span class="group-title">Arm — right</span><span class="meta">no live-verified range on this bench yet — Idle only</span></summary>
+      <div class="joint-grid" id="armRightRows"></div>
+    </details>
+    <details class="teleop-group" open>
+      <summary><span class="group-title">Base actuators</span><span class="meta">speed + start/stop · bench CH5/CH6, slots 22–25</span></summary>
+      <div class="joint-grid" id="baseRows"></div>
+    </details>
+    <details class="teleop-group" open>
+      <summary><span class="group-title">Neck</span><span class="meta">2x Dynamixel</span></summary>
+      <div class="joint-grid" id="neckRows"></div>
+    </details>
+  </section>
+
+  <section class="card">
+    <p class="summary" id="summary">—</p>
+    <ul class="context" id="context"></ul>
+    <div class="grid compact" id="healthGlance" style="margin-top:0.75rem"></div>
+    <div class="row" style="margin-top:0.75rem">
+      <button class="record" id="recordBtn" onclick="toggleRecord()">&#9679; Record</button>
+      <span class="meta" id="recordMeta"></span>
+    </div>
+    <details class="sub">
+      <summary>Black box (fault capture)</summary>
+      <div class="grid compact" id="blackbox" style="margin-top:0.5rem"></div>
+    </details>
+    <details class="sub">
+      <summary>Advanced timing diagnostics</summary>
+      <div class="grid compact" id="healthAdvanced" style="margin-top:0.5rem"></div>
+    </details>
+  </section>
+
   <section class="card">
     <details id="plantControlDetails">
-      <summary><h2 style="display:inline">Plant control</h2> <span class="meta" id="plantControlSummaryMeta"></span></summary>
+      <summary><h2 style="display:inline">Advanced: raw per-slot Apply</h2> <span class="meta" id="plantControlSummaryMeta"></span></summary>
       <div class="row" style="margin-top:0.75rem">
         <button id="mcuNormal" onclick="setMcuState(0)">NORMAL</button>
         <button id="mcuRecovery" onclick="setMcuState(1)">RECOVERY</button>
@@ -659,10 +789,9 @@ _HTML = """<!DOCTYPE html>
           title="Control-only latch — needs Control mode (Enable control) to be armed. Not the same as Soft-kill Park, which works without Control mode.">ESTOP</button>
         <button id="recoverBtn" onclick="recover()">Recover</button>
         <button id="idleAllBtn" onclick="idleAll()">Idle all slots</button>
-        <span class="streaming-badge" id="streamingBadge">streaming: —</span>
       </div>
       <p class="err" id="ctrlError"></p>
-      <p class="meta">raw per-slot Apply (position/kp/kd) is in the table below — prefer Teleop below for normal driving</p>
+      <p class="meta">rarely needed — prefer Teleop above for normal driving. This is the raw per-slot position/kp/kd path.</p>
       <div style="overflow-x:auto">
         <table>
           <thead>
@@ -685,43 +814,16 @@ _HTML = """<!DOCTYPE html>
   </section>
 
   <section class="card">
-    <h2>Continuous mode</h2>
-    <div class="row">
-      <button id="continuousLaunchBtn" onclick="continuousLaunch()">Launch continuous</button>
-      <label class="meta">duration s (0 = until stopped) <input type="number" id="continuousDuration" value="0" step="1" style="width:5rem"></label>
-      <button id="continuousStopBtn" onclick="continuousStop()">Stop continuous (hard)</button>
-      <span class="meta" id="continuousStatus"></span>
-    </div>
-    <p class="banner" id="continuousBanner">Launch runs <code>yam_continuous_all.py</code> on the Jetson over SSH (syncs current files first) — the CDC port then belongs to that process, not this dashboard. Disconnect COM here before launching. Prefer Soft-kill Park above to stop it cleanly; "Stop continuous (hard)" is the pkill+CAN-blank fallback for a wedged process.</p>
-  </section>
-
-  <section class="card">
-    <h2>Teleop</h2>
-    <div class="row">
-      <label class="meta">CFG map
-        <select id="cfgMapSelect" onchange="setCfgMap()">
-          <option value="bench">bench (22–25, live-verified on this rig)</option>
-          <option value="product">product (14–19, not wired on this bench)</option>
-        </select>
-      </label>
-      <button onclick="idleGroup('arm_left')" title="Blanks ALL 7 left-arm joints at once — every joint loses holding torque simultaneously. For one joint, use that joint's own Idle button below.">Idle L-arm (all 7 joints)</button>
-      <button onclick="idleGroup('arm_right')" title="Blanks ALL 7 right-arm joints at once.">Idle R-arm (all 7 joints)</button>
-      <button onclick="idleGroup('base')">Idle base (all)</button>
-      <button onclick="idleGroup('neck')">Idle neck (both)</button>
-    </div>
-    <p class="banner warn" style="margin-top:0.5rem">Idle = zero torque on that joint — it will swing/drop under gravity or load from a neighboring joint if unsupported. Prefer Stop (freezes in place, keeps holding torque) unless you actually want it to go slack. The group buttons above idle every joint in that group at once — use a row's own Idle for just one joint.</p>
-    <p class="err" id="teleopError"></p>
-
-    <h3 style="font-size:0.85rem;color:var(--muted);margin:0.9rem 0 0.3rem">Arm — left (bench live-verified, drag = target, host walks there)</h3>
-    <div id="armLeftRows"></div>
-    <h3 style="font-size:0.85rem;color:var(--muted);margin:0.9rem 0 0.3rem">Arm — right (no live-verified range on this bench yet — Idle only)</h3>
-    <div id="armRightRows"></div>
-
-    <h3 style="font-size:0.85rem;color:var(--muted);margin:0.9rem 0 0.3rem">Base actuators — speed + start/stop (bench: CH5/CH6, slots 22–25)</h3>
-    <div id="baseRows"></div>
-
-    <h3 style="font-size:0.85rem;color:var(--muted);margin:0.9rem 0 0.3rem">Neck (2x Dynamixel)</h3>
-    <div id="neckRows"></div>
+    <details id="continuousDetails">
+      <summary><h2 style="display:inline">Continuous mode</h2></summary>
+      <div class="row">
+        <button id="continuousLaunchBtn" onclick="continuousLaunch()">Launch continuous</button>
+        <label class="meta">duration s (0 = until stopped) <input type="number" id="continuousDuration" value="0" step="1" style="width:5rem"></label>
+        <button class="btn-danger" id="continuousStopBtn" onclick="continuousStop()">Stop continuous (hard)</button>
+        <span class="meta" id="continuousStatus"></span>
+      </div>
+      <p class="banner" id="continuousBanner">Launch runs <code>yam_continuous_all.py</code> on the Jetson over SSH (syncs current files first) — the CDC port then belongs to that process, not this dashboard. Disconnect COM here before launching. Prefer Soft-kill Park above to stop it cleanly; "Stop continuous (hard)" is the pkill+CAN-blank fallback for a wedged process.</p>
+    </details>
   </section>
 </main>
 <script>
@@ -842,8 +944,8 @@ function buildActuatorRows(count) {
       <td><input type="number" step="0.1" id="kp${slot}" placeholder="0.0"></td>
       <td><input type="number" step="0.01" id="kd${slot}" placeholder="0.0"></td>
       <td>
-        <button id="apply${slot}" onclick="applyActuator(${slot})">Apply</button>
-        <button id="idle${slot}" onclick="idleActuator(${slot})">Idle</button>
+        <button class="btn-go" id="apply${slot}" onclick="applyActuator(${slot})">Apply</button>
+        <button class="btn-idle" id="idle${slot}" onclick="idleActuator(${slot})">Idle</button>
       </td>
     </tr>`;
   }
@@ -881,62 +983,70 @@ function idleGroup(group) { postAction(`/api/idle_group/${group}`, {}, setTeleop
 function teleopArmRow(spec) {
   const s = spec.slot;
   if (!spec.verified) {
-    return `<div class="teleop-row disabled" id="armRow${s}">
-      <span>${spec.label}</span>
-      <span class="meta">not live-verified on this bench — see arm-damiao-ch1.md</span>
-      <span></span><span></span>
-      <span class="btn-group"><button onclick="idleActuator(${s})" title="Zero torque on this joint only — it will move/drop under gravity/load if unsupported">Idle</button></span>
-      <span></span>
+    return `<div class="joint-card disabled" id="armRow${s}">
+      <div class="jc-head"><span class="jc-label">${spec.label}</span></div>
+      <div class="jc-sub">not live-verified on this bench — see arm-damiao-ch1.md</div>
+      <div class="jc-foot">
+        <span class="btn-group"><button class="btn-idle" onclick="idleActuator(${s})" title="Zero torque on this joint only — it will move/drop under gravity/load if unsupported">Idle</button></span>
+      </div>
     </div>`;
   }
   const mid = ((spec.lo + spec.hi) / 2).toFixed(3);
-  return `<div class="teleop-row" id="armRow${s}">
-    <span>${spec.label}</span>
-    <input type="range" id="armSlider${s}" min="${spec.lo}" max="${spec.hi}" step="0.01" value="${mid}"
-      oninput="document.getElementById('armVal${s}').textContent = this.value">
-    <span class="val" id="armVal${s}">${mid}</span>
-    <input type="number" id="armCruise${s}" value="${spec.cruise_default}" step="0.05" min="0" max="${spec.cruise_max}" title="cruise rad/s">
-    <span class="btn-group">
-      <button id="armGo${s}" onclick="teleopArmSet(${s})" title="Walk to the slider's position at the cruise rate">Go</button>
-      <button id="armStop${s}" onclick="teleopArmStop(${s})" title="Freeze here — keeps full holding torque, does not go slack">Stop</button>
-      <button id="armIdle${s}" onclick="idleActuator(${s})" title="Zero torque on THIS joint only — it will move/drop under gravity/load from a neighbor if unsupported">Idle</button>
-    </span>
-    <span class="meta" id="armCmd${s}">—</span>
+  return `<div class="joint-card" id="armRow${s}">
+    <div class="jc-head"><span class="jc-label">${spec.label}</span><span class="jc-sub">slot ${s}</span></div>
+    <div class="jc-slider">
+      <input type="range" id="armSlider${s}" min="${spec.lo}" max="${spec.hi}" step="0.01" value="${mid}"
+        oninput="document.getElementById('armVal${s}').textContent = this.value">
+      <span class="val" id="armVal${s}">${mid}</span>
+    </div>
+    <div class="jc-foot">
+      <input type="number" id="armCruise${s}" value="${spec.cruise_default}" step="0.05" min="0" max="${spec.cruise_max}" title="cruise rad/s">
+      <span class="btn-group">
+        <button class="btn-go" id="armGo${s}" onclick="teleopArmSet(${s})" title="Walk to the slider's position at the cruise rate">Go</button>
+        <button class="btn-stop" id="armStop${s}" onclick="teleopArmStop(${s})" title="Freeze here — keeps full holding torque, does not go slack">Stop</button>
+        <button class="btn-idle" id="armIdle${s}" onclick="idleActuator(${s})" title="Zero torque on THIS joint only — it will move/drop under gravity/load from a neighbor if unsupported">Idle</button>
+      </span>
+      <span class="cmd" id="armCmd${s}">—</span>
+    </div>
   </div>`;
 }
 
 function teleopBaseRow(spec) {
   const s = spec.slot;
-  return `<div class="teleop-row" id="baseRow${s}">
-    <span>${spec.label}</span>
-    <span class="meta">slot ${s} · ${spec.protocol}${spec.seed_relative ? " · window is ±2π from seed" : ""}</span>
-    <span></span>
-    <input type="number" id="baseCruise${s}" value="${spec.cruise_default}" step="0.05" min="0" max="${spec.cruise_max}" title="cruise rad/s">
-    <span class="btn-group">
-      <button id="baseJogP${s}" onclick="teleopBaseJog(${s}, 1)">Jog +</button>
-      <button id="baseJogM${s}" onclick="teleopBaseJog(${s}, -1)">Jog −</button>
-      <button id="baseStop${s}" onclick="teleopBaseStop(${s})" title="Freeze here — keeps holding torque">Stop</button>
-      <button id="baseIdle${s}" onclick="idleActuator(${s})" title="Zero torque on this actuator only">Idle</button>
-    </span>
-    <span class="meta" id="baseCmd${s}"></span>
+  return `<div class="joint-card" id="baseRow${s}">
+    <div class="jc-head"><span class="jc-label">${spec.label}</span><span class="jc-sub">slot ${s} · ${spec.protocol}${spec.seed_relative ? " · window is ±2π from seed" : ""}</span></div>
+    <div class="jc-foot">
+      <input type="number" id="baseCruise${s}" value="${spec.cruise_default}" step="0.05" min="0" max="${spec.cruise_max}" title="cruise rad/s">
+      <span class="btn-group">
+        <button class="btn-go" id="baseJogP${s}" onclick="teleopBaseJog(${s}, 1)">Jog +</button>
+        <button class="btn-go" id="baseJogM${s}" onclick="teleopBaseJog(${s}, -1)">Jog −</button>
+        <button class="btn-stop" id="baseStop${s}" onclick="teleopBaseStop(${s})" title="Freeze here — keeps holding torque">Stop</button>
+        <button class="btn-idle" id="baseIdle${s}" onclick="idleActuator(${s})" title="Zero torque on this actuator only">Idle</button>
+      </span>
+      <span class="cmd" id="baseCmd${s}"></span>
+    </div>
   </div>`;
 }
 
 function teleopNeckRow(spec) {
   const s = spec.slot;
   const mid = Math.round((spec.lo + spec.hi) / 2);
-  return `<div class="teleop-row" id="neckRow${s}">
-    <span>${spec.label}</span>
-    <input type="range" id="neckSlider${s}" min="${spec.lo}" max="${spec.hi}" step="1" value="${mid}"
-      oninput="document.getElementById('neckVal${s}').textContent = this.value">
-    <span class="val" id="neckVal${s}">${mid}</span>
-    <input type="number" id="neckCruise${s}" value="${spec.cruise_default}" step="10" min="0" max="${spec.cruise_max}" title="cruise native-steps/s">
-    <span class="btn-group">
-      <button id="neckGo${s}" onclick="teleopNeckSet(${s})">Go</button>
-      <button id="neckStop${s}" onclick="teleopNeckStop(${s})" title="Freeze here">Stop</button>
-      <button id="neckIdle${s}" onclick="teleopNeckIdle(${s})" title="Release torque on this servo only">Idle</button>
-    </span>
-    <span class="meta" id="neckCmd${s}">—</span>
+  return `<div class="joint-card" id="neckRow${s}">
+    <div class="jc-head"><span class="jc-label">${spec.label}</span><span class="jc-sub">slot ${s}</span></div>
+    <div class="jc-slider">
+      <input type="range" id="neckSlider${s}" min="${spec.lo}" max="${spec.hi}" step="1" value="${mid}"
+        oninput="document.getElementById('neckVal${s}').textContent = this.value">
+      <span class="val" id="neckVal${s}">${mid}</span>
+    </div>
+    <div class="jc-foot">
+      <input type="number" id="neckCruise${s}" value="${spec.cruise_default}" step="10" min="0" max="${spec.cruise_max}" title="cruise native-steps/s">
+      <span class="btn-group">
+        <button class="btn-go" id="neckGo${s}" onclick="teleopNeckSet(${s})">Go</button>
+        <button class="btn-stop" id="neckStop${s}" onclick="teleopNeckStop(${s})" title="Freeze here">Stop</button>
+        <button class="btn-idle" id="neckIdle${s}" onclick="teleopNeckIdle(${s})" title="Release torque on this servo only">Idle</button>
+      </span>
+      <span class="cmd" id="neckCmd${s}">—</span>
+    </div>
   </div>`;
 }
 
@@ -972,6 +1082,109 @@ function teleopNeckSet(slot) {
 }
 function teleopNeckStop(slot) { postAction(`/api/teleop/servo/${slot}/stop`, {}, setTeleopError); }
 function teleopNeckIdle(slot) { postAction(`/api/teleop/servo/${slot}/idle`, {}, setTeleopError); }
+function teleopStopAll() { postAction("/api/teleop/stop_all", {}, setTeleopError); }
+
+// Keyboard teleop — requires control mode; ignored while focus is in form fields.
+let keysControlMode = "observe";
+let keysArmSlot = null;
+const KEYS_ARM_STEP = 0.05;
+const KEYS_NECK_STEP = 40;
+
+function _keysTypingTarget(el) {
+  if (!el) return false;
+  const tag = (el.tagName || "").toLowerCase();
+  return tag === "input" || tag === "select" || tag === "textarea" || el.isContentEditable;
+}
+
+function _keysVerifiedArmSlots() {
+  if (!teleopGroups) return [];
+  return Object.values(teleopGroups.actuators)
+    .filter(s => s.group === "arm_left" && s.verified)
+    .sort((a, b) => a.slot - b.slot);
+}
+
+function _keysBaseSlots() {
+  if (!teleopGroups) return [];
+  return Object.values(teleopGroups.actuators)
+    .filter(s => s.group === "base")
+    .sort((a, b) => a.slot - b.slot);
+}
+
+function _keysNudgeArm(dir) {
+  if (keysArmSlot == null) return;
+  const slider = document.getElementById(`armSlider${keysArmSlot}`);
+  if (!slider) return;
+  const lo = parseFloat(slider.min);
+  const hi = parseFloat(slider.max);
+  let v = parseFloat(slider.value) + dir * KEYS_ARM_STEP;
+  v = Math.max(lo, Math.min(hi, v));
+  slider.value = v.toFixed(3);
+  const valEl = document.getElementById(`armVal${keysArmSlot}`);
+  if (valEl) valEl.textContent = slider.value;
+  teleopArmSet(keysArmSlot);
+}
+
+function _keysNudgeNeck(slot, dir) {
+  const slider = document.getElementById(`neckSlider${slot}`);
+  if (!slider) return;
+  const lo = parseFloat(slider.min);
+  const hi = parseFloat(slider.max);
+  let v = parseFloat(slider.value) + dir * KEYS_NECK_STEP;
+  v = Math.max(lo, Math.min(hi, Math.round(v)));
+  slider.value = String(v);
+  const valEl = document.getElementById(`neckVal${slot}`);
+  if (valEl) valEl.textContent = slider.value;
+  teleopNeckSet(slot);
+}
+
+function _keysUpdateArmLabel() {
+  const el = document.getElementById("keysArmSel");
+  if (!el) return;
+  el.textContent = keysArmSlot == null ? "—" : `slot ${keysArmSlot}`;
+}
+
+function _keysSetArmSlot(slot) {
+  if (keysArmSlot != null) {
+    const prev = document.getElementById(`armRow${keysArmSlot}`);
+    if (prev) prev.classList.remove("selected");
+  }
+  keysArmSlot = slot;
+  if (keysArmSlot != null) {
+    const cur = document.getElementById(`armRow${keysArmSlot}`);
+    if (cur) cur.classList.add("selected");
+  }
+  _keysUpdateArmLabel();
+}
+
+window.addEventListener("keydown", (ev) => {
+  if (_keysTypingTarget(ev.target)) return;
+  if (keysControlMode !== "control") return;
+  const k = ev.key;
+  if (k === " ") {
+    ev.preventDefault();
+    teleopStopAll();
+    return;
+  }
+  if (k === "ArrowUp") { ev.preventDefault(); _keysNudgeNeck(0, 1); return; }
+  if (k === "ArrowDown") { ev.preventDefault(); _keysNudgeNeck(0, -1); return; }
+  if (k === "ArrowLeft") { ev.preventDefault(); _keysNudgeNeck(1, -1); return; }
+  if (k === "ArrowRight") { ev.preventDefault(); _keysNudgeNeck(1, 1); return; }
+  if (k >= "1" && k <= "7") {
+    const arms = _keysVerifiedArmSlots();
+    const idx = parseInt(k, 10) - 1;
+    if (idx < arms.length) {
+      _keysSetArmSlot(arms[idx].slot);
+    }
+    return;
+  }
+  if (k === "[") { ev.preventDefault(); _keysNudgeArm(-1); return; }
+  if (k === "]") { ev.preventDefault(); _keysNudgeArm(1); return; }
+  const base = _keysBaseSlots();
+  if (k === "z" || k === "Z") { if (base[0]) teleopBaseJog(base[0].slot, -1); return; }
+  if (k === "x" || k === "X") { if (base[0]) teleopBaseJog(base[0].slot, 1); return; }
+  if (k === "c" || k === "C") { if (base[1]) teleopBaseJog(base[1].slot, -1); return; }
+  if (k === "v" || k === "V") { if (base[1]) teleopBaseJog(base[1].slot, 1); return; }
+});
 
 function continuousLaunch() {
   const duration_s = parseFloat(document.getElementById("continuousDuration").value) || 0;
@@ -989,19 +1202,24 @@ async function tick() {
     g.className = "grade " + grade;
     document.getElementById("summary").textContent = s.summary || "—";
     const modeLabel = s.control_mode || (s.connected ? "observe" : "idle");
+    keysControlMode = s.control_mode || "observe";
     document.getElementById("meta").textContent = s.connected
       ? `${s.port || "?"} · ${modeLabel} · poll 200ms`
       : (s.following_state_file ? `follow · poll 200ms` : `idle · poll 200ms`);
     const ctx = document.getElementById("context");
     ctx.innerHTML = (s.context || []).map(c => `<li>${c}</li>`).join("");
 
-    document.getElementById("health").innerHTML = [
-      kv("tick", s.tick),
+    document.getElementById("healthGlance").innerHTML = [
       kv("fb_hz", s.fb_hz != null ? s.fb_hz.toFixed(1) : null),
-      kv("plant_block", s.plant_block_name || s.plant_block),
       kv("mcu_state", s.mcu_state),
-      kv("ack_seq", s.ack_seq),
+      kv("plant_block", s.plant_block_name || s.plant_block),
       kv("ack_lag", s.stream_ack_lag),
+      kv("tick", s.tick),
+      kv("age_s", s.age_s != null ? s.age_s.toFixed(2) : null),
+    ].join("");
+
+    document.getElementById("healthAdvanced").innerHTML = [
+      kv("ack_seq", s.ack_seq),
       kv("act_lap_ms", s.lap_ms),
       kv("act_lap_peak_ms", s.lap_max_ms),
       kv("periph_lap_ms", s.periph_lap_ms),
@@ -1015,9 +1233,8 @@ async function tick() {
       kv("host_credit_wait_ms", s.stream_credit_wait_ms != null ? s.stream_credit_wait_ms.toFixed(1) : null),
       kv("host_pub_ms", s.stream_publish_ms != null ? s.stream_publish_ms.toFixed(1) : null),
       kv("host_loop_ms", s.stream_loop_ms != null ? s.stream_loop_ms.toFixed(1) : null),
-      kv("ui_note", "3 jobs: plant TX / UI snapshot / opt-in Record. Healthy: ack_lag~0, fb flood when idle. If MCP Apply spikes lag, Idle all + check firmware plant MCP path."),
       kv("svd", s.svd_present ? "yes" : "no"),
-      kv("age_s", s.age_s != null ? s.age_s.toFixed(2) : null),
+      kv("ui_note", "3 jobs: plant TX / UI snapshot / opt-in Record. Healthy: ack_lag~0, fb flood when idle. If MCP Apply spikes lag, Idle all + check firmware plant MCP path."),
     ].join("");
 
     document.getElementById("blackbox").innerHTML = [
@@ -1038,12 +1255,14 @@ async function tick() {
     // with a parseable system-kill block arrives (or never connected).
     const pdb = s.pdb_status;
     const hostRequested = s.mcu_state === 3;  // McuState.ESTOP — same latch plant_command.c drives to pdb_link_request_estop()
-    document.getElementById("pdu").innerHTML = pdb ? [
+    document.getElementById("pduGlance").innerHTML = pdb ? [
       kv("kill_state (MCU view, freshness-gated)", pdb.kill_state_name),
       kv("kill_reason", pdb.kill_reason_name),
       kv("stale_failsafe", pdb.stale_failsafe ? "yes (COMMS_LOSS -> HARD)" : "no"),
       kv("host requested ESTOP", hostRequested ? "yes" : "no"),
       kv("local estop_sense (Controls PB7)", pdb.estop_sense === 1 ? "1 (allowed)" : "0 (asserted)"),
+    ].join("") : `<div class="kv"><span class="k">status</span><div class="v">no PDB frame yet</div></div>`;
+    document.getElementById("pduAdvanced").innerHTML = pdb ? [
       kv("peer kill_state (raw PDBF)", pdb.pdb ? PEER_KILL_STATE_NAMES[pdb.pdb.kill_state] ?? pdb.pdb.kill_state : "—"),
       kv("peer estop_sense (raw PDBF)", pdb.pdb ? (pdb.pdb.estop_sense === 1 ? "1 (allowed)" : "0 (asserted)") : "—"),
       kv("contactor_state", pdb.pdb ? pdb.pdb.contactor_state : "—"),
@@ -1051,7 +1270,7 @@ async function tick() {
       kv("rail_v (V) x4", fmtVec(pdb.rail_v_V)),
       kv("pack_i (A) x4", fmtVec(pdb.pack_i_A)),
       kv("rail_i (A) x4", fmtVec(pdb.rail_i_A)),
-    ].join("") : `<div class="kv"><span class="k">status</span><div class="v">no PDB frame yet</div></div>`;
+    ].join("") : "";
     // Soft-kill Park stays clickable while following continuous state.json
     // (peer owns CDC) — POST writes a request flag the peer honors.
     const canSoftKill = !!(s.connected || s.following_state_file || s.peer_connected);
@@ -1075,6 +1294,8 @@ async function tick() {
     document.getElementById("disconnectBtn").disabled = !s.connected;
     document.getElementById("enableCtrlBtn").disabled = !inObserve;
     document.getElementById("observeBtn").disabled = !inControl;
+    document.getElementById("enableCtrlBtn").classList.toggle("active", inControl);
+    document.getElementById("observeBtn").classList.toggle("active", inObserve);
     document.getElementById("portSelect").disabled = !!s.connected;
     document.getElementById("connMeta").textContent = s.connected
       ? `${s.port} · ${s.control_mode || "observe"}`
@@ -1417,6 +1638,12 @@ def make_handler(state: AppState):
                             target=float(body["target"]),
                             cruise=float(body.get("cruise", 0.0)),
                         )
+                elif path == "/api/teleop/stop_all":
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    if state.control_mode != "control":
+                        raise RuntimeError("Enable control first (observe mode is read-only)")
+                    state.teleop_stop_all()
                 elif path == "/api/continuous/launch":
                     self._send_json(state.launch_continuous(duration_s=float(body.get("duration_s", 0.0))))
                     return

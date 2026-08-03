@@ -18,6 +18,21 @@ from deft_controls_sdk.actions.cfg_identity import (  # noqa: E402
 from deft_controls_sdk.config import PROTO_ROBSTRIDE, single_profile  # noqa: E402
 from deft_controls_sdk.debug import config as cfg_mod  # noqa: E402
 from deft_controls_sdk.link.exchange import ACTUATOR_COUNT, CFG_OP_LOAD  # noqa: E402
+from deft_controls_sdk.link.exchange.bench import (  # noqa: E402
+    CFG_FLAG_LISTEN_PDU,
+    CFG_OP_GET_PERIPH,
+    CFG_OP_SET_PERIPH,
+    CFG_RESP_TAG0,
+    CFG_RESP_TAG1,
+    CFG_RESP_TAG2,
+    CFG_SPI3_ROLE_MASK,
+    CFG_SPI3_ROLE_SHIFT,
+    CFG_STATUS_OK,
+    SPI3_ROLE_THERMO,
+    build_cfg_command,
+    parse_cfg_feedback,
+)
+from deft_controls_sdk.link.exchange.debug_lanes import extract_cfg_mailbox  # noqa: E402
 
 
 def test_cfg_op_load_constant():
@@ -139,3 +154,24 @@ def test_profile_in_table_and_deprecated_alias():
 
 def test_actuator_count_matches_apply_default():
     assert ACTUATOR_COUNT == 26
+
+
+def test_spi3_role_packed_in_periph_flags():
+    cmd = build_cfg_command(
+        CFG_OP_SET_PERIPH,
+        1,
+        periph={"listen_pdu": True, "spi3_role": "thermo", "servos": [], "led": {}},
+    )
+    mbox = extract_cfg_mailbox(cmd)
+    assert mbox is not None
+    assert mbox[8] & CFG_FLAG_LISTEN_PDU
+    assert ((mbox[8] & CFG_SPI3_ROLE_MASK) >> CFG_SPI3_ROLE_SHIFT) == SPI3_ROLE_THERMO
+
+    pdu = bytearray(32)
+    pdu[0], pdu[1], pdu[2] = CFG_RESP_TAG0, CFG_RESP_TAG1, CFG_RESP_TAG2
+    pdu[3], pdu[4], pdu[8] = CFG_OP_GET_PERIPH, CFG_STATUS_OK, mbox[8]
+    parsed = parse_cfg_feedback(bytes(pdu))
+    assert parsed is not None
+    assert parsed["listen_pdu"] is True
+    assert parsed["spi3_role"] == SPI3_ROLE_THERMO
+    assert parsed["spi3_role_name"] == "thermo"
