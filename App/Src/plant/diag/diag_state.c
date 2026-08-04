@@ -38,3 +38,27 @@ can_bus_id_t g_dm_can_bus;
 uint8_t g_dm_bus_mask;
 uint8_t g_dm_feedback_ttl;
 uint32_t g_dm_quiet_until_ms;
+
+cubemars_probe_result_t g_last_cm_probe;
+volatile bool g_cm_feedback_active;
+uint8_t g_cm_pending_kind;
+uint8_t g_cm_pending_motor_id;
+uint16_t g_cm_pending_listen_ms;
+can_bus_id_t g_cm_pending_bus;
+volatile bool g_cm_session_active;
+can_bus_id_t g_cm_can_bus;
+uint8_t g_cm_bus_mask;
+uint8_t g_cm_feedback_ttl;
+uint32_t g_cm_quiet_until_ms;
+
+zeroerr_probe_result_t g_last_ze_probe;
+volatile bool g_ze_feedback_active;
+uint8_t g_ze_pending_kind;
+uint8_t g_ze_pending_node_id;
+uint32_t g_ze_pending_sdo_timeout_ms;
+can_bus_id_t g_ze_pending_bus;
+volatile bool g_ze_session_active;
+can_bus_id_t g_ze_can_bus;
+uint8_t g_ze_bus_mask;
+uint8_t g_ze_feedback_ttl;
+uint32_t g_ze_quiet_until_ms;

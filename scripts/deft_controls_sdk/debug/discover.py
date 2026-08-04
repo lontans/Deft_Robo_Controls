@@ -1,22 +1,26 @@
 """Queued multi-bus / multi-protocol discover.
 
 RobStride with multiple buses uses one multi-bus SESSION_BEGIN + overlapping
-listen (FW ``robstride_probe_id_buses``). Damiao stays per-bus sequential for
-now. Protocol queue is still outer (no RS×DM overlap on the same session).
+listen (FW ``robstride_probe_id_buses``). Damiao / CubeMars stay per-bus
+sequential for now. CubeMars is MIT-frame discover (no register-read scheme,
+unlike Damiao); ZeroErr is a CANopen SDO node sweep (0x1018), not MIT-shaped.
+Protocol queue is still outer (no cross-protocol overlap on the same session).
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from . import cubemars as _cubemars
 from . import damiao as _damiao
 from . import robstride as _robstride
+from . import zeroerr as _zeroerr
 
 if TYPE_CHECKING:
     from deft_controls_sdk.link import Connection
     from deft_controls_sdk.telemetry import TelemetryCache
 
-# Discoverable protocols in default ``all`` order (ZeroErr discover not wired).
-DISCOVER_PROTOCOLS_DEFAULT: Tuple[str, ...] = ("robstride", "damiao")
+# Discoverable protocols in default ``all`` order.
+DISCOVER_PROTOCOLS_DEFAULT: Tuple[str, ...] = ("robstride", "damiao", "cubemars", "zeroerr")
 DISCOVER_PROTOCOL_ALIASES = {
     "robstride": "robstride",
     "rs": "robstride",
@@ -26,10 +30,20 @@ DISCOVER_PROTOCOL_ALIASES = {
     "damiao": "damiao",
     "dm": "damiao",
     "3": "damiao",
+    "cubemars": "cubemars",
+    "cm": "cubemars",
+    "ak": "cubemars",
+    "2": "cubemars",
+    "zeroerr": "zeroerr",
+    "ze": "zeroerr",
+    "erob": "zeroerr",
+    "4": "zeroerr",
 }
 DEFAULT_ID_RANGE: Dict[str, Tuple[int, int]] = {
     "robstride": (0x40, 0x80),
     "damiao": (1, 16),
+    "cubemars": (1, 16),
+    "zeroerr": (1, 16),
 }
 
 
@@ -138,6 +152,28 @@ def _discover_one(
                 start=start,
                 end=end,
                 listen_ms=listen_ms,
+            )
+        )
+    if protocol == "cubemars":
+        return list(
+            _cubemars.discover_all(
+                connection,
+                telemetry,
+                bus=bus,
+                start=start,
+                end=end,
+                listen_ms=listen_ms,
+            )
+        )
+    if protocol == "zeroerr":
+        return list(
+            _zeroerr.discover_all(
+                connection,
+                telemetry,
+                bus=bus,
+                start=start,
+                end=end,
+                sdo_timeout_ms=listen_ms,
             )
         )
     raise ValueError(f"unsupported discover protocol {protocol!r}")

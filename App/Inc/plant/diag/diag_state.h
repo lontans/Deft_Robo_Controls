@@ -5,6 +5,8 @@
 #include "plant/can/mcp2518fd.h"
 #include "plant/plugins/damiao.h"
 #include "plant/plugins/robstride.h"
+#include "plant/plugins/cubemars.h"
+#include "plant/plugins/zeroerr.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -47,3 +49,29 @@ extern can_bus_id_t g_dm_can_bus;
 extern uint8_t g_dm_bus_mask;
 extern uint8_t g_dm_feedback_ttl;
 extern uint32_t g_dm_quiet_until_ms;
+
+/* CubeMars bench state — mirrors the g_dm_* group above. */
+extern cubemars_probe_result_t g_last_cm_probe;
+extern volatile bool g_cm_feedback_active;
+extern uint8_t g_cm_pending_kind;
+extern uint8_t g_cm_pending_motor_id;
+extern uint16_t g_cm_pending_listen_ms;
+extern can_bus_id_t g_cm_pending_bus;
+extern volatile bool g_cm_session_active;
+extern can_bus_id_t g_cm_can_bus;
+extern uint8_t g_cm_bus_mask;
+extern uint8_t g_cm_feedback_ttl;
+extern uint32_t g_cm_quiet_until_ms;
+
+/* ZeroErr bench state — CANopen node sweep, not MIT-shaped. */
+extern zeroerr_probe_result_t g_last_ze_probe;
+extern volatile bool g_ze_feedback_active;
+extern uint8_t g_ze_pending_kind;
+extern uint8_t g_ze_pending_node_id;
+extern uint32_t g_ze_pending_sdo_timeout_ms;
+extern can_bus_id_t g_ze_pending_bus;
+extern volatile bool g_ze_session_active;
+extern can_bus_id_t g_ze_can_bus;
+extern uint8_t g_ze_bus_mask;
+extern uint8_t g_ze_feedback_ttl;
+extern uint32_t g_ze_quiet_until_ms;

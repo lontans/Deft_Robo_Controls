@@ -1,4 +1,6 @@
 #include "plant/can/canopen.h"
+#include "plant/can/mcp2518fd.h"
+#include "plant/can/spi_can_router.h"
 #include "main.h"
 #include <string.h>
 
@@ -16,13 +18,36 @@ void canopen_frame_std(can_frame_t *out, uint16_t cob_id, uint8_t dlc,
 		memcpy(out->data, data, out->dlc);
 }
 
+/* MCP2518 SPI-CAN rails (CH4-6): queued enqueue+flush from this blocking bench
+ * context was observed to stall (see damiao_probe_tx_now / robstride probes) —
+ * bypass the software TX queue with the same prepare+send_now pattern so
+ * ZeroErr SDO/NMT bench traffic works on MCP rails, not only FDCAN CH1-3. */
+static bool canopen_tx_now(can_bus_id_t bus, const can_frame_t *frame)
+{
+	if (frame == NULL)
+		return false;
+
+	if (bus >= CAN_BUS_CH4) {
+		mcp2518_prepare_tx(bus);
+		if (spi_can_router_send_now(bus, frame))
+			return true;
+		mcp2518_prepare_tx(bus);
+		return spi_can_router_send_now(bus, frame);
+	}
+
+	if (can_tx_enqueue(bus, frame) != CAN_OK)
+		return false;
+	(void)can_tx_flush(bus);
+	return true;
+}
+
 bool canopen_nmt_send(can_bus_id_t bus, uint8_t cs, uint8_t node_id)
 {
 	uint8_t data[2] = { cs, node_id & 0x7Fu };
 	can_frame_t frame;
 
 	canopen_frame_std(&frame, CANOPEN_NMT_COB, 2u, data);
-	return can_tx_enqueue(bus, &frame) == CAN_OK;
+	return canopen_tx_now(bus, &frame);
 }
 
 bool canopen_sync_send(can_bus_id_t bus)
@@ -30,7 +55,7 @@ bool canopen_sync_send(can_bus_id_t bus)
 	can_frame_t frame;
 
 	canopen_frame_std(&frame, CANOPEN_SYNC_COB, 0u, NULL);
-	return can_tx_enqueue(bus, &frame) == CAN_OK;
+	return canopen_tx_now(bus, &frame);
 }
 
 static bool canopen_sdo_transact(can_bus_id_t bus, uint8_t node,
@@ -45,11 +70,9 @@ static bool canopen_sdo_transact(can_bus_id_t bus, uint8_t node,
 		return false;
 
 	canopen_frame_std(&tx, canopen_cob_sdo_rx(node), 8u, req);
-	if (can_tx_enqueue(bus, &tx) != CAN_OK)
+	if (!canopen_tx_now(bus, &tx))
 		return false;
 
-	/* Push TX then poll RX — short timed wait, no HAL_Delay. */
-	(void)can_tx_flush(bus);
 	deadline = HAL_GetTick() + (timeout_ms == 0u ? 1u : timeout_ms);
 
 	while ((int32_t)(HAL_GetTick() - deadline) < 0) {

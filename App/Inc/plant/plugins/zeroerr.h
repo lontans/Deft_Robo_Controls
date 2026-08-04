@@ -70,3 +70,26 @@ bool zeroerr_boot_blocking(can_bus_id_t bus, uint8_t node_id, uint32_t sdo_timeo
 bool zeroerr_read_identity(can_bus_id_t bus, uint8_t node_id,
                            uint32_t *vendor, uint32_t *product, uint32_t *revision,
                            uint32_t sdo_timeout_ms);
+
+/* Bench discover/probe — never called from zeroerr_apply_cycle. Sweeps
+ * CANopen node IDs via SDO-read 0x1018 (Identity Object); any node that
+ * answers is reported, with vendor_match flagging a confirmed ZeroErr
+ * eDriver (vendor/product match) vs. some other CANopen node replying. */
+typedef struct {
+	bool     found;
+	bool     vendor_match;
+	uint8_t  node_id;
+	uint8_t  discovered_id;
+	uint32_t vendor;
+	uint32_t product;
+	uint32_t revision;
+} zeroerr_probe_result_t;
+
+bool zeroerr_probe_node(can_bus_id_t bus, uint8_t node_id, uint32_t sdo_timeout_ms,
+                        zeroerr_probe_result_t *out);
+
+/* Sweeps [start_id, end_id] (clamped to valid CANopen node ids 1..127),
+ * stopping at the first hit — same "host re-sweeps from hit+1" contract as
+ * the Damiao/CubeMars ID sweeps. */
+bool zeroerr_probe_node_range(can_bus_id_t bus, uint8_t start_id, uint8_t end_id,
+                              uint32_t sdo_timeout_ms, zeroerr_probe_result_t *out);

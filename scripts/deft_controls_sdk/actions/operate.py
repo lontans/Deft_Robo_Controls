@@ -15,6 +15,8 @@ from typing import Callable, Dict, Mapping, Optional, Sequence
 
 from deft_controls_sdk.config.profile import NECK_PITCH_SERVO_SLOT, NECK_YAW_SERVO_SLOT
 
+from .arm_brace import ENGAGE_KP, J2_KP_SCALE
+from .gravity_comp import GravityComp, I2RT_GRAVITY_SCALE, try_gravity_comp
 from .teleop import SlotSpec, TeleopEngine, build_actuator_specs, build_servo_specs
 
 
@@ -26,13 +28,30 @@ def make_teleop_engine(
     hub_getter: HubGetter,
     *,
     feedback_getter: Optional[FeedbackGetter] = None,
-    hz: float = 25.0,
+    hz: float = 60.0,
+    brace_left_arm: bool = True,
+    gravity: bool = True,
+    gravity_scale: float = I2RT_GRAVITY_SCALE,
+    gravity_comp: Optional[GravityComp] = None,
+    arm_kp_scale: float = ENGAGE_KP,
+    j2_kp_scale: float = J2_KP_SCALE,
 ) -> TeleopEngine:
-    """Construct a shared cruise engine (actuators + neck servos)."""
+    """Construct a shared cruise engine (actuators + neck servos).
+
+    Left-arm teleop defaults match continuous ``--mouse``: brace all 7 joints,
+    ENGAGE_KP / J2 boost, optional MuJoCo gravity FF (silently off if unavailable).
+    """
+    gc = gravity_comp
+    if gc is None and gravity:
+        gc = try_gravity_comp(scale=gravity_scale)
     return TeleopEngine(
         hub_getter=hub_getter,
         feedback_getter=feedback_getter,
         hz=hz,
+        brace_left_arm=brace_left_arm,
+        gravity_comp=gc,
+        arm_kp_scale=arm_kp_scale,
+        j2_kp_scale=j2_kp_scale,
     )
 
 

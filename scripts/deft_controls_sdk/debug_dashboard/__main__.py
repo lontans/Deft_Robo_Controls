@@ -50,7 +50,12 @@ def main(argv: list[str] | None = None) -> int:
         default=8766,
         help="UI bind port (default 8766 — avoids pdb_uart_sim --control-port 8765)",
     )
-    p.add_argument("--hz", type=float, default=40.0, help="Plant stream TX rate (legacy teleop default)")
+    p.add_argument(
+        "--hz",
+        type=float,
+        default=100.0,
+        help="Plant stream TX rate (default 100; continuous mouse uses ~125)",
+    )
     p.add_argument(
         "--telemetry-hz",
         type=float,

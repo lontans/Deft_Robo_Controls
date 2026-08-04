@@ -1,7 +1,11 @@
 #include "plant/plugins/cubemars.h"
 #include "plant/plugin_schema/plugin.h"
 #include "plant/can/can_router.h"
+#include "plant/can/mcp2518fd.h"
+#include "plant/can/spi_can_router.h"
+#include "plant/plant_diag.h"
 #include "plant/actuator.h"
+#include "main.h"
 #include <string.h>
 
 /*
@@ -378,3 +382,183 @@ const plugin_ops_t cubemars_ops = {
 	.pack_tx  = cubemars_pack_mit,
 	.parse_rx = cubemars_parse_mit,
 };
+
+/* --------------------------------------------------------------------- */
+/* Bench discover/probe — never called from cubemars_apply_cycle.        */
+/* --------------------------------------------------------------------- */
+
+static void cubemars_probe_copy_rx(const can_frame_t *frame, cubemars_probe_result_t *out)
+{
+	if (frame == NULL || out == NULL)
+		return;
+	out->rx_can_id = frame->id;
+	memcpy(out->data, frame->data, 8u);
+}
+
+/* Decodes with the default-model limits (position uses shared P_MIN/P_MAX,
+ * always correct; velocity/torque may be off if the live drive isn't
+ * CUBEMARS_MIT_DEFAULT_MODEL — acceptable for discover, which only needs
+ * "does something answer at this Drive ID", not calibrated motion. */
+static bool cubemars_probe_try_parse(const can_frame_t *frame, uint8_t probed_id,
+                                     bool promiscuous, cubemars_probe_result_t *out)
+{
+	const cubemars_ak_limits_t *lim = &k_ak_limits[CUBEMARS_MIT_DEFAULT_MODEL];
+	unsigned p_u, v_u, t_u;
+
+	if (frame == NULL || out == NULL)
+		return false;
+	if (frame->id_type != CAN_ID_STD)
+		return false;
+	if (frame->dlc < 6u)
+		return false;
+	if (!promiscuous && (frame->data[0] & 0xFFu) != probed_id)
+		return false;
+
+	out->found = true;
+	out->discovered_id = frame->data[0];
+	out->rx_can_id = frame->id;
+	memcpy(out->data, frame->data, 8u);
+
+	p_u = ((unsigned)frame->data[1] << 8) | frame->data[2];
+	v_u = ((unsigned)frame->data[3] << 4) | (frame->data[4] >> 4);
+	t_u = (((unsigned)frame->data[4] & 0x0Fu) << 8) | frame->data[5];
+
+	out->position    = cubemars_uint_to_float(p_u, CUBEMARS_MIT_P_MIN, CUBEMARS_MIT_P_MAX, 16);
+	out->velocity    = cubemars_uint_to_float(v_u, lim->v_min, lim->v_max, 12);
+	out->torque      = cubemars_uint_to_float(t_u, lim->t_min, lim->t_max, 12);
+	out->temperature = (frame->dlc >= 7u) ? (float)frame->data[6] : 0.0f;
+	out->fault       = (frame->dlc >= 8u) ? frame->data[7] : 0u;
+	return true;
+}
+
+/* Bypass the software TX queue on MCP rails — queued enqueue+flush from this
+ * blocking bench context was observed to stall (same fix as damiao_probe_tx_now
+ * / RobStride probes). */
+static bool cubemars_probe_tx_now(can_bus_id_t bus, const can_frame_t *frame)
+{
+	if (frame == NULL)
+		return false;
+
+	if (bus >= CAN_BUS_CH4) {
+		mcp2518_prepare_tx(bus);
+		if (spi_can_router_send_now(bus, frame))
+			return true;
+		mcp2518_prepare_tx(bus);
+		return spi_can_router_send_now(bus, frame);
+	}
+
+	if (can_tx_enqueue(bus, frame) != CAN_OK)
+		return false;
+	can_router_poll_bus(bus);
+	return true;
+}
+
+static bool cubemars_probe_send(uint8_t motor_id, uint8_t probe_kind, can_frame_t *tx)
+{
+	switch (probe_kind) {
+	case CUBEMARS_PROBE_ENABLE:
+		cubemars_pack_cmd(motor_id, CUBEMARS_MIT_CMD_ENABLE, tx);
+		return true;
+	case CUBEMARS_PROBE_DISABLE:
+		cubemars_pack_cmd(motor_id, CUBEMARS_MIT_CMD_DISABLE, tx);
+		return true;
+	case CUBEMARS_PROBE_SET_ZERO:
+		cubemars_pack_cmd(motor_id, CUBEMARS_MIT_CMD_SET_ZERO, tx);
+		return true;
+	default: {
+		actuator_config_t local = {
+			.protocol = PROTO_CUBEMARS,
+			.motor_id = motor_id,
+			.enabled = true,
+		};
+		static const actuator_desire_t desire_zero = {0};
+
+		return cubemars_pack_mit(&local, &desire_zero, tx) == PLUGIN_OK;
+	}
+	}
+}
+
+static bool cubemars_probe_listen(can_bus_id_t bus, const can_frame_t *tx,
+                                  uint8_t motor_id, bool promiscuous,
+                                  uint16_t listen_ms, cubemars_probe_result_t *out)
+{
+	bool mcp = (bus >= CAN_BUS_CH4);
+
+	if (cubemars_probe_tx_now(bus, tx) && out->tx_frames_sent < 255u)
+		out->tx_frames_sent++;
+
+	for (uint16_t attempt = 0; attempt < listen_ms; attempt++) {
+		can_frame_t rx;
+
+		if (!mcp)
+			can_router_poll_bus(bus);
+		while (can_rx_pop(bus, &rx) == CAN_OK) {
+			if (out->raw_frames_seen < 255u)
+				out->raw_frames_seen++;
+			cubemars_probe_copy_rx(&rx, out);
+			if (cubemars_probe_try_parse(&rx, motor_id, promiscuous, out))
+				return true;
+		}
+		if (mcp)
+			can_router_poll_bus(bus);
+		plant_diag_yield_usb();
+		HAL_Delay(1);
+	}
+	return false;
+}
+
+bool cubemars_probe_id(can_bus_id_t bus, uint8_t motor_id, uint8_t probe_kind,
+                       uint16_t listen_ms, cubemars_probe_result_t *out)
+{
+	can_frame_t tx;
+	bool promiscuous = (probe_kind == CUBEMARS_PROBE_PROMISC);
+
+	if (out == NULL)
+		return false;
+	if (listen_ms == 0u)
+		listen_ms = 15u;
+	if (bus >= CAN_BUS_CH4 && listen_ms < 40u)
+		listen_ms = 40u;
+
+	memset(out, 0, sizeof(*out));
+	out->motor_id = motor_id;
+	out->probe_kind = probe_kind;
+
+	if (!cubemars_probe_send(motor_id, probe_kind, &tx))
+		return false;
+
+	return cubemars_probe_listen(bus, &tx, motor_id, promiscuous, listen_ms, out);
+}
+
+bool cubemars_probe_id_range(can_bus_id_t bus, uint8_t start_id, uint8_t end_id,
+                             uint16_t listen_ms_per_id, cubemars_probe_result_t *out)
+{
+	uint16_t lo = start_id;
+	uint16_t hi = end_id;
+
+	if (out == NULL)
+		return false;
+	if (listen_ms_per_id == 0u)
+		listen_ms_per_id = 3u;
+	if (bus >= CAN_BUS_CH4 && listen_ms_per_id < 20u)
+		listen_ms_per_id = 20u;
+	if (hi < lo) {
+		uint16_t tmp = lo;
+		lo = hi;
+		hi = tmp;
+	}
+
+	memset(out, 0, sizeof(*out));
+	out->probe_kind = CUBEMARS_PROBE_ID_SWEEP;
+
+	for (uint16_t id = lo; id <= hi; id++) {
+		can_frame_t tx;
+
+		out->motor_id = (uint8_t)id;
+		if (!cubemars_probe_send((uint8_t)id, CUBEMARS_PROBE_MIT, &tx))
+			continue;
+		if (cubemars_probe_listen(bus, &tx, (uint8_t)id, false, listen_ms_per_id, out))
+			return true;
+	}
+	return false;
+}

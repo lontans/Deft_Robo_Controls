@@ -4,6 +4,10 @@ Host-side slew: engage a target and ramp held ``ActuatorDesire`` /
 ``ServoDesire`` at a bounded cruise rate. Shared by board verify,
 ``debug_dashboard``, and notebook helpers via ``make_teleop_engine``.
 
+Left-arm teleop (default): braces all 7 joints every tick with continuous
+``--mouse`` gains (ENGAGE_KP / J2 boost), lead clamp vs FB, and optional
+MuJoCo gravity FF — see ``arm_brace`` / ``gravity_comp``.
+
 Ranges/gains mirror bench-verified constants (arm clear ranges, RS/DM base).
 Slots without live-verified ranges stay ``verified=False`` (gates target
 teleop; blanking is always safe).
@@ -34,6 +38,15 @@ from deft_controls_sdk.config.profile import (
 from deft_controls_sdk.config.servo import NECK_PITCH_DXL_ID, NECK_YAW_DXL_ID
 from deft_controls_sdk.link import ActuatorDesire, ServoDesire
 from deft_controls_sdk.link.exchange import parse_servo_feedback
+
+from .arm_brace import (
+    ENGAGE_KP,
+    J2_INDEX,
+    J2_KP_SCALE,
+    lead_clamp,
+    write_left_arm,
+)
+from .gravity_comp import GravityComp, try_gravity_comp
 
 # Left-arm clear envelope — keep in sync with ``config/yam_bench_clear_left.py``.
 ARM_LEFT_LO = (
@@ -227,20 +240,30 @@ class TeleopEngine:
     a write."""
 
     def __init__(
-        self, *, hub_getter: Callable[[], object],
+        self,
+        *,
+        hub_getter: Callable[[], object],
         feedback_getter: Optional[Callable[[], Dict[int, dict]]] = None,
-        hz: float = 25.0,
+        hz: float = 60.0,
+        brace_left_arm: bool = True,
+        gravity_comp: Optional[GravityComp] = None,
+        arm_kp_scale: float = ENGAGE_KP,
+        j2_kp_scale: float = J2_KP_SCALE,
     ) -> None:
         self._hub_getter = hub_getter
         # Returns {slot: {"position": float, "velocity": float}} for slots with live feedback
-        # this tick — used only for the settled-hold damping/flag logic below, never to move the
-        # commanded target. Optional so tests / callers that don't care about hold-robustness can
-        # omit it and get the plain slew behavior.
+        # this tick — used for hold damping, lead clamp, and sibling brace seeds.
         self._feedback_getter = feedback_getter
-        self._dt = 1.0 / hz
+        self._dt = 1.0 / max(float(hz), 1.0)
+        self._brace_left_arm = bool(brace_left_arm)
+        self._gravity_comp = gravity_comp
+        self._arm_kp_scale = float(arm_kp_scale)
+        self._j2_kp_scale = float(j2_kp_scale)
         self._lock = threading.Lock()
         self._act: Dict[int, dict] = {}
         self._srv: Dict[int, dict] = {}
+        # Last braced left-arm command (sibling hold when not engaged).
+        self._left_arm_q: Dict[int, float] = {}
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
@@ -317,6 +340,19 @@ class TeleopEngine:
             if cur is not None:
                 cur["target"] = cur["pos"]
 
+    def set_actuator_limits(self, slot: int, *, lo: float, hi: float) -> None:
+        """Widen/narrow an already-engaged slot's soft rail (limit-scout toggle)."""
+        lo_f, hi_f = float(lo), float(hi)
+        if hi_f < lo_f:
+            lo_f, hi_f = hi_f, lo_f
+        with self._lock:
+            cur = self._act.get(slot)
+            if cur is None:
+                return
+            cur["lo"], cur["hi"] = lo_f, hi_f
+            cur["target"] = _clamp(float(cur["target"]), lo_f, hi_f)
+            cur["pos"] = _clamp(float(cur["pos"]), lo_f, hi_f)
+
     def disengage_actuator(self, slot: int) -> None:
         with self._lock:
             self._act.pop(slot, None)
@@ -352,6 +388,7 @@ class TeleopEngine:
         with self._lock:
             self._act.clear()
             self._srv.clear()
+            self._left_arm_q.clear()
 
     # -- thread ------------------------------------------------------------------------
 
@@ -384,6 +421,11 @@ class TeleopEngine:
         with self._lock:
             items = list(self._act.items())
         fb = self._feedback_getter() if (self._feedback_getter and items) else {}
+        left_set = set(LEFT_ARM_SLOTS)
+        engaged_left = {s for s, _ in items if s in left_set}
+        brace = bool(self._brace_left_arm and engaged_left)
+
+        # Per-tick slew updates (and non-arm / non-brace writes).
         for slot, st in items:
             pos, target, cruise = st["pos"], st["target"], st["cruise"]
             step = cruise * self._dt
@@ -391,9 +433,7 @@ class TeleopEngine:
             kd = st["kd"]
             flagged = False
             if abs(delta) <= max(step, 1e-6):
-                # Arrived — holding station. The target itself never drifts toward feedback
-                # (see module docstring): a real gravity/coupling disturbance gets a bounded,
-                # reactive damping boost plus a visibility flag, not a quieter target.
+                # Arrived — hold the commanded target (never lead-clamp toward sag).
                 new_pos, vel = target, 0.0
                 sample = fb.get(slot)
                 if sample is not None:
@@ -410,21 +450,107 @@ class TeleopEngine:
             else:
                 direction = 1.0 if delta > 0 else -1.0
                 new_pos, vel = pos + direction * step, direction * cruise
-            new_pos = _clamp(new_pos, st["lo"], st["hi"])
+                new_pos = _clamp(new_pos, st["lo"], st["hi"])
+                # Lead-clamp only while slewing (mouse teleop parity).
+                if slot in left_set:
+                    sample = fb.get(slot)
+                    fb_pos = sample.get("position") if sample is not None else None
+                    if fb_pos is not None:
+                        idx = LEFT_ARM_SLOTS.index(slot)
+                        new_pos = lead_clamp(
+                            new_pos, float(fb_pos), j2=(idx == J2_INDEX)
+                        )
+                        new_pos = _clamp(new_pos, st["lo"], st["hi"])
             with self._lock:
                 if slot in self._act:
                     self._act[slot]["pos"] = new_pos
                     self._act[slot]["flagged"] = flagged
+                    self._act[slot]["_vel"] = vel
+                    self._act[slot]["_kd"] = kd
+            if brace and slot in left_set:
+                continue  # written via write_left_arm below
             kp = st["kp"]
             if kp < st["kp_floor"]:
                 kp = st["kp_floor"]
             try:
                 hub.set_actuator(
-                    slot, ActuatorDesire(position=new_pos, velocity=vel, kp=kp, kd=kd, torque=0.0),
+                    slot,
+                    ActuatorDesire(
+                        position=new_pos, velocity=vel, kp=kp, kd=kd, torque=0.0
+                    ),
                     send=False,
                 )
             except Exception:
                 pass
+
+        if brace:
+            if not self._brace_write_left_arm(hub, fb, engaged_left):
+                # Incomplete sibling seeds (early FB) — fall back to per-slot writes.
+                for slot, st in items:
+                    if slot not in engaged_left:
+                        continue
+                    kp = st["kp"]
+                    if kp < st["kp_floor"]:
+                        kp = st["kp_floor"]
+                    try:
+                        hub.set_actuator(
+                            slot,
+                            ActuatorDesire(
+                                position=float(st["pos"]),
+                                velocity=float(st.get("_vel") or 0.0),
+                                kp=kp,
+                                kd=float(st.get("_kd") or st["kd"]),
+                                torque=0.0,
+                            ),
+                            send=False,
+                        )
+                    except Exception:
+                        pass
+
+    def _brace_write_left_arm(
+        self,
+        hub: object,
+        fb: Dict[int, dict],
+        engaged_left: set,
+    ) -> bool:
+        """Rewrite all 7 left-arm slots. Returns False if siblings cannot be seeded."""
+        with self._lock:
+            act = dict(self._act)
+            held = dict(self._left_arm_q)
+        q7: List[float] = []
+        dq7: List[float] = []
+        for i, slot in enumerate(LEFT_ARM_SLOTS):
+            sample = fb.get(slot) or {}
+            fb_pos = sample.get("position")
+            if slot in engaged_left and slot in act:
+                q = float(act[slot]["pos"])
+                dq = float(act[slot].get("_vel") or 0.0)
+            elif fb_pos is not None:
+                q = float(fb_pos)
+                dq = 0.0
+            elif slot in held:
+                q = float(held[slot])
+                dq = 0.0
+            else:
+                return False
+            q7.append(q)
+            dq7.append(dq)
+        try:
+            write_left_arm(
+                hub,
+                q7,
+                dq7=dq7,
+                kp_scale=self._arm_kp_scale,
+                j2_kp_scale=self._j2_kp_scale,
+                gravity_comp=self._gravity_comp,
+                send=False,
+            )
+        except Exception:
+            return False
+        with self._lock:
+            for i, slot in enumerate(LEFT_ARM_SLOTS):
+                self._left_arm_q[slot] = q7[i]
+        return True
 
     def _tick_servos(self, hub: object) -> None:
         with self._lock:

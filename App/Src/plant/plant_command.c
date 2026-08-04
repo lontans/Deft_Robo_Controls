@@ -140,6 +140,8 @@ static void plant_command_dispatch_debug_legacy(const host_command_image_t *cmd)
 	bool pdu_rs2 = plant_diag_is_rs2_command(cmd);
 	bool pdu_dxl = plant_diag_is_dxl_command(cmd);
 	bool pdu_dm  = plant_diag_is_dm_command(cmd);
+	bool pdu_cm  = plant_diag_is_cm_command(cmd);
+	bool pdu_ze  = plant_diag_is_ze_command(cmd);
 	bool pdu_ub  = host_uart_bridge_is_command(cmd);
 	bool pdu_tmp = thermo_is_command(cmd);
 
@@ -152,6 +154,10 @@ static void plant_command_dispatch_debug_legacy(const host_command_image_t *cmd)
 		plant_diag_on_dxl_command(cmd);
 	else if (pdu_dm)
 		plant_diag_on_dm_command(cmd);
+	else if (pdu_cm)
+		plant_diag_on_cm_command(cmd);
+	else if (pdu_ze)
+		plant_diag_on_ze_command(cmd);
 	else if (pdu_rs2)
 		plant_diag_on_rs2_command(cmd);
 
@@ -160,7 +166,7 @@ static void plant_command_dispatch_debug_legacy(const host_command_image_t *cmd)
 	if (!g_plant_apply_readback)
 		return;
 
-	if (pdu_dxl || pdu_dm || pdu_ub)
+	if (pdu_dxl || pdu_dm || pdu_cm || pdu_ze || pdu_ub)
 		return;
 
 	if (pdu_rs2 && !rs02_probe_kind_mounts_desire(cmd->pdu.data[4]))
@@ -225,6 +231,22 @@ static void plant_command_dispatch_debug_lanes(const host_command_image_t *cmd)
 			plant_diag_on_dm_command(&local);
 	}
 
+	if (arm & (1u << HOST_DEBUG_LANE_CM)) {
+		memcpy(local.pdu.data,
+		       host_debug_lane_bytes(cmd, HOST_DEBUG_LANE_CM),
+		       HOST_PDU_PAYLOAD_BYTES);
+		if (plant_diag_is_cm_command(&local))
+			plant_diag_on_cm_command(&local);
+	}
+
+	if (arm & (1u << HOST_DEBUG_LANE_ZE)) {
+		memcpy(local.pdu.data,
+		       host_debug_lane_bytes(cmd, HOST_DEBUG_LANE_ZE),
+		       HOST_PDU_PAYLOAD_BYTES);
+		if (plant_diag_is_ze_command(&local))
+			plant_diag_on_ze_command(&local);
+	}
+
 	if (arm & (1u << HOST_DEBUG_LANE_SERVO)) {
 		memcpy(local.pdu.data,
 		       host_debug_lane_bytes(cmd, HOST_DEBUG_LANE_SERVO),
@@ -243,8 +265,6 @@ static void plant_command_dispatch_debug_lanes(const host_command_image_t *cmd)
 			thermo_on_command(&local);
 	}
 
-	(void)HOST_DEBUG_LANE_CM;
-	(void)HOST_DEBUG_LANE_ZE;
 	(void)HOST_DEBUG_LANE_LED;
 }
 

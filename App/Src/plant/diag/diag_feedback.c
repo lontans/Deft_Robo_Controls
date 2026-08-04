@@ -57,6 +57,45 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 		return;
 	}
 
+	if (g_cm_feedback_active || g_cm_feedback_ttl > 0u) {
+		memset(pdu->data, 0, sizeof(pdu->data));
+		pdu->data[0] = (uint8_t)PLANT_DIAG_CM_RESP_TAG;
+		pdu->data[1] = g_last_cm_probe.motor_id;
+		pdu->data[2] = g_last_cm_probe.found ? 1u : 0u;
+		pdu->data[3] = g_last_cm_probe.probe_kind;
+		memcpy(&pdu->data[4], &g_last_cm_probe.rx_can_id, sizeof(uint32_t));
+		memcpy(&pdu->data[8], g_last_cm_probe.data, 8u);
+		memcpy(&pdu->data[20], &g_last_cm_probe.position, sizeof(float));
+		pdu->data[24] = g_last_cm_probe.discovered_id;
+		pdu->data[26] = g_last_cm_probe.raw_frames_seen;
+		pdu->data[27] = g_last_cm_probe.fault;
+		pdu->data[28] = g_last_cm_probe.tx_frames_sent;
+		plant_diag_feedback_stamp_fw_marker(pdu);
+		if (g_cm_feedback_ttl > 0u)
+			g_cm_feedback_ttl--;
+		else
+			g_cm_feedback_active = false;
+		return;
+	}
+
+	if (g_ze_feedback_active || g_ze_feedback_ttl > 0u) {
+		memset(pdu->data, 0, sizeof(pdu->data));
+		pdu->data[0] = (uint8_t)PLANT_DIAG_ZE_RESP_TAG;
+		pdu->data[1] = g_last_ze_probe.node_id;
+		pdu->data[2] = g_last_ze_probe.found ? 1u : 0u;
+		pdu->data[3] = g_last_ze_probe.vendor_match ? 1u : 0u;
+		memcpy(&pdu->data[4], &g_last_ze_probe.vendor, sizeof(uint32_t));
+		memcpy(&pdu->data[8], &g_last_ze_probe.product, sizeof(uint32_t));
+		memcpy(&pdu->data[12], &g_last_ze_probe.revision, sizeof(uint32_t));
+		pdu->data[24] = g_last_ze_probe.discovered_id;
+		plant_diag_feedback_stamp_fw_marker(pdu);
+		if (g_ze_feedback_ttl > 0u)
+			g_ze_feedback_ttl--;
+		else
+			g_ze_feedback_active = false;
+		return;
+	}
+
 	if (g_probe_in_progress && !g_probe_progress_push)
 		return;
 

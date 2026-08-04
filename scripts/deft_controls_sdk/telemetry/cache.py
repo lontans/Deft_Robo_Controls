@@ -502,6 +502,18 @@ class TelemetryCache:
             if self._state.updated_at:
                 self._state.age_s = time.time() - self._state.updated_at
 
+    def clear_faults(self) -> None:
+        """Reset the black-box fault count/ring (see FaultRecorder.clear).
+
+        Does not delete existing fault dump files on disk, and is independent
+        of any manual recording (start/stop_recording) in progress.
+        """
+        with self._lock:
+            self._recorder.clear()
+            self._apply_recorder_status_unlocked()
+            _grade_and_context(self._state)
+            self._publish_unlocked()
+
     def set_error(self, message: str) -> None:
         with self._lock:
             self._state.grade = "red"

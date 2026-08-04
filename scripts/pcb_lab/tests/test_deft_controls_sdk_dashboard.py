@@ -567,6 +567,11 @@ class _TeleopFakeHub:
         self._acts[slot] = desire
         self.set_actuator_calls.append((slot, desire))
 
+    def set_actuators(self, desires, *, send: bool = True) -> None:
+        # Left-arm brace path writes the full batch via set_actuators.
+        for slot, desire in desires.items():
+            self.set_actuator(int(slot), desire, send=send)
+
     def set_servo(self, slot, desire, *, send: bool = True) -> None:
         self._servos[slot] = desire
         self.set_servo_calls.append((slot, desire))
@@ -797,9 +802,14 @@ def test_teleop_hold_boosts_damping_and_flags_without_moving_target(server, monk
         pdu_tag=None, lap_ms=1, lap_max_ms=1, ticks_pending=0, svd_present=True,
         actuators=actuators,
     )
-    time.sleep(0.15)
-
-    snap = state.teleop.snapshot()["actuators"][0]
+    # Teleop tick is ~60 Hz; wait until a hold tick consumes the sag FB.
+    snap = None
+    for _ in range(40):
+        time.sleep(0.025)
+        snap = state.teleop.snapshot()["actuators"][0]
+        if snap.get("flagged"):
+            break
+    assert snap is not None
     assert snap["target"] == 0.5  # commanded target never moved toward the sag
     assert snap["flagged"] is True
     last_desire = fake.set_actuator_calls[-1][1]

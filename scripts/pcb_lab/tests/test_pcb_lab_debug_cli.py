@@ -381,10 +381,12 @@ def test_actuators_parse_bus_and_protocol_queue():
 
     assert parse_protocol_queue("robstride") == ["robstride"]
     assert parse_protocol_queue("damiao,robstride") == ["damiao", "robstride"]
-    assert parse_protocol_queue("all") == ["robstride", "damiao"]
+    assert parse_protocol_queue("all") == ["robstride", "damiao", "cubemars", "zeroerr"]
     assert parse_protocol_queue("rs,dm") == ["robstride", "damiao"]
+    assert parse_protocol_queue("zeroerr") == ["zeroerr"]
+    assert parse_protocol_queue("cm") == ["cubemars"]
     with pytest.raises(ValueError):
-        parse_protocol_queue("zeroerr")
+        parse_protocol_queue("nope")
 
 
 def test_as_hex_formats_discover_ids():

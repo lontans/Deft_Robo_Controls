@@ -37,6 +37,8 @@ void plant_feedback_image_fetch_debug_mailbox(host_pdu_feedback_t *pdu)
 	    pdu->data[0] != (uint8_t)'u' &&
 	    pdu->data[0] != (uint8_t)PLANT_CFG_PDU_RESP_TAG0 &&
 	    pdu->data[0] != (uint8_t)PLANT_DIAG_DM_RESP_TAG &&
+	    pdu->data[0] != (uint8_t)PLANT_DIAG_CM_RESP_TAG &&
+	    pdu->data[0] != (uint8_t)PLANT_DIAG_ZE_RESP_TAG &&
 	    pdu->data[0] != (uint8_t)PLANT_DIAG_PDU_RESP_TAG &&
 	    pdu->data[0] != (uint8_t)PLANT_THERMO_RESP_TAG) {
 		servo_diag_feedback_fill(pdu);
@@ -82,6 +84,16 @@ void plant_feedback_image_fetch_debug_lanes(host_feedback_image_t *out)
 	} else if (mbox[0] == (uint8_t)PLANT_DIAG_DM_RESP_TAG) {
 		lane = raw + HOST_DEBUG_LANE0_OFF +
 		       ((size_t)HOST_DEBUG_LANE_DM *
+			(size_t)HOST_DEBUG_LANE_BYTES);
+		memcpy(lane, mbox, HOST_PDU_PAYLOAD_BYTES);
+	} else if (mbox[0] == (uint8_t)PLANT_DIAG_CM_RESP_TAG) {
+		lane = raw + HOST_DEBUG_LANE0_OFF +
+		       ((size_t)HOST_DEBUG_LANE_CM *
+			(size_t)HOST_DEBUG_LANE_BYTES);
+		memcpy(lane, mbox, HOST_PDU_PAYLOAD_BYTES);
+	} else if (mbox[0] == (uint8_t)PLANT_DIAG_ZE_RESP_TAG) {
+		lane = raw + HOST_DEBUG_LANE0_OFF +
+		       ((size_t)HOST_DEBUG_LANE_ZE *
 			(size_t)HOST_DEBUG_LANE_BYTES);
 		memcpy(lane, mbox, HOST_PDU_PAYLOAD_BYTES);
 	} else if (mbox[0] == (uint8_t)PLANT_CFG_PDU_RESP_TAG0) {

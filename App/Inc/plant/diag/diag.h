@@ -2,6 +2,8 @@
 #include "host/host_exchange_schema.h"
 #include "plant/diag/diag_gates.h"
 #include "plant/plugins/robstride.h"
+#include "plant/plugins/cubemars.h"
+#include "plant/plugins/zeroerr.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -27,6 +29,30 @@
 #define PLANT_DIAG_DM_PDU_LISTEN_MS  6u
 #define PLANT_DIAG_DM_PDU_PARAM_RID  7u
 #define PLANT_DIAG_DM_PDU_END_ID     8u
+/* CubeMars bench PDU — Damiao-shaped tag/offset layout, no param_rid (no
+ * PDF-documented register-read scheme for CubeMars). */
+#define PLANT_DIAG_CM_TAG0           'C'
+#define PLANT_DIAG_CM_TAG1           'M'
+#define PLANT_DIAG_CM_TAG2           '0'
+/* NOT 'c' — PLANT_CFG_PDU_RESP_TAG0 already owns that first byte; the resp
+ * tag is the only byte plant_feedback.c uses to route/exclude, so this must
+ * be globally unique across every protocol, not just unique among DM/RS2/CM. */
+#define PLANT_DIAG_CM_RESP_TAG       'k'
+#define PLANT_DIAG_CM_PDU_LISTEN_MS  6u
+#define PLANT_DIAG_CM_PDU_END_ID     8u
+#define PLANT_DIAG_CM_PDU_BUS_MASK   9u
+#define PLANT_DIAG_CM_QUIET_MS       3000u
+/* ZeroErr bench PDU — CANopen node sweep via SDO 0x1018, not MIT-shaped. */
+#define PLANT_DIAG_ZE_TAG0           'Z'
+#define PLANT_DIAG_ZE_TAG1           'E'
+#define PLANT_DIAG_ZE_TAG2           '0'
+#define PLANT_DIAG_ZE_RESP_TAG       'z'
+#define PLANT_DIAG_ZE_PDU_TIMEOUT_MS 6u
+#define PLANT_DIAG_ZE_PDU_END_ID     8u
+#define PLANT_DIAG_ZE_PDU_BUS_MASK   9u
+#define PLANT_DIAG_ZE_QUIET_MS       3000u
+#define PLANT_DIAG_ZE_PROBE_NODE     0u  /* single node identity read */
+#define PLANT_DIAG_ZE_PROBE_SWEEP    17u /* sweep [motor_id..end_id], mirrors *_ID_SWEEP */
 #define PLANT_DM_FB_MAGIC            0xDA000000u
 #define PLANT_DM_FB_TTL_PROBE        250u
 #define PLANT_DM_FB_TTL_SESSION      64u
@@ -68,11 +94,15 @@
 bool plant_diag_is_rs2_command(const host_command_image_t *cmd);
 bool plant_diag_is_dxl_command(const host_command_image_t *cmd);
 bool plant_diag_is_dm_command(const host_command_image_t *cmd);
+bool plant_diag_is_cm_command(const host_command_image_t *cmd);
+bool plant_diag_is_ze_command(const host_command_image_t *cmd);
 void plant_diag_on_rs2_command(const host_command_image_t *cmd);
 /* Back-compat alias — prefer plant_diag_on_rs2_command. */
 #define plant_diag_on_command plant_diag_on_rs2_command
 void plant_diag_on_dxl_command(const host_command_image_t *cmd);
 void plant_diag_on_dm_command(const host_command_image_t *cmd);
+void plant_diag_on_cm_command(const host_command_image_t *cmd);
+void plant_diag_on_ze_command(const host_command_image_t *cmd);
 void plant_diag_service(void);
 void plant_diag_can_router_poll(void);
 void plant_diag_yield_usb(void);

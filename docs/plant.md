@@ -32,11 +32,11 @@ EXT 29-bit. Maintain budget per tick; MCP flush coalesced per rail. Channel CLI:
 
 ### CubeMars (code present, not HW-proven)
 
-Damiao-shaped MIT; TX-driven enable latch (`0xFC`/`0xFD`/`0xFE`). **Do not copy vendor PDF pack samples** (known bugs, e.g. data[6]). Default model AK80-9; no CFG model field yet. Servo mode compile-gated off.
+Damiao-shaped MIT; TX-driven enable latch (`0xFC`/`0xFD`/`0xFE`). **Do not copy vendor PDF pack samples** (known bugs, e.g. data[6]). Default model AK80-9; no CFG model field yet. Servo mode compile-gated off. Discover (`CM0` bench PDU, `diag_cubemars.c`) is MIT-frame ID sweep only — no register-read scheme like Damiao’s; never touches `cubemars_apply_cycle`.
 
 ### ZeroErr (code present, not bench-proven)
 
-CANopen PP: `motor_id` = node ID. Prefer FDCAN @ 1 Mbps. PDO1 DLC6 (`cw`+target / status+actual). Boot FSM one NMT/SDO action per tick; SDO wait can steal RX from cohabitants — don’t spam multi-node boot. Discover still unwired.
+CANopen PP: `motor_id` = node ID. Prefer FDCAN @ 1 Mbps; MCP CH4–6 also works (canopen.c SDO/NMT TX uses the MCP `send_now` bypass, same fix as Damiao/RobStride probes). PDO1 DLC6 (`cw`+target / status+actual). Boot FSM one NMT/SDO action per tick; SDO wait can steal RX from cohabitants — don’t spam multi-node boot. Discover (`ZE0` bench PDU, `diag_zeroerr.c`) sweeps node ids via SDO-read `0x1018`; never touches `zeroerr_apply_cycle`’s boot FSM.
 
 ### Dynamixel neck / SK9822 LEDs
 
@@ -64,9 +64,17 @@ Separate from USB host exchange. Controls ↔ PDB MCU over **UART4** PC10/PC11, 
 NORMAL → SOFT_KILL_REQ → (plant_recovery_all) → SOFT_KILL_READY → HARD_ESTOP
 ```
 
-Stale PDBF (>200 ms) or PB7 low → HARD + COMMS_LOSS. Soft kill alone must not open main power; PDB is sole rail-switch authority. USB FB mirrors kill into `system` + `pdb[64]`. Hub: `soft_kill_park*`. Sim: `scripts/pcb_lab/legacy/pdb_uart_sim.py`.
+Stale PDBF (>200 ms) → HARD + COMMS_LOSS (fail-safe on comms loss). PB7 low
+is reported separately as `system.estop_sense`; the PDB itself must set
+`kill_state=HARD_ESTOP` in its own feedback frame when it drives PB7 low —
+Controls' kill-state mirror does not independently OR in the raw GPIO read.
+Soft kill alone must not open main power; PDB is sole rail-switch authority.
+USB FB mirrors kill into `system` + `pdb[64]`. Hub: `soft_kill_park*`. Sim:
+`scripts/pcb_lab/legacy/pdb_uart_sim.py`.
 
-Source: `App/Inc/host/pdb_link.h`, `App/Src/host/pdb_link.c`.
+Source: `App/Inc/host/pdb_link.h`, `App/Src/host/pdb_link.c`. Full byte/bit-level
+wire contract, state machine, handshake sequence, and TX rate detail:
+[pdb-uart-v1.md](pdb-uart-v1.md).
 
 ## Soft-DFU / NVM
 

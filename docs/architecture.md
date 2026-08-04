@@ -20,9 +20,40 @@ Wire bytes: [host-contract.md](host-contract.md). Buses / protocols: [plant.md](
 |------|------|-------|
 | USB DEBUG **pdu** mailbox | Legacy 32 B tags inside `DBGC`/`DBGF` (deprecated) | offset 630 — see [debug-mailbox-deprecation.md](debug-mailbox-deprecation.md) |
 | **Debug lanes** | `DL\x01` + 10×32 B lanes on `DBGC`/`DBGF` | ADR-004 / [host-contract.md](host-contract.md) |
-| **PDB / PDU kill** | Soft/hard kill over **UART4** | `pdb_link.c` — [plant.md](plant.md)#pdb-kill |
+| **PDB / PDU kill** | Soft/hard kill over **UART4** | `pdb_link.c` — [plant.md](plant.md)#pdb-kill, full spec [pdb-uart-v1.md](pdb-uart-v1.md) |
 
 Same word historically; plant `HBHF.pdb[64]` is the power-board mirror only. Debug RPC uses debug lanes (preferred) or the legacy mailbox on DEBUG frames.
+
+## PDU link (PDB kill) architecture
+
+Point-to-point, separate from the USB host exchange: Controls ↔ PDB MCU over
+UART4 (PC10/PC11), 115200 8N1, fixed **64 B frames both directions**, ~20 ms
+nominal TX period (50 Hz design point, but see below). CRC16-CCITT-protected;
+magic `PDBC` (Controls→PDB) / `PDBF` (PDB→Controls); `version=1`.
+
+**State machine** (`pdb_kill_state_t`): `NORMAL(0) → SOFT_KILL_REQ(1) →
+SOFT_KILL_READY(2) → HARD_ESTOP(3)`, with a stale-link or PB7-low fail-safe
+that can force `HARD_ESTOP` from any state. PDB's `kill_state` byte in its
+feedback frame is authoritative whenever non-`NORMAL`; Controls only
+overlays its own V/I-limit check on top of a peer-reported `NORMAL`. The
+command-frame `kill_req` field is narrower than the full state enum —
+Controls only ever *requests* `NORMAL` or `SOFT_KILL_READY`; the PDB (or
+Controls' own fail-safe mirror) is the only source of `SOFT_KILL_REQ` /
+`HARD_ESTOP`.
+
+**Handshake:** trip detected → host runs `plant_recovery_all()` to park
+actuators → Controls sends `kill_req=SOFT_KILL_READY` → PDB (sole rail-switch
+authority) opens contactors and reports `SOFT_KILL_READY`/`HARD_ESTOP` →
+recovery clears `kill_req` back to `NORMAL` once the PDB says so.
+
+**Rate:** 20 ms/50 Hz nominal, but the current build paces TX one byte per
+~1 ms tick to work around a Jetson UART quirk (`UART4_TX_PACE_BYTES=1`),
+dropping the effective rate to **~10–15 Hz**; 200 ms staleness fail-safe
+still applies against that slower effective rate.
+
+Full byte/bit-level frame layout, CRC spec, V/I overlay thresholds, RX
+resync algorithm, and a PDU-side implementer checklist:
+**[pdb-uart-v1.md](pdb-uart-v1.md)**.
 
 ## Host API modes
 

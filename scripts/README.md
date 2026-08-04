@@ -30,7 +30,8 @@ python -m deft_controls_sdk.debug_dashboard   # sliders + keyboard teleop
 pytest pcb_lab/tests
 ```
 
-Controls map (lab vs product, keys, Jetson): [`../docs/controls-map.md`](../docs/controls-map.md).
+Controls map (lab vs product, keys, Jetson): [`../docs/controls-map.md`](../docs/controls-map.md).  
+Talk-through demos: [`demo_scripts/`](demo_scripts/) (board alive → YAM CFG → product `set_section`).
 
 
 ### Ubuntu / Jetson (once)

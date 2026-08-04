@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import config as _config
+from . import cubemars as _cubemars
 from . import damiao as _damiao
 from . import discover as _discover
 from . import inventory as _inventory
@@ -222,6 +223,36 @@ class DebugAPI:
             known_ids=known_ids,
         )
 
+    # -- CubeMars (CM0) --------------------------------------------------------------
+
+    def discover_cubemars(
+        self,
+        *,
+        bus: int = 1,
+        start: int = 1,
+        end: int = 16,
+        listen_ms: int = 40,
+    ) -> Optional[int]:
+        """MIT-frame ID_SWEEP (no register-read scheme — see docs/vendor.md)."""
+        self._require_debug("hub.debug.discover_cubemars")
+        return _cubemars.discover(
+            self._connection, self._telemetry, bus=bus, start=start, end=end, listen_ms=listen_ms
+        )
+
+    def discover_cubemars_all(
+        self,
+        *,
+        bus: int = 1,
+        start: int = 1,
+        end: int = 16,
+        listen_ms: int = 40,
+    ) -> List[int]:
+        """Like discover_cubemars but returns every unique hit (discovery order)."""
+        self._require_debug("hub.debug.discover_cubemars_all")
+        return _cubemars.discover_all(
+            self._connection, self._telemetry, bus=bus, start=start, end=end, listen_ms=listen_ms
+        )
+
     def discover_queued(
         self,
         *,
@@ -413,10 +444,46 @@ class DebugAPI:
 
     # -- ZeroErr (CiA 402 PP) --------------------------------------------------------
 
-    def discover_zeroerr(self, *, bus: int = 1, start: int = 1, end: int = 127) -> Optional[int]:
-        """NOT WIRED — firmware SDO identity helpers exist; DEBUG PDU TBD."""
-        raise NotImplementedError(
-            "discover_zeroerr DEBUG PDU not wired yet. "
-            f"Use cfg_set_slot(..., bus={bus}, protocol={PROTO_ZEROERR}, motor_id=<node_id>). "
-            f"(scan range would be {start}..{end})"
+    def discover_zeroerr(
+        self,
+        *,
+        bus: int = 1,
+        start: int = 1,
+        end: int = 16,
+        sdo_timeout_ms: int = 30,
+    ) -> Optional[int]:
+        """CANopen node sweep via SDO-read 0x1018 (Identity Object)."""
+        self._require_debug("hub.debug.discover_zeroerr")
+        return _zeroerr.discover(
+            self._connection, self._telemetry, bus=bus, start=start, end=end,
+            sdo_timeout_ms=sdo_timeout_ms,
+        )
+
+    def discover_zeroerr_all(
+        self,
+        *,
+        bus: int = 1,
+        start: int = 1,
+        end: int = 16,
+        sdo_timeout_ms: int = 30,
+    ) -> List[int]:
+        """Like discover_zeroerr but returns every unique hit (discovery order)."""
+        self._require_debug("hub.debug.discover_zeroerr_all")
+        return _zeroerr.discover_all(
+            self._connection, self._telemetry, bus=bus, start=start, end=end,
+            sdo_timeout_ms=sdo_timeout_ms,
+        )
+
+    def probe_zeroerr(
+        self,
+        *,
+        bus: int = 1,
+        node_id: int,
+        sdo_timeout_ms: int = 30,
+    ) -> Optional[dict]:
+        """Single-node identity probe (0x1018) — no session/sweep bookkeeping."""
+        self._require_debug("hub.debug.probe_zeroerr")
+        return _zeroerr.probe_node(
+            self._connection, self._telemetry, bus=bus, node_id=node_id,
+            sdo_timeout_ms=sdo_timeout_ms,
         )

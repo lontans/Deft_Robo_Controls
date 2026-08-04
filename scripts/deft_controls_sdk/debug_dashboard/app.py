@@ -89,11 +89,21 @@ class AppState:
         # — see base-robstride-mcp.md's "Known falsehoods retired". "product" is
         # offered purely as the wizard's CFG-map hint.
         self.cfg_map: str = "bench"
+        # When True, L-arm teleop rails use MuJoCo soft limits (no bench-clear
+        # intersection) so an operator can nudge past the old clear envelope and
+        # mark new min/max from live encoder FB. Capture is UI-only — nothing is
+        # written back to yam_bench_clear_left.py.
+        self.limit_scout: bool = False
         self.actuator_specs = build_actuator_specs(self.cfg_map)
         self.servo_specs = build_servo_specs()
+        # Match continuous --mouse plant write (brace + gravity + ~60 Hz slew).
+        # Plant stream TX rate is separate (--hz on __main__, default 100).
         self.teleop = make_teleop_engine(
             lambda: None if self.proxy is None else self.proxy.hub,
             feedback_getter=self._teleop_feedback_snapshot,
+            hz=60.0,
+            brace_left_arm=True,
+            gravity=True,
         )
 
         # Continuous mode launch/stop over SSH — swappable so tests can drive the HTTP
@@ -225,6 +235,24 @@ class AppState:
         proxy.arm_plant()
         self.control_mode = "control"
 
+    def set_listen_pdu(self, enabled: bool) -> None:
+        """Toggle whether the host obeys PDB kill-state for soft-kill/LED policy.
+
+        Independent of Enable control / observe. Off (bench with no PDU peer)
+        is the dashboard's Connect default so ``set_auto_soft_kill(True)``
+        during Enable control is a deliberate no-op — see
+        ``ControlsPcbHub.set_auto_soft_kill``. Flip this on when a real PDU
+        (or pdb_uart_sim) is actually present on the bench and you want its
+        SOFT_KILL_REQ / bad V-I to auto-park the plant.
+        """
+        self._require_proxy().listen_pdu = bool(enabled)
+
+    def clear_fault_log(self) -> None:
+        """Reset the black-box "faults this session" counter/ring — see
+        TelemetryCache.clear_faults. Safe while disconnected (telemetry cache
+        outlives any single connection); does not delete files on disk."""
+        self.telemetry.clear_faults()
+
     def disconnect(self) -> None:
         with self._lock:
             self.teleop.disengage_all()
@@ -351,7 +379,35 @@ class AppState:
         if cfg_map not in ("bench", "product"):
             raise ValueError("cfg_map must be 'bench' or 'product'")
         self.cfg_map = cfg_map
-        self.actuator_specs = build_actuator_specs(cfg_map)
+        self._rebuild_actuator_specs()
+
+    def set_limit_scout(self, enabled: bool) -> None:
+        """Widen L-arm rails to MuJoCo soft (no clear clamp) for manual limit finding."""
+        self.limit_scout = bool(enabled)
+        self._rebuild_actuator_specs()
+
+    def _rebuild_actuator_specs(self) -> None:
+        from dataclasses import replace
+
+        from deft_controls_sdk.config.actuator import LEFT_ARM_SLOTS
+        from deft_controls_sdk.config.yam_limits import soft_limits_q7
+
+        specs = build_actuator_specs(self.cfg_map)
+        if self.limit_scout:
+            lo, hi = soft_limits_q7("left", use_bench_clear=False)
+            for i, slot in enumerate(LEFT_ARM_SLOTS):
+                cur = specs.get(slot)
+                if cur is None or not cur.verified:
+                    continue
+                specs[slot] = replace(cur, lo=float(lo[i]), hi=float(hi[i]))
+                self.teleop.set_actuator_limits(
+                    slot, lo=float(lo[i]), hi=float(hi[i])
+                )
+        else:
+            for slot, cur in specs.items():
+                if cur.group == "arm_left" and cur.verified and cur.lo is not None and cur.hi is not None:
+                    self.teleop.set_actuator_limits(slot, lo=float(cur.lo), hi=float(cur.hi))
+        self.actuator_specs = specs
 
     def teleop_groups(self) -> dict:
         def spec_dict(spec) -> dict:
@@ -363,6 +419,7 @@ class AppState:
             }
         return {
             "cfg_map": self.cfg_map,
+            "limit_scout": self.limit_scout,
             "actuators": {slot: spec_dict(spec) for slot, spec in self.actuator_specs.items()},
             "servos": {slot: spec_dict(spec) for slot, spec in self.servo_specs.items()},
         }
@@ -563,13 +620,6 @@ _HTML = """<!DOCTYPE html>
   .grade.yellow { background: color-mix(in srgb, var(--yellow) 20%, transparent); color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 40%, transparent); }
   .grade.red { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
   .grade.idle { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); border-color: var(--line); }
-  .pill {
-    display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.72rem;
-    padding: 0.15rem 0.55rem; border-radius: 999px; border: 1px solid var(--line);
-    color: var(--muted); white-space: nowrap;
-  }
-  .pill.on { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, var(--line)); background: color-mix(in srgb, var(--green) 10%, transparent); }
-  .pill.active { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 40%, var(--line)); background: color-mix(in srgb, var(--yellow) 10%, transparent); }
   .banner {
     margin: 0.6rem 0 0; padding: 0.55rem 0.75rem; border-radius: 8px;
     background: color-mix(in srgb, var(--yellow) 10%, transparent);
@@ -603,6 +653,8 @@ _HTML = """<!DOCTYPE html>
   .kv .k { display: block; color: var(--muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; }
   .kv .v { font-variant-numeric: tabular-nums; font-size: 1.02rem; margin-top: 0.15rem; }
   .grid.compact .kv .v { font-size: 0.88rem; }
+  .kv.wide { grid-column: 1 / -1; }
+  .kv.wide .v { font-size: 0.78rem; color: var(--muted); font-variant-numeric: normal; }
   ul.context { margin: 0; padding-left: 1.1rem; color: var(--muted); }
   ul.context li { margin: 0.25rem 0; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.85rem; }
@@ -669,6 +721,12 @@ _HTML = """<!DOCTYPE html>
   .joint-card .btn-group { display: flex; gap: 0.3rem; }
   .joint-card .cmd { flex-basis: 100%; color: var(--muted); font-size: 0.72rem; margin-top: 0.15rem; }
   .joint-card .cmd.flagged { color: var(--yellow); font-weight: 600; }
+  .joint-card .jc-limits {
+    display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;
+    margin-top: 0.3rem; font-size: 0.72rem; color: var(--muted);
+  }
+  .joint-card .jc-limits .fb { font-variant-numeric: tabular-nums; color: var(--text); min-width: 5.5rem; }
+  .joint-card .jc-limits .cap { font-variant-numeric: tabular-nums; }
   .teleop-group { margin-top: 0.85rem; }
   .teleop-group + .teleop-group { border-top: 1px solid var(--line); padding-top: 0.75rem; }
   .teleop-group summary { display: flex; align-items: baseline; gap: 0.5rem; }
@@ -691,7 +749,7 @@ _HTML = """<!DOCTYPE html>
       <select id="portSelect"></select>
       <button class="primary" id="connectBtn" onclick="connect()">Connect (observe)</button>
       <span class="segmented">
-        <button id="enableCtrlBtn" onclick="enableControl()" disabled title="Switch MCU to NORMAL and arm soft-kill auto-park">Enable control</button>
+        <button id="enableCtrlBtn" onclick="enableControl()" disabled title="Switch MCU to NORMAL and plant_apply=1. The instant this arms, firmware starts mounting every CFG-enabled actuator's held desire each tick and transmitting it on that actuator's CAN bus — every configured channel starts TX'ing/blinking at once, not just the one you move. See the Control banner below.">Enable control</button>
         <button id="observeBtn" onclick="toObserve()" disabled title="Blank desires, plant_apply=0, no auto-park">Back to observe</button>
       </span>
       <button class="btn-ghost" id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
@@ -710,6 +768,11 @@ _HTML = """<!DOCTYPE html>
         title="Independent of Enable control / ESTOP button — works in observe too, and in follow mode signals the CDC-owning peer">Soft-kill Park</button>
       <span class="meta" id="pdbMeta"></span>
     </div>
+    <div class="row" style="margin-top:0.5rem">
+      <button id="listenPduBtn" onclick="toggleListenPdu()" disabled
+        title="Host obeys PDB kill-state for auto soft-kill park + LED policy only while this is ON. OFF (the Connect default) is a bare bench with no PDU peer — Enable control's auto-park hook is armed but is a deliberate no-op until you turn this on. Turn ON only when a real PDU or pdb_uart_sim is actually wired up.">listen_pdu: OFF</button>
+      <span class="meta">no PDU peer on the bench? leave this OFF — Enable control still works, it just won't auto-park from PDU kill/V-I</span>
+    </div>
     <p class="err" id="pdbError"></p>
     <p class="meta" id="pdbResult"></p>
     <details class="sub">
@@ -721,24 +784,32 @@ _HTML = """<!DOCTYPE html>
   <section class="card">
     <h2>Teleop</h2>
     <div class="row toolbar">
-      <label class="meta">CFG map
-        <select id="cfgMapSelect" onchange="setCfgMap()">
+      <label class="meta">Slot labels
+        <select id="cfgMapSelect" onchange="setCfgMap()"
+          title="UI-only relabeling of which slots this Teleop panel shows as 'base' vs 'arm' — picks labels/ranges to display, nothing more. This is NOT the board's real CFG table (per-slot enabled/bus/protocol/motor_id, stored in MCU NVM) and never writes to the board. To read or edit the real CFG table, use pcb_lab: python -m pcb_lab.debug --port COMx show --cfg / set --cfg (needs its own debug-mode session, separate from this dashboard's live stream).">
           <option value="bench">bench (22–25, live-verified on this rig)</option>
           <option value="product">product (14–19, not wired on this bench)</option>
         </select>
       </label>
       <button class="btn-stop" onclick="teleopStopAll()" title="Freeze all teleop slots — keeps holding torque, does not go slack">&#9616;&#9616; Stop all (Space)</button>
       <span class="spacer"></span>
-      <span class="meta">selected for keyboard: <b id="keysArmSel">—</b></span>
+      <label class="meta" title="Widen L-arm rails to MuJoCo soft limits so you can nudge past the current clear envelope and Mark lo/hi from live encoder FB. Does not write files — copy the summary yourself.">
+        <input type="checkbox" id="limitScout" onchange="setLimitScout()"> Scout limits
+      </label>
+      <span class="meta">selected: <b id="keysArmSel">—</b> · click a joint card, then ←/→</span>
     </div>
+    <p class="banner" style="margin-top:0.4rem">"Slot labels" only changes which slots this panel calls base/arm and their ranges — it's a display picker, not the board's CFG table. Real per-slot CFG (enabled/bus/protocol/motor_id) lives in MCU NVM; view/edit it with pcb_lab: <code>python -m pcb_lab.debug --port COMx show --cfg</code> (read-only) or <code>set --cfg</code> (edit), in a separate debug-mode session — not from this dashboard.</p>
     <div class="row">
       <button class="btn-idle" onclick="idleGroup('arm_left')" title="Blanks ALL 7 left-arm joints at once — every joint loses holding torque simultaneously. For one joint, use that joint's own Idle button below.">Idle L-arm (all 7)</button>
       <button class="btn-idle" onclick="idleGroup('arm_right')" title="Blanks ALL 7 right-arm joints at once.">Idle R-arm (all 7)</button>
       <button class="btn-idle" onclick="idleGroup('base')">Idle base (all)</button>
       <button class="btn-idle" onclick="idleGroup('neck')">Idle neck (both)</button>
+      <button onclick="copyCapturedLimits()" title="Copy marked lo/hi as Python tuples">Copy marked limits</button>
+      <button onclick="clearCapturedLimits()">Clear marks</button>
     </div>
+    <pre class="meta" id="capturedLimitsOut" style="margin-top:0.4rem;white-space:pre-wrap">Marked limits: (none yet — select a joint, ←/→ nudge, Mark lo / Mark hi at the edges)</pre>
     <p class="banner warn" style="margin-top:0.5rem"><b>Stop</b> (green) freezes a joint in place, holding torque. <b>Idle</b> (yellow) zeroes torque — that joint goes slack and can swing/drop under gravity or a neighbor's load. Prefer Stop unless you actually want it slack. The group buttons above idle every joint in that group at once; use a card's own Idle for just one joint.</p>
-    <p class="banner" id="keysBanner" style="margin-top:0.4rem">Keyboard (Enable control; not while typing in a field): <code>Space</code> stop all · arrows neck · <code>1</code>–<code>7</code> select L-arm joint · <code>[</code>/<code>]</code> nudge selected arm · <code>z</code>/<code>x</code> <code>c</code>/<code>v</code> jog base</p>
+    <p class="banner" id="keysBanner" style="margin-top:0.4rem">Keyboard (Enable control; not while typing in a field): <code>Space</code> stop all · click joint or <code>1</code>–<code>7</code> select · <code>←</code>/<code>→</code> (or <code>[</code>/<code>]</code>) nudge selected arm · <code>↑</code>/<code>↓</code> neck pitch · <code>,</code>/<code>.</code> neck yaw · <code>z</code>/<code>x</code> <code>c</code>/<code>v</code> jog base</p>
     <p class="err" id="teleopError"></p>
 
     <details class="teleop-group" open>
@@ -770,6 +841,10 @@ _HTML = """<!DOCTYPE html>
     <details class="sub">
       <summary>Black box (fault capture)</summary>
       <div class="grid compact" id="blackbox" style="margin-top:0.5rem"></div>
+      <div class="row" style="margin-top:0.5rem">
+        <button class="btn-idle" id="clearFaultsBtn" onclick="clearFaultLog()">Clear fault log</button>
+        <span class="meta" id="clearFaultsMeta"></span>
+      </div>
     </details>
     <details class="sub">
       <summary>Advanced timing diagnostics</summary>
@@ -827,8 +902,8 @@ _HTML = """<!DOCTYPE html>
   </section>
 </main>
 <script>
-function kv(k, v) {
-  return `<div class="kv"><span class="k">${k}</span><div class="v">${v ?? "—"}</div></div>`;
+function kv(k, v, cls) {
+  return `<div class="kv${cls ? " " + cls : ""}"><span class="k">${k}</span><div class="v">${v ?? "—"}</div></div>`;
 }
 function fmt(n, d=2) {
   if (n === null || n === undefined) return "—";
@@ -893,6 +968,15 @@ function disconnect() {
 }
 function enableControl() { postAction("/api/control_mode", { mode: "control" }, setConnError); }
 function toObserve() { postAction("/api/control_mode", { mode: "observe" }, setConnError); }
+let lastListenPdu = false;
+function toggleListenPdu() { postAction("/api/listen_pdu", { enable: !lastListenPdu }, setPdbError); }
+function clearFaultLog() {
+  const meta = document.getElementById("clearFaultsMeta");
+  meta.textContent = "clearing…";
+  postAction("/api/faults/clear", {}, (msg) => {
+    meta.textContent = msg || `cleared at ${new Date().toLocaleTimeString()}`;
+  });
+}
 function setMcuState(n) { postAction("/api/mcu_state", { state: n }, setCtrlError); }
 function setPlantApply(on) { postAction("/api/plant_apply", { enable: !!on }, setCtrlError); }
 function recover() { postAction("/api/recover", {}, setCtrlError); }
@@ -963,7 +1047,11 @@ async function loadTeleopGroups() {
     const r = await fetch("/api/teleop/groups");
     teleopGroups = await r.json();
     document.getElementById("cfgMapSelect").value = teleopGroups.cfg_map;
+    const scoutEl = document.getElementById("limitScout");
+    if (scoutEl) scoutEl.checked = !!teleopGroups.limit_scout;
     buildTeleopRows();
+    if (keysArmSlot != null) _keysSetArmSlot(keysArmSlot);
+    renderCapturedLimits();
   } catch (e) {
     setTeleopError("teleop groups failed: " + e);
   }
@@ -976,6 +1064,88 @@ async function setCfgMap() {
   await postAction("/api/cfg_map", { map }, setTeleopError);
   teleopRowsBuilt = false;
   await loadTeleopGroups();
+}
+
+async function setLimitScout() {
+  const enabled = !!document.getElementById("limitScout").checked;
+  await postAction("/api/teleop/limit_scout", { enable: enabled }, setTeleopError);
+  teleopRowsBuilt = false;
+  await loadTeleopGroups();
+}
+
+// Session-local marked encoder edges (not persisted; copy into yam_bench_clear_left yourself).
+const capturedLimits = {};  // slot -> {lo?, hi?}
+let lastArmFb = {};         // slot -> position
+
+function selectArmSlot(slot, ev) {
+  if (ev && ev.target && (ev.target.closest("button") || ev.target.closest("input"))) return;
+  _keysSetArmSlot(slot);
+}
+
+function markLimit(slot, which) {
+  const pos = lastArmFb[slot];
+  if (pos == null || !Number.isFinite(pos)) {
+    setTeleopError(`no live FB for slot ${slot} yet — wait for feedback`);
+    return;
+  }
+  const cur = capturedLimits[slot] || {};
+  if (which === "lo") cur.lo = pos;
+  else cur.hi = pos;
+  if (cur.lo != null && cur.hi != null && cur.hi < cur.lo) {
+    const t = cur.lo; cur.lo = cur.hi; cur.hi = t;
+  }
+  capturedLimits[slot] = cur;
+  setTeleopError("");
+  renderCapturedLimits();
+}
+
+function clearCapturedLimits() {
+  for (const k of Object.keys(capturedLimits)) delete capturedLimits[k];
+  renderCapturedLimits();
+}
+
+function renderCapturedLimits() {
+  if (!teleopGroups) return;
+  const arms = Object.values(teleopGroups.actuators)
+    .filter(s => s.group === "arm_left" && s.verified)
+    .sort((a, b) => a.slot - b.slot);
+  const lines = arms.map((s, i) => {
+    const c = capturedLimits[s.slot] || {};
+    const el = document.getElementById(`armCap${s.slot}`);
+    if (el) {
+      el.textContent = `lo ${c.lo != null ? Number(c.lo).toFixed(4) : "—"} · hi ${c.hi != null ? Number(c.hi).toFixed(4) : "—"}`;
+    }
+    return `J${i + 1} (slot ${s.slot}): lo=${c.lo != null ? Number(c.lo).toFixed(4) : "—"}  hi=${c.hi != null ? Number(c.hi).toFixed(4) : "—"}`;
+  });
+  const out = document.getElementById("capturedLimitsOut");
+  if (out) out.textContent = "Marked limits (live encoder FB; not saved):\n" + lines.join("\n");
+}
+
+function copyCapturedLimits() {
+  if (!teleopGroups) return;
+  const arms = Object.values(teleopGroups.actuators)
+    .filter(s => s.group === "arm_left" && s.verified)
+    .sort((a, b) => a.slot - b.slot);
+  const lo = [], hi = [];
+  for (const s of arms) {
+    const c = capturedLimits[s.slot] || {};
+    lo.push(c.lo != null ? Number(c.lo).toFixed(4) : "None");
+    hi.push(c.hi != null ? Number(c.hi).toFixed(4) : "None");
+  }
+  const text =
+    `# marked from debug_dashboard (raw encoder edges — inset yourself before committing)\n` +
+    `CLEAR_LO = (${lo.join(", ")})\n` +
+    `CLEAR_HI = (${hi.join(", ")})\n`;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(
+      () => setTeleopError("copied CLEAR_LO / CLEAR_HI to clipboard"),
+      () => setTeleopError("clipboard failed — see Marked limits text above"),
+    );
+  } else {
+    setTeleopError("clipboard unavailable — copy from Marked limits text above");
+  }
+  const out = document.getElementById("capturedLimitsOut");
+  if (out) out.textContent = text;
 }
 
 function idleGroup(group) { postAction(`/api/idle_group/${group}`, {}, setTeleopError); }
@@ -992,8 +1162,10 @@ function teleopArmRow(spec) {
     </div>`;
   }
   const mid = ((spec.lo + spec.hi) / 2).toFixed(3);
-  return `<div class="joint-card" id="armRow${s}">
-    <div class="jc-head"><span class="jc-label">${spec.label}</span><span class="jc-sub">slot ${s}</span></div>
+  const cap = capturedLimits[s] || {};
+  const capTxt = `lo ${cap.lo != null ? Number(cap.lo).toFixed(4) : "—"} · hi ${cap.hi != null ? Number(cap.hi).toFixed(4) : "—"}`;
+  return `<div class="joint-card" id="armRow${s}" onclick="selectArmSlot(${s}, event)" title="Click to select for ←/→ keyboard nudge">
+    <div class="jc-head"><span class="jc-label">${spec.label}</span><span class="jc-sub">slot ${s} · rail [${Number(spec.lo).toFixed(2)}, ${Number(spec.hi).toFixed(2)}]</span></div>
     <div class="jc-slider">
       <input type="range" id="armSlider${s}" min="${spec.lo}" max="${spec.hi}" step="0.01" value="${mid}"
         oninput="document.getElementById('armVal${s}').textContent = this.value">
@@ -1007,6 +1179,12 @@ function teleopArmRow(spec) {
         <button class="btn-idle" id="armIdle${s}" onclick="idleActuator(${s})" title="Zero torque on THIS joint only — it will move/drop under gravity/load from a neighbor if unsupported">Idle</button>
       </span>
       <span class="cmd" id="armCmd${s}">—</span>
+    </div>
+    <div class="jc-limits">
+      <span class="fb" id="armFb${s}">fb —</span>
+      <button type="button" onclick="markLimit(${s}, 'lo')" title="Capture current encoder FB as this joint's marked minimum">Mark lo</button>
+      <button type="button" onclick="markLimit(${s}, 'hi')" title="Capture current encoder FB as this joint's marked maximum">Mark hi</button>
+      <span class="cap" id="armCap${s}">${capTxt}</span>
     </div>
   </div>`;
 }
@@ -1167,8 +1345,21 @@ window.addEventListener("keydown", (ev) => {
   }
   if (k === "ArrowUp") { ev.preventDefault(); _keysNudgeNeck(0, 1); return; }
   if (k === "ArrowDown") { ev.preventDefault(); _keysNudgeNeck(0, -1); return; }
-  if (k === "ArrowLeft") { ev.preventDefault(); _keysNudgeNeck(1, -1); return; }
-  if (k === "ArrowRight") { ev.preventDefault(); _keysNudgeNeck(1, 1); return; }
+  // ←/→ nudge the selected arm joint; neck yaw is ,/. when an arm is selected.
+  if (k === "ArrowLeft") {
+    ev.preventDefault();
+    if (keysArmSlot != null) _keysNudgeArm(-1);
+    else _keysNudgeNeck(1, -1);
+    return;
+  }
+  if (k === "ArrowRight") {
+    ev.preventDefault();
+    if (keysArmSlot != null) _keysNudgeArm(1);
+    else _keysNudgeNeck(1, 1);
+    return;
+  }
+  if (k === ",") { ev.preventDefault(); _keysNudgeNeck(1, -1); return; }
+  if (k === ".") { ev.preventDefault(); _keysNudgeNeck(1, 1); return; }
   if (k >= "1" && k <= "7") {
     const arms = _keysVerifiedArmSlots();
     const idx = parseInt(k, 10) - 1;
@@ -1234,7 +1425,7 @@ async function tick() {
       kv("host_pub_ms", s.stream_publish_ms != null ? s.stream_publish_ms.toFixed(1) : null),
       kv("host_loop_ms", s.stream_loop_ms != null ? s.stream_loop_ms.toFixed(1) : null),
       kv("svd", s.svd_present ? "yes" : "no"),
-      kv("ui_note", "3 jobs: plant TX / UI snapshot / opt-in Record. Healthy: ack_lag~0, fb flood when idle. If MCP Apply spikes lag, Idle all + check firmware plant MCP path."),
+      kv("ui_note", "3 jobs: plant TX / UI snapshot / opt-in Record. Healthy: ack_lag~0, fb flood when idle. If MCP Apply spikes lag, Idle all + check firmware plant MCP path.", "wide"),
     ].join("");
 
     document.getElementById("blackbox").innerHTML = [
@@ -1250,6 +1441,11 @@ async function tick() {
     recMeta.textContent = s.recording
       ? `${(s.recording_bytes/1024).toFixed(1)} KB · ${(s.recording_seconds||0).toFixed(0)}s · ${s.recording_path ? s.recording_path.split(/[\\/]/).pop() : ""}`
       : "";
+    const clearFaultsBtn = document.getElementById("clearFaultsBtn");
+    clearFaultsBtn.disabled = !!s.following_state_file;
+    clearFaultsBtn.title = s.following_state_file
+      ? "Following a peer's state.json — this dashboard isn't the one counting faults right now, so Clear has nothing to reset here. Clear on whichever process owns COM instead."
+      : "Resets the 'faults this session' counter and pre-fault ring buffer in RAM. Does not delete already-written faults/fault_*.ndjson dump files on disk. If the board is still faulted, the very next tick re-arms a fresh capture — this clears bookkeeping, not the underlying condition.";
 
     // PDU / soft-kill — pdb_status is null until the first feedback frame
     // with a parseable system-kill block arrives (or never connected).
@@ -1317,8 +1513,13 @@ async function tick() {
       banner.textContent = "Observe — streaming telemetry, plant_apply=0, auto soft-kill off. Board will not ESTOP from PDU V/I on connect. Enable control when ready to command. Soft-kill Park works right now regardless — it does not need Control mode.";
     } else {
       banner.className = "banner warn";
-      banner.textContent = "Control — MCU NORMAL + soft-kill auto-park armed. Idle all / Back to observe before Disconnect if you parked. Soft-kill Park ≠ Enable control: Park is the always-available kill; Enable control is what arms the ESTOP button and Apply.";
+      banner.textContent = "Control — MCU NORMAL + plant_apply=1. Firmware now mounts every CFG-enabled slot's held desire each tick and TX's it on that slot's CAN bus, so ALL configured channels start transmitting/blinking at once — not just the one you move (idle-hold slots still send a zero-torque keepalive to stay enabled). Idle all / Back to observe before Disconnect if you parked. Soft-kill Park ≠ Enable control: Park is the always-available kill; Enable control is what arms the ESTOP button and Apply.";
     }
+    lastListenPdu = !!s.listen_pdu;
+    const listenBtn = document.getElementById("listenPduBtn");
+    listenBtn.disabled = !s.connected;
+    listenBtn.textContent = `listen_pdu: ${lastListenPdu ? "ON" : "OFF"}`;
+    listenBtn.className = lastListenPdu ? "btn-go" : "btn-ghost";
 
     // Plant control gating — ESTOP only when we own COM (follow mode uses Soft-kill Park)
     const plantLive = inControl;
@@ -1395,6 +1596,16 @@ async function tick() {
             ? `→ ${fmt(st.target, 3)} @ ${fmt(st.cruise, 2)} rad/s${st.flagged ? " · ⚠ large tracking error — under load?" : ""}`
             : "idle";
           armCmd.classList.toggle("flagged", !!(st && st.flagged));
+        }
+        const armFb = document.getElementById(`armFb${slot}`);
+        if (armFb) {
+          const a = acts[slot];
+          if (a && a.position != null) {
+            lastArmFb[slot] = a.position;
+            armFb.textContent = `fb ${fmt(a.position, 4)}`;
+          } else {
+            armFb.textContent = "fb —";
+          }
         }
         const baseCmd = document.getElementById(`baseCmd${slot}`);
         if (baseCmd) {
@@ -1524,6 +1735,7 @@ def make_handler(state: AppState):
                 payload["following_state_file"] = False
                 payload["session_dir"] = str(state.telemetry.session_dir)
                 payload["cfg_map"] = state.cfg_map
+                payload["listen_pdu"] = bool(state.proxy.listen_pdu) if state.proxy is not None else None
                 payload["continuous_launch"] = state.continuous_status()
                 payload["teleop"] = state.teleop.snapshot()
                 # Idle (no COM) must not look like a board fault — telemetry
@@ -1562,6 +1774,12 @@ def make_handler(state: AppState):
                     state.disconnect()
                 elif path == "/api/control_mode":
                     state.set_control_mode(body.get("mode") or "observe")
+                elif path == "/api/listen_pdu":
+                    if not state.connected:
+                        raise RuntimeError("not connected")
+                    state.set_listen_pdu(bool(body.get("enable", False)))
+                elif path == "/api/faults/clear":
+                    state.clear_fault_log()
                 elif path == "/api/record/start":
                     state.telemetry.start_recording()
                 elif path == "/api/record/stop":
@@ -1596,6 +1814,8 @@ def make_handler(state: AppState):
                     state.idle_all_actuators()
                 elif path == "/api/cfg_map":
                     state.set_cfg_map(body.get("map") or "bench")
+                elif path == "/api/teleop/limit_scout":
+                    state.set_limit_scout(bool(body.get("enable", False)))
                 elif path.startswith("/api/idle_group/"):
                     if not state.connected:
                         raise RuntimeError("not connected")

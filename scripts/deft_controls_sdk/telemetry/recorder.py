@@ -108,6 +108,26 @@ class FaultRecorder:
         """Wait for background disk work (tests / orderly shutdown)."""
         return self._disk.flush(timeout_s=timeout_s)
 
+    def clear(self) -> None:
+        """Reset session fault bookkeeping — ring buffer, count, last-path.
+
+        Does not touch already-written ``faults/fault_*.ndjson`` dump files on
+        disk (those are historical incident evidence); this only resets the
+        in-memory "faults this session" counter and pre-fault ring so a long
+        bench session can start counting fresh without a board reconnect.
+        Any in-progress post-fault capture is discarded rather than flushed.
+        If the underlying condition (e.g. still ESTOP) has not cleared, the
+        next observed tick will treat it as a new fault — clear does not
+        suppress detection, only the bookkeeping.
+        """
+        self._ring.clear()
+        self._pending = None
+        self._last_plant_block = None
+        self._last_mcu_state = None
+        self._last_fault_bits = 0
+        self.fault_count = 0
+        self.last_fault_path = None
+
     def close(self) -> None:
         self.stop_recording()
         if self._owns_disk:

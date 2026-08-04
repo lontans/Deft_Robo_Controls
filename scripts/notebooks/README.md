@@ -10,3 +10,5 @@ Import **`deft_controls_sdk`** — not `pcb_lab` helpers. See [`../deft_controls
 Open from Cursor/VS Code or Jupyter with cwd under `scripts/` (or run the path bootstrap cell). Needs the same env as `pcb_lab` (`pip install -r requirements.txt`).
 
 Live cells open the COM port — only one owner at a time (close `pcb_lab.debug test` / dashboard first).
+
+Talk-through CLI demos (product `set_section` pitch): [`../demo_scripts/`](../demo_scripts/).

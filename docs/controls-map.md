@@ -67,6 +67,7 @@ Firmware compile remains **STM32CubeIDE**; commit the ELF for Jetson pull → fl
 2. Once: `dfu-util`, `libusb`, udev [`scripts/udev/99-stm32-dfu.rules`](../scripts/udev/99-stm32-dfu.rules), user in `dialout`.
 3. Clone parent `deft_vbeta` with this repo as submodule @ GitHub SHA; venv + `pip install -r controls_pcb/scripts/requirements.txt`.
 4. Product path: vbeta session → `set_section` (see parent repo). Lab path: same `pcb_lab` commands with `/dev/ttyACM0`.
+5. Talk-through scripts: [`scripts/demo_scripts/`](../scripts/demo_scripts/) (`01`…`04` — CFG + product idle + bench base).
 
 ## Soft-DFU
 

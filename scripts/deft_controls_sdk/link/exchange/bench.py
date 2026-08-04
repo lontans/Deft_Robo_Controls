@@ -363,6 +363,153 @@ def probe_kind_matches(resp_kind: int, expect_kind: Optional[int]) -> bool:
     return False
 
 
+# -- CubeMars CM0 bench PDU (discover) — Damiao-shaped, no register scheme -----------
+
+CM_TAG0, CM_TAG1, CM_TAG2 = ord("C"), ord("M"), ord("0")
+CM_RESP_TAG = ord("k")  # NOT 'c' — that's CFG_RESP_TAG0
+
+CM_PROBE_MIT = 0
+CM_PROBE_PROMISC = 10
+CM_PROBE_ENABLE = 11
+CM_PROBE_DISABLE = 12
+CM_PROBE_SET_ZERO = 13
+CM_PROBE_DISCOVER = 15
+CM_PROBE_ID_SWEEP = 17
+
+CM_PROBE_KIND_NAMES = {
+    CM_PROBE_MIT: "mit",
+    CM_PROBE_PROMISC: "promisc",
+    CM_PROBE_ENABLE: "enable",
+    CM_PROBE_DISABLE: "disable",
+    CM_PROBE_SET_ZERO: "set_zero",
+    CM_PROBE_DISCOVER: "discover",
+    CM_PROBE_ID_SWEEP: "id_sweep",
+}
+
+
+def build_cm_probe_command(
+    motor_id: int,
+    probe_kind: int,
+    seq: int,
+    *,
+    bus: int = 1,
+    listen_ms: int = 15,
+    end_id: int = 0,
+    bus_mask: int = 0,
+) -> bytes:
+    """CubeMars bench probe/session on debug lane ``DEBUG_LANE_CM``.
+
+    Same tag/offset shape as :func:`build_dm_probe_command` minus
+    master_id/param_rid — CubeMars has no PDF-documented register-read
+    scheme, so discover is MIT-frame-based only (see cubemars.h probe API).
+    """
+    from .debug_lanes import wrap_mailbox_as_debug_lanes
+    from .wire_layout import DEBUG_LANE_CM
+
+    mbox = bytearray(32)
+    mbox[0] = CM_TAG0
+    mbox[1] = CM_TAG1
+    mbox[2] = CM_TAG2
+    mbox[3] = motor_id & 0xFF
+    mbox[4] = probe_kind & 0xFF
+    mbox[6] = listen_ms & 0xFF
+    mbox[8] = end_id & 0xFF
+    mbox[9] = bus_mask & 0x3F
+    mbox[11] = normalize_can_bus(bus) & 0xFF
+    return wrap_mailbox_as_debug_lanes(seq, mbox, DEBUG_LANE_CM)
+
+
+def parse_cm_probe_pdu(frame: bytes) -> Optional[dict]:
+    if len(frame) != IMAGE_BYTES:
+        return None
+    from .debug_lanes import mailbox_or_lane
+    from .wire_layout import DEBUG_LANE_CM
+
+    pdu = mailbox_or_lane(frame, DEBUG_LANE_CM)
+    if pdu[0] != CM_RESP_TAG:
+        return None
+    rx_can_id, = struct.unpack_from("<I", pdu, 4)
+    position, = struct.unpack_from("<f", pdu, 20)
+    return {
+        "probe_id": pdu[1],
+        "found": pdu[2] != 0,
+        "probe_kind": pdu[3],
+        "rx_can_id": rx_can_id,
+        "can_data": bytes(pdu[8:16]),
+        "position": position,
+        "discovered_id": pdu[24],
+        "raw_frames": pdu[26],
+        "fault": pdu[27],
+        "tx_frames_sent": pdu[28],
+    }
+
+
+# -- ZeroErr ZE0 bench PDU (CANopen node discover via SDO 0x1018) -------------------
+
+ZE_TAG0, ZE_TAG1, ZE_TAG2 = ord("Z"), ord("E"), ord("0")
+ZE_RESP_TAG = ord("z")
+
+ZE_PROBE_NODE = 0
+ZE_PROBE_SWEEP = 17
+
+ZEROERR_VENDOR_ID = 0x5A65726F
+ZEROERR_PRODUCT_CODE = 0x26483052
+
+
+def build_ze_probe_command(
+    node_id: int,
+    probe_kind: int,
+    seq: int,
+    *,
+    bus: int = 1,
+    sdo_timeout_ms: int = 30,
+    end_id: int = 0,
+    bus_mask: int = 0,
+) -> bytes:
+    """ZeroErr bench probe/session on debug lane ``DEBUG_LANE_ZE``.
+
+    Not MIT-shaped — ``node_id`` sweeps CANopen node ids via SDO-read 0x1018
+    (Identity Object), see zeroerr.h probe API.
+    """
+    from .debug_lanes import wrap_mailbox_as_debug_lanes
+    from .wire_layout import DEBUG_LANE_ZE
+
+    mbox = bytearray(32)
+    mbox[0] = ZE_TAG0
+    mbox[1] = ZE_TAG1
+    mbox[2] = ZE_TAG2
+    mbox[3] = node_id & 0xFF
+    mbox[4] = probe_kind & 0xFF
+    mbox[6] = sdo_timeout_ms & 0xFF
+    mbox[8] = end_id & 0xFF
+    mbox[9] = bus_mask & 0x3F
+    mbox[11] = normalize_can_bus(bus) & 0xFF
+    return wrap_mailbox_as_debug_lanes(seq, mbox, DEBUG_LANE_ZE)
+
+
+def parse_ze_probe_pdu(frame: bytes) -> Optional[dict]:
+    if len(frame) != IMAGE_BYTES:
+        return None
+    from .debug_lanes import mailbox_or_lane
+    from .wire_layout import DEBUG_LANE_ZE
+
+    pdu = mailbox_or_lane(frame, DEBUG_LANE_ZE)
+    if pdu[0] != ZE_RESP_TAG:
+        return None
+    vendor, = struct.unpack_from("<I", pdu, 4)
+    product, = struct.unpack_from("<I", pdu, 8)
+    revision, = struct.unpack_from("<I", pdu, 12)
+    return {
+        "probe_id": pdu[1],
+        "found": pdu[2] != 0,
+        "vendor_match": pdu[3] != 0,
+        "vendor": vendor,
+        "product": product,
+        "revision": revision,
+        "discovered_id": pdu[24],
+    }
+
+
 # -- CFG bench PDU (actuator table get/set/save) --------------------------------------
 
 CFG_TAG0, CFG_TAG1, CFG_TAG2 = ord("C"), ord("F"), ord("G")

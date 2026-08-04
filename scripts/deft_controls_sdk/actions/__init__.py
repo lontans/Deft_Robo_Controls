@@ -38,6 +38,13 @@ from .led import (
     set_led,
 )
 from .mounted import MountedAction, merge_mounted
+from .arm_brace import (
+    ENGAGE_KP,
+    J2_KP_SCALE,
+    lead_clamp,
+    write_left_arm,
+)
+from .gravity_comp import GravityComp, I2RT_GRAVITY_SCALE, try_gravity_comp
 from .operate import (
     feedback_positions_from_proxy,
     make_teleop_engine,
@@ -84,9 +91,14 @@ __all__ = [
     # Teleop / operate
     "SlotSpec",
     "TeleopEngine",
+    "ENGAGE_KP",
+    "J2_KP_SCALE",
+    "GravityComp",
+    "I2RT_GRAVITY_SCALE",
     "build_actuator_specs",
     "build_servo_specs",
     "feedback_positions_from_proxy",
+    "lead_clamp",
     "make_teleop_engine",
     "move_arm_cruise",
     "neck_cruise",
@@ -95,6 +107,8 @@ __all__ = [
     "spin_jog",
     "stop_servos",
     "stop_slots",
+    "try_gravity_comp",
+    "write_left_arm",
     # CFG identity (table checks only)
     "cfg_row_matches",
     "format_slot_cfg_lines",

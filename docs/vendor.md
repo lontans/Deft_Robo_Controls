@@ -51,6 +51,7 @@ msg->data[6] = ((kd_int&0xF)<<4)|(kp_int>>8); // WRONG
 ```
 
 - Model maps vary (plugin default AK80-9). Do not hot-switch servo↔MIT without power cycle.
+- **Discover:** MIT-frame ID sweep only (no PDF-documented register-read scheme, unlike Damiao) — `CM0` bench PDU, `hub.debug.discover_cubemars[_all]` / `pcb_lab.debug`. Plant control path (`cubemars_apply_cycle`) is untouched by discover.
 - **Status:** code present, **not HW-proven**.
 
 ## ZeroErr (eRob / eDriver CANopen)
@@ -58,6 +59,7 @@ msg->data[6] = ((kd_int&0xF)<<4)|(kp_int>>8); // WRONG
 - **EDS:** product eDriver; Vendor `0x5A65726F`; Product `0x26483052`; **BaudRate_1000=1 only** → 1 Mbps.
 - **Default PDO map is sparse:** RxPDO1/`0x200+N` = CW only; RxPDO2/`0x300+N` disabled but maps CW+target; TxPDO1/`0x180+N` = SW only. Plugin remaps to DLC6 CW+target / SW+actual — see `zeroerr.c`.
 - CiA 402 PP: `0x6060=1`; CW `0x06→0x07→0x0F` (+ `0x1F` new setpoint in examples). Encoder res provisional **524288**.
+- **Discover:** CANopen node sweep via SDO-read `0x1018` (Identity Object) — `ZE0` bench PDU, `hub.debug.discover_zeroerr[_all]` / `pcb_lab.debug`. Works on FDCAN CH1–3 and MCP CH4–6 (canopen.c's SDO/NMT TX now uses the same MCP `send_now` bypass as Damiao/RobStride probes, not just queued enqueue+flush).
 - **Status:** boot FSM present, **not bench-proven**. Official manuals form-gated.
 
 ## MCP2518FD + MCP2562FD (CH4–6)

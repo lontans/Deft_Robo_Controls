@@ -96,6 +96,51 @@ void cubemars_apply_cycle(const actuator_config_t *cfg,
 void cubemars_on_rx_frame(const actuator_config_t *cfg, uint8_t slot,
                          const can_frame_t *frame, actuator_state_t *state_out);
 
+/*
+ * Bench discover/probe — separate from the hot apply_cycle path above (never
+ * called from it; does not touch cubemars_apply_cycle's enable latch). No
+ * PDF-documented 0x7FF-style register read for CubeMars (unlike Damiao), so
+ * probing is MIT-frame-based only: send a zero-effort MIT command (or an
+ * enable/disable/zero opcode) to a candidate Drive ID and listen for the FB
+ * frame it echoes back (PDF: FB D[0] = Drive ID) — same "any valid frame
+ * gets an FB reply" behavior the plant path already relies on.
+ */
+#define CUBEMARS_PROBE_MIT          0u   /* zero-effort MIT frame; listen for FB echo */
+#define CUBEMARS_PROBE_PROMISC      10u  /* accept any Drive ID in the FB echo */
+#define CUBEMARS_PROBE_ENABLE       11u  /* FF*7 + 0xFC */
+#define CUBEMARS_PROBE_DISABLE      12u  /* FF*7 + 0xFD */
+#define CUBEMARS_PROBE_SET_ZERO     13u  /* FF*7 + 0xFE */
+#define CUBEMARS_PROBE_DISCOVER     15u  /* zero MIT frame, listen only (no enable) */
+#define CUBEMARS_PROBE_ID_SWEEP     17u  /* zero MIT frame per id in [motor_id..end_id] */
+
+typedef struct {
+	bool     found;
+	uint8_t  motor_id;
+	uint8_t  discovered_id;
+	uint8_t  probe_kind;
+	uint8_t  fault;
+	uint8_t  raw_frames_seen;
+	uint8_t  tx_frames_sent;
+	uint32_t rx_can_id;
+	uint8_t  data[8];
+	float    position;
+	float    velocity;
+	float    torque;
+	float    temperature;
+} cubemars_probe_result_t;
+
+/* Single candidate: MIT/DISCOVER/PROMISC send a zero-effort MIT frame and
+ * listen; ENABLE/DISABLE/SET_ZERO send the matching opcode frame and listen
+ * for the FB echo it triggers. Never enqueues to actuator_table — bench only. */
+bool cubemars_probe_id(can_bus_id_t bus, uint8_t motor_id, uint8_t probe_kind,
+                       uint16_t listen_ms, cubemars_probe_result_t *out);
+
+/* Sweeps [start_id, end_id] with one zero-effort MIT frame per candidate,
+ * MCU-side so the host doesn't pay a USB round trip per id. Stops at the
+ * first hit — same "host re-sweeps from hit+1" contract as Damiao ID_SWEEP. */
+bool cubemars_probe_id_range(can_bus_id_t bus, uint8_t start_id, uint8_t end_id,
+                             uint16_t listen_ms_per_id, cubemars_probe_result_t *out);
+
 #if CUBEMARS_ENABLE_SERVO_MODE
 /* Reference only — not on the hot plant path. */
 #define CUBEMARS_POS_SCALE   10000.0f

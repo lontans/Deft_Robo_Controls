@@ -64,6 +64,14 @@ void diag_poll_session_buses(bool rx_only)
 		mask = g_rs2_bus_mask;
 		if (mask == 0u && g_rs2_can_bus < CAN_BACKEND_COUNT)
 			mask = (uint8_t)(1u << (unsigned)g_rs2_can_bus);
+	} else if (g_cm_session_active) {
+		mask = g_cm_bus_mask;
+		if (mask == 0u && g_cm_can_bus < CAN_BACKEND_COUNT)
+			mask = (uint8_t)(1u << (unsigned)g_cm_can_bus);
+	} else if (g_ze_session_active) {
+		mask = g_ze_bus_mask;
+		if (mask == 0u && g_ze_can_bus < CAN_BACKEND_COUNT)
+			mask = (uint8_t)(1u << (unsigned)g_ze_can_bus);
 	} else {
 		return;
 	}
@@ -81,7 +89,8 @@ void diag_poll_session_buses(bool rx_only)
 void diag_flush_usb(void)
 {
 	for (uint8_t i = 0; i < 32u; i++) {
-		if (g_dm_session_active || g_rs2_session_active)
+		if (g_dm_session_active || g_rs2_session_active ||
+		    g_cm_session_active || g_ze_session_active)
 			diag_poll_session_buses(true);
 		else
 			plant_diag_can_router_poll();
@@ -127,9 +136,10 @@ void diag_stale_host_watchdog(void)
 	if (g_probe_in_progress || g_rs2_probe_pending)
 		return;
 
-	/* Stale host while a bench lease is held — drop RS2 and DM the same way. */
+	/* Stale host while a bench lease is held — drop every protocol the same way. */
 	if (!host_link_command_is_fresh(DIAG_HOST_STALE_MS)) {
-		if (g_dm_session_active || g_rs2_session_active)
+		if (g_dm_session_active || g_rs2_session_active ||
+		    g_cm_session_active || g_ze_session_active)
 			plant_diag_release_actuator_can();
 	}
 }
@@ -158,7 +168,8 @@ void plant_diag_on_dxl_command(const host_command_image_t *cmd)
 
 void plant_diag_can_router_poll(void)
 {
-	if (g_dm_session_active || g_rs2_session_active) {
+	if (g_dm_session_active || g_rs2_session_active ||
+	    g_cm_session_active || g_ze_session_active) {
 		diag_poll_session_buses(false);
 		return;
 	}
@@ -178,7 +189,8 @@ void plant_diag_can_router_poll(void)
 
 void plant_diag_yield_usb(void)
 {
-	if (g_dm_session_active || g_rs2_session_active)
+	if (g_dm_session_active || g_rs2_session_active ||
+	    g_cm_session_active || g_ze_session_active)
 		diag_poll_session_buses(true);
 	else
 		plant_diag_can_router_poll();
@@ -230,21 +242,34 @@ void plant_diag_release_actuator_can(void)
 	g_dm_session_active = false;
 	g_dm_quiet_until_ms = 0u;
 	g_dm_bus_mask = 0u;
+	g_cm_session_active = false;
+	g_cm_quiet_until_ms = 0u;
+	g_cm_bus_mask = 0u;
+	g_ze_session_active = false;
+	g_ze_quiet_until_ms = 0u;
+	g_ze_bus_mask = 0u;
 	g_rs2_probe_pending = false;
 	g_probe_in_progress = false;
 	g_probe_started_ms = 0u;
 
-	/* Drop bench PDU stamps ('r'/'m'/'d') so plant runtime feedback is clean. */
+	/* Drop bench PDU stamps ('r'/'m'/'k'/'z'/'d') so plant runtime feedback is clean. */
 	g_dm_feedback_active = false;
 	g_dm_feedback_ttl = 0u;
 	memset(&g_last_dm_probe, 0, sizeof(g_last_dm_probe));
+	g_cm_feedback_active = false;
+	g_cm_feedback_ttl = 0u;
+	memset(&g_last_cm_probe, 0, sizeof(g_last_cm_probe));
+	g_ze_feedback_active = false;
+	g_ze_feedback_ttl = 0u;
+	memset(&g_last_ze_probe, 0, sizeof(g_last_ze_probe));
 	memset(&g_last_probe, 0, sizeof(g_last_probe));
 	g_dxl_feedback_active = false;
 }
 
 bool plant_diag_bench_session_active(void)
 {
-	return g_rs2_session_active || g_dm_session_active;
+	return g_rs2_session_active || g_dm_session_active ||
+	       g_cm_session_active || g_ze_session_active;
 }
 
 bool plant_diag_probe_busy(void)
@@ -259,6 +284,12 @@ bool plant_diag_quiet_period_active(void)
 		return true;
 	if (g_dm_quiet_until_ms != 0u &&
 	    (int32_t)(HAL_GetTick() - g_dm_quiet_until_ms) < 0)
+		return true;
+	if (g_cm_quiet_until_ms != 0u &&
+	    (int32_t)(HAL_GetTick() - g_cm_quiet_until_ms) < 0)
+		return true;
+	if (g_ze_quiet_until_ms != 0u &&
+	    (int32_t)(HAL_GetTick() - g_ze_quiet_until_ms) < 0)
 		return true;
 	return false;
 }
@@ -279,5 +310,6 @@ bool plant_diag_skip_actuator_can(void)
 bool plant_diag_skip_servo_bus(void)
 {
 	return g_rs2_session_active || g_dm_session_active ||
+	       g_cm_session_active || g_ze_session_active ||
 	       g_probe_in_progress;
 }

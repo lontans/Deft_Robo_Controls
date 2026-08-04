@@ -3,6 +3,7 @@
 #include "plant/can/canopen.h"
 #include "plant/can/can_router.h"
 #include "plant/actuator.h"
+#include "plant/plant_diag.h"
 #include "main.h"
 #include <math.h>
 #include <string.h>
@@ -526,3 +527,62 @@ const plugin_ops_t zeroerr_ops = {
 	.pack_tx = zeroerr_pack_tx,
 	.parse_rx = zeroerr_parse_rx,
 };
+
+/* --------------------------------------------------------------------- */
+/* Bench discover/probe — never called from zeroerr_apply_cycle.         */
+/* --------------------------------------------------------------------- */
+
+bool zeroerr_probe_node(can_bus_id_t bus, uint8_t node_id, uint32_t sdo_timeout_ms,
+                        zeroerr_probe_result_t *out)
+{
+	uint32_t vendor = 0u, product = 0u, revision = 0u;
+
+	if (out == NULL)
+		return false;
+	if (sdo_timeout_ms == 0u)
+		sdo_timeout_ms = ZEROERR_SDO_TIMEOUT_MS;
+
+	memset(out, 0, sizeof(*out));
+	out->node_id = node_id;
+
+	if (!zeroerr_read_identity(bus, node_id, &vendor, &product, &revision, sdo_timeout_ms))
+		return false;
+
+	out->found = true;
+	out->discovered_id = node_id;
+	out->vendor = vendor;
+	out->product = product;
+	out->revision = revision;
+	out->vendor_match = (vendor == ZEROERR_VENDOR_ID) && (product == ZEROERR_PRODUCT_CODE);
+	return true;
+}
+
+bool zeroerr_probe_node_range(can_bus_id_t bus, uint8_t start_id, uint8_t end_id,
+                              uint32_t sdo_timeout_ms, zeroerr_probe_result_t *out)
+{
+	uint16_t lo = start_id;
+	uint16_t hi = end_id;
+
+	if (out == NULL)
+		return false;
+	if (hi < lo) {
+		uint16_t tmp = lo;
+		lo = hi;
+		hi = tmp;
+	}
+	if (lo == 0u)
+		lo = 1u; /* node 0 is not a valid CANopen node id */
+	if (hi > 127u)
+		hi = 127u;
+
+	memset(out, 0, sizeof(*out));
+	out->node_id = (uint8_t)lo;
+
+	for (uint16_t node = lo; node <= hi; node++) {
+		if (zeroerr_probe_node(bus, (uint8_t)node, sdo_timeout_ms, out))
+			return true;
+		out->node_id = (uint8_t)node;
+		plant_diag_yield_usb();
+	}
+	return false;
+}
