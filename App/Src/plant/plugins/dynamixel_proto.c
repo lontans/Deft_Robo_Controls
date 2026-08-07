@@ -417,6 +417,29 @@ bool dxl_toggle_ids_baud(uint8_t id_start, uint8_t id_end, uint32_t *new_baud_ou
 	return true;
 }
 
+/*
+ * Bring-up only: reassign old_id -> new_id (EEPROM addr 7), then verify by
+ * pinging new_id. Self-contained like dxl_toggle_ids_baud — finds old_id's
+ * current working baud first rather than assuming the port is already
+ * parked there, so call order relative to a prior SCAN/FIND_BAUD doesn't
+ * matter. No collision detection beyond that: caller must pick a new_id
+ * not already answering on this baud domain.
+ */
+bool dxl_set_id(uint8_t old_id, uint8_t new_id)
+{
+	uint32_t current_baud = 0u;
+
+	if (!dxl_find_working_baud(old_id, old_id, &current_baud))
+		return false;
+
+	if (!dxl_write_u8(old_id, DXL_ADDR_ID, new_id))
+		return false;
+
+	dxl_port_delay_ms(10u);
+
+	return dxl_ping(new_id);
+}
+
 static bool dxl_broadcast_ping_any(void)
 {
 	g_dxl_tx[DXL_ID]   = DXL_ID_BROADCAST;

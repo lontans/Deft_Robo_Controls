@@ -21,7 +21,9 @@ from deft_controls_sdk.debug.stream_pause import pause_plant_stream
 from deft_controls_sdk.link.exchange import (
     SESSION_BEGIN,
     SESSION_END,
+    ZE_PROBE_BOOT,
     ZE_PROBE_NODE,
+    ZE_PROBE_POSITION,
     ZE_PROBE_SWEEP,
     ZEROERR_PRODUCT_CODE,
     ZEROERR_VENDOR_ID,
@@ -190,11 +192,87 @@ def probe_node(
         return resp
 
 
+def boot(
+    connection: "Connection",
+    telemetry: Optional["TelemetryCache"],
+    *,
+    bus: int,
+    node_id: int,
+    sdo_timeout_ms: int = _DEFAULT_SDO_TIMEOUT_MS,
+) -> bool:
+    """Stage-1 bring-up: NMT + PDO1 remap only — zeroerr_boot_blocking().
+
+    No controlword frame is ever sent by this call, so the brake stays
+    engaged and the shaft cannot move — this only proves NMT/SDO/PDO-mapping
+    health beyond the identity-read discover does. Node ends up at most in
+    Switch On Disabled / Ready to Switch On (CiA402), never Operation
+    Enabled. Real timeout budget: ~20 SDO/NMT round trips at
+    ``sdo_timeout_ms`` each, worst case.
+    """
+    timeout_ms = _clamp_timeout_ms(sdo_timeout_ms)
+    budget_s = (20 * (timeout_ms + 5)) / 1000.0 + 3.0
+    with pause_plant_stream(connection):
+        if telemetry is not None:
+            telemetry.set_connected(True, mode="discover")
+        frame = build_ze_probe_command(
+            node_id, ZE_PROBE_BOOT, connection.next_seq(), bus=bus, sdo_timeout_ms=timeout_ms,
+        )
+        connection.reader.drain()
+        resp = connection.exchange_raw(
+            frame, parse_ze_probe_pdu, timeout_s=budget_s, predicate=lambda p: True,
+        )
+        if telemetry is not None:
+            telemetry.set_connected(
+                True, mode="plant_stream" if connection.is_streaming else "idle",
+            )
+        ok = bool(resp and resp.get("found"))
+        print(f"{'OK' if ok else 'FAIL'}  ZE boot (NMT+PDO1, no controlword)  node=0x{node_id:02X}")
+        return ok
+
+
+def read_position(
+    connection: "Connection",
+    telemetry: Optional["TelemetryCache"],
+    *,
+    bus: int,
+    node_id: int,
+    sdo_timeout_ms: int = _DEFAULT_SDO_TIMEOUT_MS,
+) -> Optional[float]:
+    """SDO read of 0x6064 (Position Actual Value), radians. No enable, no
+    PDO mapping, no NMT-Operational required — safe to call at any time,
+    including before ``boot``. Returns ``None`` on no reply/timeout."""
+    timeout_ms = _clamp_timeout_ms(sdo_timeout_ms)
+    with pause_plant_stream(connection):
+        if telemetry is not None:
+            telemetry.set_connected(True, mode="discover")
+        frame = build_ze_probe_command(
+            node_id, ZE_PROBE_POSITION, connection.next_seq(), bus=bus, sdo_timeout_ms=timeout_ms,
+        )
+        connection.reader.drain()
+        resp = connection.exchange_raw(
+            frame, parse_ze_probe_pdu,
+            timeout_s=(timeout_ms + 5) / 1000.0 + 2.0,
+            predicate=lambda p: True,
+        )
+        if telemetry is not None:
+            telemetry.set_connected(
+                True, mode="plant_stream" if connection.is_streaming else "idle",
+            )
+        if resp is None or not resp.get("found") or not resp.get("position_valid"):
+            print(f"MISS  ZE position  node=0x{node_id:02X}")
+            return None
+        pos = float(resp["position_rad"])
+        print(f"OK  ZE position  node=0x{node_id:02X}  pos={pos:+.4f} rad")
+        return pos
+
+
 __all__ = [
     "PROTO_ZEROERR",
     "ZEROERR_PRODUCT_CODE",
     "ZEROERR_VENDOR_ID",
+    "boot",
     "discover",
     "discover_all",
     "probe_node",
+    "read_position",
 ]

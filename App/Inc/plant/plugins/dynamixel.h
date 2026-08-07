@@ -6,6 +6,7 @@
 
 #define DXL_PROTO_VERSION 2.0f
 
+#define DXL_ADDR_ID                7u  /* EEPROM; Protocol 2.0 X/XL-series control table */
 #define DXL_ADDR_OPERATING_MODE    11u
 #define DXL_ADDR_TORQUE_ENABLE     64u
 #define DXL_ADDR_LED               65u
@@ -200,6 +201,11 @@ bool     dxl_read_u8(uint8_t id, uint16_t addr, uint8_t *value_out);
 bool     dxl_read_u32(uint8_t id, uint16_t addr, uint32_t *value_out);
 bool     dxl_reboot(uint8_t id);
 bool     dxl_toggle_ids_baud(uint8_t id_start, uint8_t id_end, uint32_t *new_baud_out);
+/* Bring-up only: write EEPROM addr 7 (ID) on old_id, verify new_id pings.
+ * Caller's responsibility to pick a new_id that isn't already in use on
+ * this bus/baud domain — no collision detection here (mirrors
+ * dxl_toggle_ids_baud not detecting baud collisions either). */
+bool     dxl_set_id(uint8_t old_id, uint8_t new_id);
 void     dynamixel_bus_init(void);
 
 bool dxl_sync_write_tx(uint16_t start_addr, uint16_t data_len,

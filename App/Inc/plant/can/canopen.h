@@ -14,14 +14,12 @@
  */
 
 #define CANOPEN_NMT_COB           0x000u
-#define CANOPEN_SYNC_COB          0x080u
 #define CANOPEN_TXPDO1_BASE       0x180u
 #define CANOPEN_RXPDO1_BASE       0x200u
 #define CANOPEN_TXPDO2_BASE       0x280u
 #define CANOPEN_RXPDO2_BASE       0x300u
 #define CANOPEN_SDO_TX_BASE       0x580u /* slave → master */
 #define CANOPEN_SDO_RX_BASE       0x600u /* master → slave */
-#define CANOPEN_HEARTBEAT_BASE    0x700u
 
 #define CANOPEN_NMT_START         0x01u
 #define CANOPEN_NMT_STOP          0x02u
@@ -65,13 +63,13 @@ void canopen_frame_std(can_frame_t *out, uint16_t cob_id, uint8_t dlc,
                        const uint8_t *data);
 
 bool canopen_nmt_send(can_bus_id_t bus, uint8_t cs, uint8_t node_id);
-bool canopen_sync_send(can_bus_id_t bus);
 
-/* Expedited SDO — polls RX until response or timeout_ms. Not for 500 Hz hot path. */
+/* Expedited SDO — polls RX until response or timeout_ms. Not for 500 Hz hot path.
+ * No u16 variant: nothing in this codebase writes a 2-byte OD object yet
+ * (mode is u8, profile vel/acc/dec + PDO comm params are u32) — add one
+ * when a real caller needs it, CANOPEN_SDO_CMD_W2 (0x2B) is already defined. */
 bool canopen_sdo_write_u8(can_bus_id_t bus, uint8_t node, uint16_t index,
                           uint8_t sub, uint8_t value, uint32_t timeout_ms);
-bool canopen_sdo_write_u16(can_bus_id_t bus, uint8_t node, uint16_t index,
-                           uint8_t sub, uint16_t value, uint32_t timeout_ms);
 bool canopen_sdo_write_u32(can_bus_id_t bus, uint8_t node, uint16_t index,
                            uint8_t sub, uint32_t value, uint32_t timeout_ms);
 bool canopen_sdo_read_u32(can_bus_id_t bus, uint8_t node, uint16_t index,

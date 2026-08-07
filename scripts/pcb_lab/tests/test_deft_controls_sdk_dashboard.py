@@ -5,6 +5,11 @@ with plain urllib — this exercises the actual HTTP routing/JSON contract,
 not just AppState in isolation. No serial port is ever opened; every
 "connected" scenario uses AppState with no hub, which is exactly what the
 disconnected-error-handling paths need to prove.
+
+Follow/Active x soft_kill model (see debug_dashboard/state.py): Connect
+always enters Active *frozen* (soft_kill=True) — motion-issuing calls
+(Apply / teleop target / jog) are rejected until ``/api/soft_kill/release``.
+Idle / Stop / Hard-ESTOP-park are never gated by soft_kill.
 """
 from __future__ import annotations
 
@@ -21,7 +26,10 @@ _SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
+import deft_controls_sdk.debug_dashboard.routes as routes_module
+import deft_controls_sdk.debug_dashboard.state as state_module
 from deft_controls_sdk.debug_dashboard.app import AppState, serve
+from deft_controls_sdk.debug_dashboard.registry import ACTION_REGISTRY
 from deft_controls_sdk.host_proxy import HostProxy
 from deft_controls_sdk.link import McuState
 
@@ -54,13 +62,13 @@ def _post(base: str, path: str, body=None):
 
 
 def _install_fake_proxy_connect(monkeypatch, fake):
-    """Patch AppState's HostProxy.connect to wrap ``fake`` (no real COM).
+    """Patch state.py's ``HostProxy.connect`` to wrap ``fake`` (no real COM).
 
-    Mimics ``HostProxy.connect(..., armed=False)`` side effects the dashboard
-    and these tests assert on (stream + plant_apply off).
+    Mimics the real connect path's side effects (Active, frozen: NORMAL +
+    plant_apply=1, soft_kill=True) that the dashboard and these tests assert
+    on. Records the kwargs the dashboard actually requested (e.g. ``mode``)
+    on ``fake.last_connect_kwargs`` so tests can assert on it directly.
     """
-    import deft_controls_sdk.debug_dashboard.app as app_module
-
     if not hasattr(fake, "send_once"):
         fake.send_once = lambda: None  # type: ignore[attr-defined]
     if not hasattr(fake, "set_led"):
@@ -69,8 +77,24 @@ def _install_fake_proxy_connect(monkeypatch, fake):
         fake.stop_streaming = lambda: None  # type: ignore[attr-defined]
     if not hasattr(fake, "plant_apply"):
         fake.plant_apply = False  # type: ignore[attr-defined]
+    if not hasattr(fake, "set_actuators"):
+        def _set_actuators(desires, *, send=True):
+            for slot, d in desires.items():
+                fake.set_actuator(int(slot), d, send=send)
+        fake.set_actuators = _set_actuators  # type: ignore[attr-defined]
+    if not hasattr(fake, "soft_kill_freeze"):
+        def _freeze(*, send=True):
+            fake.soft_kill = True
+        fake.soft_kill_freeze = _freeze  # type: ignore[attr-defined]
+    if not hasattr(fake, "soft_kill_unfreeze"):
+        def _unfreeze():
+            fake.soft_kill = False
+        fake.soft_kill_unfreeze = _unfreeze  # type: ignore[attr-defined]
+    if not hasattr(fake, "soft_kill"):
+        fake.soft_kill = False  # type: ignore[attr-defined]
 
     def _connect(cls, port, **kwargs):
+        fake.last_connect_kwargs = dict(kwargs)  # type: ignore[attr-defined]
         if hasattr(fake, "start_streaming"):
             fake.start_streaming(
                 hz=float(kwargs.get("stream_hz", 50.0)),
@@ -80,8 +104,10 @@ def _install_fake_proxy_connect(monkeypatch, fake):
         if hasattr(fake, "set_mcu_state"):
             fake.set_mcu_state(McuState.NORMAL, send=False)
         if hasattr(fake, "set_plant_apply"):
-            fake.set_plant_apply(False, send=True)
-            fake.plant_apply = False
+            # armed=True (Active default) — real HostProxy.connect calls
+            # hub.recover() -> NORMAL + plant_apply=True.
+            fake.set_plant_apply(True, send=True)
+            fake.plant_apply = True
         proxy = HostProxy(
             fake,
             owns_hub=True,
@@ -91,7 +117,7 @@ def _install_fake_proxy_connect(monkeypatch, fake):
         proxy._stream_hz = float(kwargs.get("stream_hz", 50.0))
         return proxy
 
-    monkeypatch.setattr(app_module.HostProxy, "connect", classmethod(_connect))
+    monkeypatch.setattr(state_module.HostProxy, "connect", classmethod(_connect))
     return fake
 
 
@@ -102,7 +128,29 @@ def test_index_serves_html(server) -> None:
         body = r.read().decode("utf-8")
     assert "<title>" in body
     assert "portSelect" in body  # connection card present
-    assert "Plant control" in body  # control card present
+    assert "Advanced: raw per-slot Apply" in body  # control card present
+    assert "/static/style.css" in body
+    assert "/static/app.js" in body
+
+
+def test_static_files_are_served(server) -> None:
+    _state, base = server
+    status, _ = (_get_raw := lambda p: urllib.request.urlopen(base + p))(
+        "/static/style.css"
+    ), None
+    with urllib.request.urlopen(base + "/static/style.css") as r:
+        assert r.status == 200
+        assert "text/css" in r.headers.get("Content-Type", "")
+    with urllib.request.urlopen(base + "/static/app.js") as r:
+        assert r.status == 200
+        assert "javascript" in r.headers.get("Content-Type", "")
+
+
+def test_static_path_traversal_is_rejected(server) -> None:
+    _state, base = server
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(base + "/static/..%2F..%2Fapp.py")
+    assert exc_info.value.code == 404
 
 
 def test_state_before_any_connect_is_well_formed(server) -> None:
@@ -110,22 +158,204 @@ def test_state_before_any_connect_is_well_formed(server) -> None:
     status, data = _get(base, "/api/state")
     assert status == 200
     assert data["connected"] is False
+    assert data["mode"] == "follow"
+    assert data["soft_kill"] is True  # default at rest
     assert len(data["actuators"]) == 26  # wire slot count even with no hub yet
     assert all(a is None for a in data["actuators"])
-    # Plant control clarity fields (held-desire / streaming) must also be
-    # well-formed with no hub yet, not just the feedback side.
     assert data["streaming"] is False
     assert data["held"] == [None] * 26
     # Idle must not look like a board fault (was grade=red / "disconnected").
     assert data["grade"] == "idle"
-    assert data["control_mode"] == "idle"
     assert "not connected" in (data.get("summary") or "").lower()
+
+
+def test_connect_requests_debug_mode_not_bandwidth(server, monkeypatch) -> None:
+    """See state.py module docstring: Connect must open mode="debug" (was
+    "bandwidth") — verified safe (only hub.debug.* RPCs branch on it)."""
+
+    class _FakeHub:
+        port = "COM5"
+        is_streaming = True
+
+        def held_desires(self):
+            return {}
+
+        def held_desire(self, slot):
+            return None
+
+        def set_actuator(self, slot, desire, *, send=True):
+            pass
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    fake = _FakeHub()
+    _install_fake_proxy_connect(monkeypatch, fake)
+    state, base = server
+    status, _ = _post(base, "/api/connect", {"port": "COM5"})
+    assert status == 200
+    assert fake.last_connect_kwargs["mode"] == "debug"
+
+
+def test_connect_enters_active_frozen_by_default(server, monkeypatch) -> None:
+    class _FakeHub:
+        port = "COM5"
+        is_streaming = True
+
+        def held_desires(self):
+            return {}
+
+        def held_desire(self, slot):
+            return None
+
+        def set_actuator(self, slot, desire, *, send=True):
+            pass
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    fake = _FakeHub()
+    _install_fake_proxy_connect(monkeypatch, fake)
+    state, base = server
+    status, _ = _post(base, "/api/connect", {"port": "COM5"})
+    assert status == 200
+    assert state.connected is True
+    assert state.soft_kill is True
+    assert fake.soft_kill is True
+    status, data = _get(base, "/api/state")
+    assert data["mode"] == "active"
+    assert data["soft_kill"] is True
+
+
+def test_soft_kill_blocks_motion_until_released(server, monkeypatch) -> None:
+    """The core soft_kill contract: Apply is rejected with a clear error
+    while frozen, and works once released."""
+
+    class _FakeHub:
+        port = "COM5"
+        is_streaming = True
+
+        def __init__(self) -> None:
+            self.applied = []
+
+        def held_desires(self):
+            return {}
+
+        def held_desire(self, slot):
+            return None
+
+        def set_actuator(self, slot, desire, *, send=True):
+            self.applied.append((slot, desire))
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    fake = _FakeHub()
+    _install_fake_proxy_connect(monkeypatch, fake)
+    state, base = server
+    _post(base, "/api/connect", {"port": "COM5"})
+
+    status, data = _post(base, "/api/actuator/0", {"position": 1.0, "kp": 8.0, "kd": 0.4})
+    assert status == 400
+    assert "soft_kill is ON" in data["error"]
+
+    status, _ = _post(base, "/api/soft_kill/release")
+    assert status == 200
+    assert state.soft_kill is False
+
+    status, _ = _post(base, "/api/actuator/0", {"position": 1.0, "kp": 8.0, "kd": 0.4})
+    assert status == 200
+    assert any(slot == 0 for slot, _d in fake.applied)
+
+
+def test_engage_soft_kill_refreezes(server, monkeypatch) -> None:
+    class _FakeHub:
+        port = "COM5"
+        is_streaming = True
+
+        def held_desires(self):
+            return {}
+
+        def held_desire(self, slot):
+            return None
+
+        def set_actuator(self, slot, desire, *, send=True):
+            pass
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    fake = _FakeHub()
+    _install_fake_proxy_connect(monkeypatch, fake)
+    state, base = server
+    _post(base, "/api/connect", {"port": "COM5"})
+    _post(base, "/api/soft_kill/release")
+    assert state.soft_kill is False
+    status, _ = _post(base, "/api/soft_kill/engage")
+    assert status == 200
+    assert state.soft_kill is True
+    status, data = _post(base, "/api/actuator/0", {"position": 1.0, "kp": 1.0, "kd": 0.1})
+    assert status == 400
+    assert "soft_kill is ON" in data["error"]
+
+
+def test_idle_and_stop_work_regardless_of_soft_kill(server, monkeypatch) -> None:
+    """Idle (blank torque) is never gated — only new motion commands are."""
+
+    class _FakeHub:
+        port = "COM5"
+        is_streaming = True
+
+        def __init__(self):
+            self.idled = []
+
+        def held_desires(self):
+            return {}
+
+        def held_desire(self, slot):
+            return None
+
+        def set_actuator(self, slot, desire, *, send=True):
+            self.idled.append(slot)
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    fake = _FakeHub()
+    _install_fake_proxy_connect(monkeypatch, fake)
+    state, base = server
+    _post(base, "/api/connect", {"port": "COM5"})
+    assert state.soft_kill is True  # still frozen
+    status, _ = _post(base, "/api/actuator/0/idle")
+    assert status == 200
+    assert 0 in fake.idled
+
+
+def test_soft_kill_release_requires_connection(server) -> None:
+    _state, base = server
+    status, data = _post(base, "/api/soft_kill/release")
+    assert status == 400
+    assert "not connected" in data["error"]
 
 
 def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> None:
     """/api/state must distinguish an actively-held non-zero command from an
-    idle-hold zero desire from a never-commanded slot — that distinction is
-    the whole point of the "active plant control state" clarity ask."""
+    idle-hold zero desire from a never-commanded slot."""
     from deft_controls_sdk.link import ActuatorDesire
 
     class _FakeHub:
@@ -133,7 +363,11 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
         is_streaming = True
 
         def __init__(self) -> None:
-            self._held = {0: ActuatorDesire(position=1.0, kp=8.0, kd=0.4), 3: ActuatorDesire()}
+            # Empty at construction — connect() anchors every slot itself
+            # (kp=0, tiny nonzero position) the instant it runs, so a fresh
+            # hub never has pre-existing held state to preserve (matches the
+            # real Connection, whose _desires dict starts empty).
+            self._held: dict = {}
             self.auto_soft_kill = None
             self.mcu_states = []
             self.plant_apply_flags = []
@@ -168,15 +402,19 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
     _install_fake_proxy_connect(monkeypatch, fake)
 
     state, base = server
-    state.connect("COM5")  # observe default
-    assert fake.auto_soft_kill is False
+    state.connect("COM5")
     assert fake.mcu_states and int(fake.mcu_states[-1]) == 0  # NORMAL
-    assert fake.plant_apply_flags and fake.plant_apply_flags[-1] is False
-    assert state.control_mode == "observe"
+    assert fake.plant_apply_flags and fake.plant_apply_flags[-1] is True  # Active default
+    assert state.mode == "active"
+    assert state.soft_kill is True
+    # Every slot is anchored by connect() — simulate an operator command
+    # landing on slot 0 afterward (hub-level, independent of the soft_kill
+    # HTTP guard which is exercised elsewhere).
+    fake.set_actuator(0, ActuatorDesire(position=1.0, kp=8.0, kd=0.4))
     status, data = _get(base, "/api/state")
     assert status == 200
     assert data["streaming"] is True
-    assert data["control_mode"] == "observe"
+    assert data["mode"] == "active"
     assert data["held"][0] == {
         "position": 1.0,
         "velocity": 0.0,
@@ -185,14 +423,12 @@ def test_held_state_reflects_active_vs_idle_commands(server, monkeypatch) -> Non
         "torque": 0.0,
         "active": True,
     }
-    assert data["held"][3]["active"] is False  # all-zero desire — idle-hold, not "active"
-    assert data["held"][1] is None  # never commanded, distinct from idle-hold
+    # Untouched slot 3 is still just the connect() anchor — idle-hold, not "active".
+    assert data["held"][3]["active"] is False
+    assert data["held"][3]["kp"] == 0.0
 
 
 def test_state_exposes_pdb_status_from_telemetry(server) -> None:
-    """/api/state must surface TelemetryCache's pdb_status verbatim — this is
-    the PDU telemetry strip's only data source (see debug_dashboard/app.py
-    tick() -> s.pdb_status)."""
     state, base = server
     state.telemetry.set_connected(True, port="COM5")
     state.telemetry.update_from_feedback(
@@ -210,16 +446,16 @@ def test_state_exposes_pdb_status_from_telemetry(server) -> None:
     assert status == 200
     assert data["pdb_status"]["kill_state_name"] == "soft_kill_req"
     assert data["pdb_status"]["pdb"]["contactor_state"] == 3
-    assert data["mcu_state"] == 3  # dashboard derives "host requested ESTOP" from this
+    assert data["mcu_state"] == 3
 
 
-def test_soft_kill_park_without_connection_writes_peer_request(server) -> None:
-    """Follow mode: Soft-kill Park signals the CDC owner via a flag file."""
+def test_hard_estop_park_without_connection_writes_peer_request(server) -> None:
+    """Follow mode: Hard-ESTOP park signals the CDC owner via a flag file."""
     state, base = server
-    flag = state.soft_kill_request_path()
+    flag = state.hard_estop_request_path()
     if flag.is_file():
         flag.unlink()
-    status, data = _post(base, "/api/pdb/soft_kill_park")
+    status, data = _post(base, "/api/estop/park")
     assert status == 200
     assert data.get("ok") is True
     assert data.get("mode") == "peer_request"
@@ -227,7 +463,7 @@ def test_soft_kill_park_without_connection_writes_peer_request(server) -> None:
     flag.unlink(missing_ok=True)
 
 
-def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
+def test_hard_estop_park_calls_hub_when_connected(server, monkeypatch) -> None:
     class _FakeHub:
         port = "COM5"
         is_streaming = True
@@ -236,21 +472,13 @@ def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
         def held_desires(self):
             return {}
 
-        def start_streaming(
-            self, hz: float = 50.0, *, telemetry_hz: float = 10.0, auto_soft_kill: bool = True
-        ) -> None:
+        def held_desire(self, slot):
+            return None
+
+        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
 
         def set_auto_soft_kill(self, enabled: bool) -> None:
-            pass
-
-        def set_mcu_state(self, state, *, send: bool = True) -> None:
-            pass
-
-        def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
-            pass
-
-        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
 
         def soft_kill_park(self) -> None:
@@ -264,80 +492,18 @@ def test_soft_kill_park_calls_hub_when_connected(server, monkeypatch) -> None:
 
     state, base = server
     state.connect("COM5")
-    status, data = _post(base, "/api/pdb/soft_kill_park")
+    status, data = _post(base, "/api/estop/park")
     assert status == 200
     assert data.get("ok") is True
     assert data.get("mode") == "direct"
     assert fake.parked is True
 
 
-def test_observe_blocks_plant_commands_until_enable_control(server, monkeypatch) -> None:
-    class _FakeHub:
-        port = "COM5"
-        is_streaming = True
-
-        def __init__(self) -> None:
-            self.auto_soft_kill = True
-            self.mcu = None
-
-        def held_desires(self):
-            return {}
-
-        def start_streaming(
-            self, hz: float = 50.0, *, telemetry_hz: float = 10.0, auto_soft_kill: bool = True
-        ) -> None:
-            self.auto_soft_kill = auto_soft_kill
-
-        def set_auto_soft_kill(self, enabled: bool) -> None:
-            self.auto_soft_kill = enabled
-
-        def set_mcu_state(self, state, *, send: bool = True) -> None:
-            self.mcu = state
-
-        def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
-            self.plant_apply = bool(enable)
-
-        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
-            pass
-
-        def close(self) -> None:
-            pass
-
-    fake = _FakeHub()
-    _install_fake_proxy_connect(monkeypatch, fake)
-    state, base = server
-    state.connect("COM5", mode="observe")
-    status, data = _post(base, "/api/mcu_state", {"state": 0})
-    assert status == 400
-    assert "Enable control" in data["error"]
-    status, data = _post(base, "/api/control_mode", {"mode": "control"})
-    assert status == 200
-    assert state.control_mode == "control"
-    assert fake.auto_soft_kill is True
-    assert fake.mcu == McuState.NORMAL
-
-
 def test_state_exposes_session_dir_for_peer_alignment(server) -> None:
-    """Operator needs to see which session dir this dashboard is watching so
-    a DEFT_SESSION_DIR mismatch with a peer script (continuous/vbeta) is
-    visible instead of silently reading nothing in follow mode."""
     state, base = server
     status, data = _get(base, "/api/state")
     assert status == 200
     assert data["session_dir"] == str(state.telemetry.session_dir)
-
-
-def test_soft_kill_park_response_includes_path_for_follow_mode_ui(server) -> None:
-    """The UI shows the actual flag path/mode after Park — not just ok/error —
-    so the operator can see 'flag written' vs 'parked direct' immediately."""
-    state, base = server
-    flag = state.soft_kill_request_path()
-    flag.unlink(missing_ok=True)
-    status, data = _post(base, "/api/pdb/soft_kill_park")
-    assert status == 200
-    assert data["mode"] == "peer_request"
-    assert data["path"] == str(flag)
-    flag.unlink(missing_ok=True)
 
 
 def test_ports_endpoint_returns_a_list(server) -> None:
@@ -392,10 +558,6 @@ def test_disconnect_when_never_connected_is_a_noop_not_an_error(server) -> None:
 
 
 def test_record_start_stop_via_http(server) -> None:
-    """Control POSTs return {"ok": True} only (not the full snapshot) — that
-    was itself a fix for lock contention (snapshot_dict() takes the same lock
-    the stream thread needs). Recording status is read back via GET /api/state,
-    same as the dashboard JS does after every action."""
     state, base = server
     status, data = _post(base, "/api/record/start")
     assert status == 200 and data == {"ok": True}
@@ -406,7 +568,7 @@ def test_record_start_stop_via_http(server) -> None:
 
 
 def test_unknown_route_is_404(server) -> None:
-    state, base = server
+    _state, base = server
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(base + "/api/nonsense")
     assert exc_info.value.code == 404
@@ -416,10 +578,7 @@ def test_unknown_route_is_404(server) -> None:
 
 
 def test_connect_refuses_while_peer_owns_com(server, monkeypatch) -> None:
-    """Dashboard must not HostProxy.connect over a live CDC owner — follow
-    state.json instead of colliding on the COM port."""
     state, base = server
-    # Fresh peer publish in the shared session dir.
     state.telemetry.set_connected(True, port="COM5")
     state.telemetry.flush(timeout_s=1.0)
     assert state.peer_com_owner() is not None
@@ -430,9 +589,7 @@ def test_connect_refuses_while_peer_owns_com(server, monkeypatch) -> None:
         called["n"] += 1
         raise AssertionError("HostProxy.connect must not run while peer owns COM")
 
-    import deft_controls_sdk.debug_dashboard.app as app_module
-
-    monkeypatch.setattr(app_module.HostProxy, "connect", classmethod(_boom))
+    monkeypatch.setattr(state_module.HostProxy, "connect", classmethod(_boom))
     status, data = _post(base, "/api/connect", {"port": "COM5"})
     assert status == 400
     assert "already owned" in data["error"]
@@ -441,9 +598,6 @@ def test_connect_refuses_while_peer_owns_com(server, monkeypatch) -> None:
 
 
 def test_connect_allowed_when_peer_state_is_stale(server, monkeypatch) -> None:
-    """Abandoned state.json (crashed peer) must not block Connect forever."""
-    import deft_controls_sdk.debug_dashboard.app as app_module
-
     state, base = server
     sp = state.telemetry.state_path
     sp.parent.mkdir(parents=True, exist_ok=True)
@@ -452,7 +606,7 @@ def test_connect_allowed_when_peer_state_is_stale(server, monkeypatch) -> None:
             {
                 "connected": True,
                 "port": "COM5",
-                "updated_at": time.time() - (app_module.PEER_OWNER_MAX_AGE_S + 1.0),
+                "updated_at": time.time() - (state_module.PEER_OWNER_MAX_AGE_S + 1.0),
             }
         ),
         encoding="utf-8",
@@ -467,29 +621,22 @@ def test_connect_allowed_when_peer_state_is_stale(server, monkeypatch) -> None:
 
 
 def test_app_state_rejects_double_connect_via_lock(monkeypatch) -> None:
-    """Two rapid Connect clicks must not open two Connections — the second
-    caller must see 'already connected', not silently replace the first."""
-    import deft_controls_sdk.debug_dashboard.app as app_module
-
     class _FakeHub:
         is_streaming = True
 
         def __init__(self, port):
             self.port = port
 
-        def start_streaming(self, hz=50.0, *, telemetry_hz=10.0, auto_soft_kill=True):
+        def held_desires(self):
+            return {}
+
+        def held_desire(self, slot):
+            return None
+
+        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
 
         def set_auto_soft_kill(self, enabled: bool) -> None:
-            pass
-
-        def set_mcu_state(self, state, *, send: bool = True) -> None:
-            pass
-
-        def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
-            self.plant_apply = bool(enable)
-
-        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
             pass
 
         def close(self):
@@ -501,14 +648,18 @@ def test_app_state_rejects_double_connect_via_lock(monkeypatch) -> None:
         fake.set_led = lambda *a, **k: None
         fake.stop_streaming = lambda: None
         fake.plant_apply = False
-        fake.start_streaming(auto_soft_kill=False)
-        fake.set_mcu_state(McuState.NORMAL, send=False)
-        fake.set_plant_apply(False, send=True)
+
+        def _set_actuators(desires, *, send=True):
+            for slot, d in desires.items():
+                fake.set_actuator(int(slot), d, send=send)
+        fake.set_actuators = _set_actuators
+        fake.soft_kill_freeze = lambda *, send=True: None
+        fake.soft_kill_unfreeze = lambda: None
         return HostProxy(fake, owns_hub=True, listen_pdu=False)
 
-    monkeypatch.setattr(app_module.HostProxy, "connect", classmethod(_connect_fresh))
+    monkeypatch.setattr(state_module.HostProxy, "connect", classmethod(_connect_fresh))
 
-    state = app_module.AppState(persist_telemetry=False)
+    state = state_module.AppState(persist_telemetry=False)
     state.connect("COM5")
     assert state.connected is True
     with pytest.raises(RuntimeError, match="already connected"):
@@ -522,8 +673,7 @@ def test_app_state_rejects_double_connect_via_lock(monkeypatch) -> None:
 
 class _TeleopFakeHub:
     """Records set_actuator/set_servo calls and answers held_desire/held_servo
-    from whatever was last written — close enough to the real hub's held-state
-    contract for the slew engine's seed-then-ramp logic to exercise for real."""
+    from whatever was last written."""
 
     port = "COM5"
     is_streaming = True
@@ -536,9 +686,14 @@ class _TeleopFakeHub:
             22: ActuatorDesire(position=0.0),
             25: ActuatorDesire(position=1.0),
         }
+        # connect() anchors every slot (kp=0, tiny nonzero position) the
+        # instant it runs — restore these afterward (see
+        # _connect_fake_teleop_hub) so seed-relative tests see real seeds.
+        self.initial_acts = dict(self._acts)
         self._servos: dict = {}
         self.mcu_states: list = []
         self.auto_soft_kill = None
+        self.soft_kill = False
         self.set_actuator_calls: list = []
         self.set_servo_calls: list = []
 
@@ -563,6 +718,12 @@ class _TeleopFakeHub:
     def set_plant_apply(self, enable: bool, *, send: bool = True) -> None:
         pass
 
+    def soft_kill_freeze(self, *, send: bool = True) -> None:
+        self.soft_kill = True
+
+    def soft_kill_unfreeze(self) -> None:
+        self.soft_kill = False
+
     def set_actuator(self, slot, desire, *, send: bool = True) -> None:
         self._acts[slot] = desire
         self.set_actuator_calls.append((slot, desire))
@@ -584,17 +745,21 @@ class _TeleopFakeHub:
 
 
 def _connect_fake_teleop_hub(monkeypatch, state, base):
+    """Connect + release soft_kill (the new equivalent of old mode="control")."""
     fake = _TeleopFakeHub()
     _install_fake_proxy_connect(monkeypatch, fake)
-    state.connect("COM5", mode="control")
+    state.connect("COM5")
+    # connect() just anchored every slot — restore the fixture's intended
+    # pre-seeded positions (standing in for live feedback/prior state) so
+    # seed-relative jog / target tests exercise real seed values, not the
+    # anchor.
+    for slot, desire in fake.initial_acts.items():
+        fake.set_actuator(slot, desire)
+    state.release_soft_kill()
     return fake
 
 
 def test_teleop_groups_endpoint_marks_unverified_slots(server) -> None:
-    """Right arm (7-13) and the product-map base rows have no live-verified
-    range on this bench yet (docs/peripherals/*.md) — the UI must be able to
-    tell those apart from left arm / bench base so it can gate target-teleop
-    without inventing a range."""
     _state, base = server
     status, data = _get(base, "/api/teleop/groups")
     assert status == 200
@@ -615,22 +780,21 @@ def test_cfg_map_switch_relabels_base_without_touching_board(server) -> None:
     assert state.cfg_map == "product"
     status, data = _get(base, "/api/teleop/groups")
     assert data["actuators"]["14"]["group"] == "base"
-    assert data["actuators"]["14"]["verified"] is False  # not wired on this bench today
-    assert "22" not in data["actuators"]  # bench-only slot gone once relabeled to product
+    assert data["actuators"]["14"]["verified"] is False
+    assert "22" not in data["actuators"]
 
 
-def test_teleop_actuator_target_requires_control_mode(server, monkeypatch) -> None:
+def test_teleop_actuator_target_requires_soft_kill_released(server, monkeypatch) -> None:
     state, base = server
-    _connect_fake_teleop_hub(monkeypatch, state, base)
-    state.set_control_mode("observe")
+    fake = _TeleopFakeHub()
+    _install_fake_proxy_connect(monkeypatch, fake)
+    state.connect("COM5")  # still frozen — never released
     status, data = _post(base, "/api/teleop/actuator/0", {"target": 0.5, "cruise": 0.3})
     assert status == 400
-    assert "Enable control" in data["error"]
+    assert "soft_kill is ON" in data["error"]
 
 
 def test_teleop_actuator_rejects_unverified_right_arm(server, monkeypatch) -> None:
-    """Right arm has no live-verified CLEAR envelope yet — refuse the target
-    instead of guessing a range, per arm-damiao-ch1.md provenance notes."""
     state, base = server
     _connect_fake_teleop_hub(monkeypatch, state, base)
     status, data = _post(base, "/api/teleop/actuator/7", {"target": 0.5, "cruise": 0.3})
@@ -646,12 +810,12 @@ def test_teleop_actuator_target_engages_and_slews(server, monkeypatch) -> None:
     time.sleep(0.2)
     snap = state.teleop.snapshot()
     assert snap["actuators"][0]["target"] == 0.5
-    assert 0.0 < snap["actuators"][0]["pos"] <= 0.5  # slewing toward target, not snapped
-    assert fake.set_actuator_calls  # engine actually wrote through the hub
+    assert 0.0 < snap["actuators"][0]["pos"] <= 0.5
+    assert fake.set_actuator_calls
     status, _ = _post(base, "/api/teleop/actuator/0/stop")
     assert status == 200
     frozen = state.teleop.snapshot()["actuators"][0]
-    assert frozen["target"] == frozen["pos"]  # froze in place, did not blank
+    assert frozen["target"] == frozen["pos"]
 
 
 def test_teleop_stop_all_freezes_without_blanking(server, monkeypatch) -> None:
@@ -667,19 +831,22 @@ def test_teleop_stop_all_freezes_without_blanking(server, monkeypatch) -> None:
     assert frozen["target"] == frozen["pos"]
 
 
-def test_teleop_stop_all_requires_control_mode(server, monkeypatch) -> None:
+def test_teleop_stop_all_works_even_while_frozen(server, monkeypatch) -> None:
+    """Stop (freeze in place) is not gated by soft_kill — only new targets are."""
     state, base = server
-    _connect_fake_teleop_hub(monkeypatch, state, base)
-    status, _ = _post(base, "/api/control_mode", {"mode": "observe"})
+    fake = _TeleopFakeHub()
+    _install_fake_proxy_connect(monkeypatch, fake)
+    state.connect("COM5")
+    state.release_soft_kill()
+    status, _ = _post(base, "/api/teleop/actuator/0", {"target": 0.5, "cruise": 0.3})
     assert status == 200
+    state.engage_soft_kill()
     status, data = _post(base, "/api/teleop/stop_all")
-    assert status == 400
-    assert "control" in data["error"].lower()
+    assert status == 200
+    assert data.get("ok") is True
 
 
 def test_teleop_actuator_jog_clamps_to_verified_rail(server, monkeypatch) -> None:
-    """Base RobStride slots (bench map) use the documented MIT rail with the
-    RS_MARGIN inset — see base-robstride-mcp.md — not an unbounded jog."""
     state, base = server
     _connect_fake_teleop_hub(monkeypatch, state, base)
     status, _ = _post(base, "/api/teleop/actuator/22/jog", {"direction": 1, "cruise": 0.3})
@@ -689,8 +856,6 @@ def test_teleop_actuator_jog_clamps_to_verified_rail(server, monkeypatch) -> Non
 
 
 def test_teleop_actuator_jog_damiao_base_is_seed_relative(server, monkeypatch) -> None:
-    """Slot 25 (Damiao CH6) has no hardware MIT rail — its window is
-    +/-2*pi from wherever it was seeded, per base-damiao-ch6.md."""
     import math
 
     state, base = server
@@ -708,24 +873,22 @@ def test_idle_group_blanks_only_that_group(server, monkeypatch) -> None:
     assert status == 200
     status, _ = _post(base, "/api/idle_group/arm_left")
     assert status == 200
-    assert 0 not in state.teleop.snapshot()["actuators"]  # disengaged, not just frozen
+    assert 0 not in state.teleop.snapshot()["actuators"]
     blanked = fake._acts[0]
-    assert blanked.kp == 0.0 and blanked.position == 0.0  # idle desire
-    assert 25 in fake._acts and fake._acts[25].position == 1.0  # base slot untouched
+    assert blanked.kp == 0.0 and blanked.position == 0.0
+    assert 25 in fake._acts and fake._acts[25].position == 1.0
 
 
 def test_idle_group_neck_clears_servos(server, monkeypatch) -> None:
     state, base = server
     fake = _connect_fake_teleop_hub(monkeypatch, state, base)
-    fake._servos[0] = object()  # pretend something was held
+    fake._servos[0] = object()
     status, _ = _post(base, "/api/idle_group/neck")
     assert status == 200
     assert fake._servos == {}
 
 
 def test_teleop_servo_idle_releases_only_that_slot(server, monkeypatch) -> None:
-    """Single-joint neck release — the counterpart to per-slot arm Idle, so
-    the operator isn't forced to use the whole-group neck Idle for one servo."""
     state, base = server
     fake = _connect_fake_teleop_hub(monkeypatch, state, base)
     status, _ = _post(base, "/api/teleop/servo/0", {"target": 2500, "cruise": 100})
@@ -733,14 +896,11 @@ def test_teleop_servo_idle_releases_only_that_slot(server, monkeypatch) -> None:
     status, _ = _post(base, "/api/teleop/servo/0/idle")
     assert status == 200
     assert 0 not in state.teleop.snapshot()["servos"]
-    assert fake._servos[0].servo_id == 0  # released, not left at a stale goal
-    assert 1 not in fake._servos  # yaw untouched
+    assert fake._servos[0].servo_id == 0
+    assert 1 not in fake._servos
 
 
 def test_continuous_launch_and_stop_use_injected_callables(server) -> None:
-    """Real SSH/paramiko must never run in tests — AppState.continuous_launcher
-    / continuous_stopper are swappable exactly so this contract is provable
-    offline (see remote_continuous.py's module docstring)."""
     state, base = server
     calls = []
 
@@ -775,26 +935,19 @@ def test_continuous_launch_and_stop_use_injected_callables(server) -> None:
 
 
 def test_teleop_hold_boosts_damping_and_flags_without_moving_target(server, monkeypatch) -> None:
-    """Field report: releasing J3 let J2 sag, which cascaded into dropping the
-    whole arm. The settled-hold logic must react to a real disturbance by
-    damping harder (kd), never by quietly letting the commanded target drift
-    toward wherever gravity dragged the joint — see teleop.py's HOLD_* constants
-    and their module docstring."""
     from deft_controls_sdk.link.exchange import ACTUATOR_COUNT
 
     state, base = server
     fake = _connect_fake_teleop_hub(monkeypatch, state, base)
     status, _ = _post(base, "/api/teleop/actuator/0", {"target": 0.5, "cruise": 0.3})
     assert status == 200
-    time.sleep(0.3)  # let it arrive (0.3 rad/s * 0.3s = 0.09 < 0.5 target... give it longer)
+    time.sleep(0.3)
     time.sleep(1.5)
     assert state.teleop.snapshot()["actuators"][0]["target"] == 0.5
 
-    # No disturbance yet — nominal hold, default kd, not flagged.
     nominal_kd = fake.set_actuator_calls[-1][1].kd
     assert state.teleop.snapshot()["actuators"][0]["flagged"] is False
 
-    # Simulate live feedback showing the joint sagging away from its held target.
     actuators = [None] * ACTUATOR_COUNT
     actuators[0] = {"position": 0.2, "velocity": -0.4, "torque": 0.0, "temperature": 30.0, "fault": 1}
     state.telemetry.update_from_feedback(
@@ -802,7 +955,6 @@ def test_teleop_hold_boosts_damping_and_flags_without_moving_target(server, monk
         pdu_tag=None, lap_ms=1, lap_max_ms=1, ticks_pending=0, svd_present=True,
         actuators=actuators,
     )
-    # Teleop tick is ~60 Hz; wait until a hold tick consumes the sag FB.
     snap = None
     for _ in range(40):
         time.sleep(0.025)
@@ -810,11 +962,11 @@ def test_teleop_hold_boosts_damping_and_flags_without_moving_target(server, monk
         if snap.get("flagged"):
             break
     assert snap is not None
-    assert snap["target"] == 0.5  # commanded target never moved toward the sag
+    assert snap["target"] == 0.5
     assert snap["flagged"] is True
     last_desire = fake.set_actuator_calls[-1][1]
-    assert last_desire.position == 0.5  # still commanding the real target, not fb
-    assert last_desire.kd > nominal_kd  # damping reacted to the sag
+    assert last_desire.position == 0.5
+    assert last_desire.kd > nominal_kd
 
 
 def test_continuous_launch_error_surfaces_without_crashing(server) -> None:
@@ -828,3 +980,127 @@ def test_continuous_launch_error_surfaces_without_crashing(server) -> None:
         time.sleep(0.02)
     assert state.continuous_status()["state"] == "error"
     assert "no route to host" in state.continuous_status()["detail"]
+
+
+# -- Panels / registry / graceful degradation --------------------------------------------
+
+
+def test_action_registry_import_paths_and_call_sigs_are_well_formed() -> None:
+    assert ACTION_REGISTRY, "registry should not be empty"
+    for key, spec in ACTION_REGISTRY.items():
+        assert spec.key == key
+        parts = spec.import_path.split(".")
+        assert len(parts) >= 2
+        assert all(p.isidentifier() for p in parts), spec.import_path
+        assert isinstance(spec.call_sig, str) and "(" in spec.call_sig and spec.call_sig.endswith(")")
+        assert spec.requires_mode in ("any", "follow", "active", "debug")
+
+
+def test_wire_panels_gracefully_degrades_when_module_missing(server, monkeypatch) -> None:
+    """A registry entry pointing at a module/function that genuinely doesn't
+    exist must not raise — wire_panels() marks just that one unavailable and
+    moves on. Also asserts every *real* entry resolves now that A/B/C's panel
+    modules are merged into this tree (regression guard against the naming
+    mismatches this test caught originally)."""
+    from deft_controls_sdk.debug_dashboard.registry import ActionSpec
+
+    broken = ActionSpec(
+        key="_test_missing", label="missing", blurb="", owner="test",
+        import_path="deft_controls_sdk.debug.panels.system.system_panel.does_not_exist",
+        call_sig="does_not_exist(proxy)",
+    )
+    monkeypatch.setitem(ACTION_REGISTRY, "_test_missing", broken)
+
+    result = routes_module.wire_panels()
+    assert set(result.keys()) == set(ACTION_REGISTRY.keys())
+    assert result["_test_missing"] is None
+    assert all(v is not None for k, v in result.items() if k != "_test_missing"), (
+        "every real ACTION_REGISTRY entry should resolve to a callable now that "
+        "debug/panels/{system,discover} are merged in"
+    )
+    status, data = _get(server[1], "/api/panels")
+    assert status == 200
+    assert data["_test_missing"]["available"] is False
+    assert all(entry["available"] is True for k, entry in data.items() if k != "_test_missing")
+
+
+def test_panel_run_reports_unavailable_not_500(server, monkeypatch) -> None:
+    from deft_controls_sdk.debug_dashboard.registry import ActionSpec
+
+    broken = ActionSpec(
+        key="_test_missing_run", label="missing", blurb="", owner="test",
+        import_path="deft_controls_sdk.debug.panels.system.system_panel.does_not_exist",
+        call_sig="does_not_exist(proxy)",
+    )
+    monkeypatch.setitem(ACTION_REGISTRY, "_test_missing_run", broken)
+    routes_module.wire_panels()
+
+    _state, base = server
+    status, data = _post(base, "/api/panels/_test_missing_run/run", {})
+    assert status == 400
+    assert "not wired yet" in data["error"]
+
+
+def test_panel_run_unknown_key_is_400_not_500(server) -> None:
+    _state, base = server
+    status, data = _post(base, "/api/panels/nonexistent_panel/run", {})
+    assert status == 400
+    assert "unknown panel action" in data["error"]
+
+
+def test_bandwidth_panel_rejected_while_active_even_when_wired(server, monkeypatch) -> None:
+    """Windows CDC is exclusive-open — bandwidth must be Follow-only,
+    regardless of whether the real panel module has landed yet."""
+
+    def _fake_bandwidth(port, **kwargs):
+        return {"port": port, "ok": True}
+
+    monkeypatch.setitem(routes_module._PANEL_FUNCS, "bandwidth", _fake_bandwidth)
+    monkeypatch.setattr(routes_module, "_panel_wired", True)
+
+    state, base = server
+
+    # Follow mode: allowed (wired + not Active).
+    status, data = _post(base, "/api/panels/bandwidth/run", {"port": "COM9", "seconds": 1.0})
+    assert status == 200
+    assert data["result"] == {"port": "COM9", "ok": True}
+
+    # Now go Active and confirm the same call is rejected.
+    class _FakeHub:
+        port = "COM5"
+        is_streaming = True
+
+        def held_desires(self):
+            return {}
+
+        def held_desire(self, slot):
+            return None
+
+        def set_actuator(self, slot, desire, *, send: bool = True) -> None:
+            pass
+
+        def set_auto_soft_kill(self, enabled: bool) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    fake = _FakeHub()
+    _install_fake_proxy_connect(monkeypatch, fake)
+    state.connect("COM5")
+    status, data = _post(base, "/api/panels/bandwidth/run", {"port": "COM9", "seconds": 1.0})
+    assert status == 400
+    assert "Follow-mode only" in data["error"]
+
+
+def test_panel_run_requires_active_for_debug_scoped_panels(server, monkeypatch) -> None:
+    def _fake_inventory(proxy, **kwargs):
+        return {"slots": []}
+
+    monkeypatch.setitem(routes_module._PANEL_FUNCS, "inventory", _fake_inventory)
+    monkeypatch.setattr(routes_module, "_panel_wired", True)
+
+    _state, base = server
+    status, data = _post(base, "/api/panels/inventory/run", {})
+    assert status == 400
+    assert "requires an Active connection" in data["error"]

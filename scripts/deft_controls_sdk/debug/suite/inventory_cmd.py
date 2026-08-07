@@ -4,6 +4,23 @@ Interactive by default (choose buses + ID ranges). Non-interactive for AI::
 
     python -m pcb_lab.debug test --inventory --preset bench --buses 5,6
     python -m pcb_lab.debug test --inventory --rs-range 0x70-0x75 --dm-range 1-8 --json
+    # ZeroErr / Cubemars: either add them to a preset run, or go standalone
+    # with their own explicit range —
+    python -m pcb_lab.debug test --inventory --preset bench --protocols robstride,zeroerr
+    python -m pcb_lab.debug test --inventory --protocols zeroerr --ze-range 1-16 --buses 1
+
+Field cheat sheet — what each flag actually sets:
+    --protocols   which drive protocols to probe (default robstride,damiao —
+                  cubemars/zeroerr are opt-in, pass them explicitly)
+    --preset      canned ID range per protocol (bench|product|full) — covers
+                  all 4 protocols at once, fastest way to get a valid range
+    --rs-range / --dm-range / --cm-range / --ze-range
+                  override the ID range for one protocol only (takes
+                  precedence over --preset for that protocol); required if
+                  you skip --preset entirely
+    --buses       which CAN buses to sweep (default: all)
+No range flags and no --preset at all -> drops into the TUI instead of
+guessing; pass --no-tui to fail fast instead (e.g. from a script).
 """
 from __future__ import annotations
 
@@ -57,11 +74,16 @@ def _tui_plan() -> dict:
     preset: Optional[str] = None
 
     if include_actuators:
-        proto_s = _prompt("protocols (robstride,damiao / rs / dm / both)", "both")
-        if proto_s.strip().lower() in ("both", "all", "*"):
-            protocols = ["robstride", "damiao"]
-        else:
-            protocols = parse_protocol_queue(proto_s)
+        proto_s = _prompt(
+            "protocols — comma list (robstride,damiao,cubemars,zeroerr; "
+            "aliases rs/dm/cm/ze) / both=RS+DM / all=all 4",
+            "both",
+        )
+        norm = proto_s.strip().lower()
+        # "both" is this TUI's own shorthand (RS+DM only, the common bench
+        # case) — everything else, including "all"/"*" (-> all 4 protocols),
+        # is handled by parse_protocol_queue itself.
+        protocols = ["robstride", "damiao"] if norm == "both" else parse_protocol_queue(proto_s)
 
         print("range source:")
         print("  1) preset bench   " + PRESET_BLURBS["bench"])
@@ -127,12 +149,17 @@ def _plan_from_args(args: argparse.Namespace) -> dict:
         ranges["robstride"] = parse_id_range(str(args.rs_range), protocol="robstride")
     if getattr(args, "dm_range", None):
         ranges["damiao"] = parse_id_range(str(args.dm_range), protocol="damiao")
+    if getattr(args, "cm_range", None):
+        ranges["cubemars"] = parse_id_range(str(args.cm_range), protocol="cubemars")
+    if getattr(args, "ze_range", None):
+        ranges["zeroerr"] = parse_id_range(str(args.ze_range), protocol="zeroerr")
 
     preset = getattr(args, "preset", None)
     if include_actuators and not ranges and not preset:
         raise ValueError(
             "actuator inventory needs --preset bench|product|full "
-            "or --rs-range / --dm-range (or run without flags for TUI)"
+            "or one of --rs-range / --dm-range / --cm-range / --ze-range per "
+            "protocol you're probing (or run without flags for the TUI)"
         )
 
     return {
@@ -168,25 +195,43 @@ def add_inventory_arguments(
     _add(
         "--protocols",
         default=None,
-        help="robstride,damiao (default: both)",
+        metavar="LIST",
+        help="comma-separated: robstride,damiao,cubemars,zeroerr "
+        "(aliases ok: rs,dm,cm,ze) — default: robstride,damiao. "
+        "Pass explicitly to include cubemars/zeroerr, e.g. --protocols zeroerr "
+        "or --protocols robstride,zeroerr",
     )
     _add(
         "--preset",
         choices=sorted(set(RANGE_PRESETS) - {"yam"}),  # yam==product
         default=None,
-        help="ID range preset (bench|product|full) — required for non-TUI actuator probe",
+        help="ID range preset (bench|product|full) — covers all 4 protocols "
+        "(RS/DM/CM/ZE); required for a non-TUI actuator probe unless you pass "
+        "--rs-range/--dm-range/--cm-range/--ze-range yourself",
     )
     _add(
         "--rs-range",
         default=None,
         metavar="START-END",
-        help="RobStride ID range e.g. 0x70-0x75",
+        help="RobStride ID range, e.g. 0x70-0x75 (overrides --preset for this protocol only)",
     )
     _add(
         "--dm-range",
         default=None,
         metavar="START-END",
-        help="Damiao ID range e.g. 1-8",
+        help="Damiao ID range, e.g. 1-8 (overrides --preset for this protocol only)",
+    )
+    _add(
+        "--cm-range",
+        default=None,
+        metavar="START-END",
+        help="Cubemars ID range, e.g. 1-8 (overrides --preset for this protocol only)",
+    )
+    _add(
+        "--ze-range",
+        default=None,
+        metavar="START-END",
+        help="ZeroErr node-id range, e.g. 1-16 (overrides --preset for this protocol only)",
     )
     _add("--no-actuators", action="store_true", help="skip CAN discover")
     _add("--no-servos", action="store_true", help="skip neck servo sample")
@@ -225,6 +270,8 @@ def run_inventory_cli(args: argparse.Namespace) -> int:
         getattr(args, "preset", None)
         or getattr(args, "rs_range", None)
         or getattr(args, "dm_range", None)
+        or getattr(args, "cm_range", None)
+        or getattr(args, "ze_range", None)
         or getattr(args, "no_actuators", False)
         or getattr(args, "servos_only", False)
         or getattr(args, "pdu_only", False)

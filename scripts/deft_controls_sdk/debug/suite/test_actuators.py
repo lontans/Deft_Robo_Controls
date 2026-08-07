@@ -120,7 +120,7 @@ def _discover_menu(proxy: HostProxy) -> None:
         return
 
     proto_s = _prompt(
-        "protocol (robstride|damiao|all, comma queue)",
+        "protocol (robstride|damiao|cubemars|zeroerr|all, comma queue)",
         "robstride",
     )
     if not proto_s:

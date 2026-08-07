@@ -23,6 +23,7 @@
 #define RS02_COMM_MOTOR_RESET 0x04
 #define RS02_COMM_MOTOR_CALI  0x05
 #define RS02_COMM_MOTOR_ZERO  0x06
+#define RS02_COMM_SET_CAN_ID  0x07
 #define RS02_COMM_DATA_SAVE   0x16
 #define RS02_COMM_PARAREAD    0x11
 #define RS02_COMM_PARAWRITE   0x12
@@ -49,6 +50,9 @@
 #define RS02_PROBE_ZERO        17u
 #define RS02_PROBE_DATA_SAVE   18u
 #define RS02_PROBE_PARAWRITE   19u
+/* 20/21/22 taken by PLANT_DIAG_PROBE_MCP_SMOKE/WAKE/DISABLE (diag.h) — same
+ * kind-byte namespace, not RS02-specific probes. */
+#define RS02_PROBE_SET_CAN_ID  23u
 
 static inline bool rs02_probe_kind_mounts_desire(uint8_t kind)
 {
@@ -89,6 +93,12 @@ plugin_status_t robstride_send_disable(const actuator_config_t *cfg, can_frame_t
 plugin_status_t robstride_send_cali(const actuator_config_t *cfg, can_frame_t *frame_out);
 plugin_status_t robstride_send_zero(const actuator_config_t *cfg, can_frame_t *frame_out);
 plugin_status_t robstride_send_data_save(const actuator_config_t *cfg, can_frame_t *frame_out);
+/* comm=0x07 (vendor RobStride_Set_CAN_ID): motor must be reset/at rest first
+ * (caller's job, see RS02_PROBE_SET_CAN_ID handling). Payload is all-zero;
+ * new_can_id rides in the ext-ID data field, cfg->motor_id is the OLD id. */
+plugin_status_t robstride_send_set_can_id(const actuator_config_t *cfg,
+                                          uint8_t new_can_id,
+                                          can_frame_t *frame_out);
 plugin_status_t robstride_send_para_read(const actuator_config_t *cfg,
                                          uint16_t param_index,
                                          can_frame_t *frame_out);

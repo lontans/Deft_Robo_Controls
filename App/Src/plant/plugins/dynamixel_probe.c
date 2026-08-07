@@ -49,6 +49,21 @@ void dynamixel_probe_run(uint8_t kind, uint8_t target_id,
 		return;
 	}
 
+	if (kind == PLANT_DXL_PROBE_SET_ID) {
+		/* target_id = current ID, id_start = new ID (see diag.h). */
+		if (!dxl_set_id(target_id, id_start)) {
+			g_dxl_probe.status = 2u;
+			g_dxl_probe_valid = true;
+			return;
+		}
+		g_dxl_probe.status = 0u;
+		g_dxl_probe.count = 1u;
+		g_dxl_probe.hits[0].id = id_start;
+		g_dxl_probe.hits[0].model_number = dxl_ping_model_number(id_start);
+		g_dxl_probe_valid = true;
+		return;
+	}
+
 	if (!dxl_find_baud(&baud, id_start, id_end)) {
 		g_dbg_init_st = dxl_port_debug_init_hal_st();
 		g_dbg_tx_st   = dxl_port_debug_tx_hal_st();

@@ -63,14 +63,26 @@ typedef enum {
 	CUBEMARS_AK80_6,
 	CUBEMARS_AK80_9,
 	CUBEMARS_AK80_80,
+	/* Not in either CubeMars PDF's §5.3 per-model table (neither doc
+	 * mentions "AKH" at all) — V/T sourced from the official product page
+	 * instead (cubemars.com AKH70-48 V1.0 KV41 spec sheet), which also
+	 * confirms "SERVO and MIT control modes" support, i.e. MIT is not
+	 * exclusive to the non-H AK line. See k_ak_limits[] in cubemars.c for
+	 * the sourced numbers and the caveat that marketing-page values, like
+	 * PDF sample values, should be bench-verified before trusting them for
+	 * a hard clamp. */
+	CUBEMARS_AKH70_48,
 	CUBEMARS_AK_MODEL_COUNT,
 } cubemars_ak_model_t;
 
 /*
  * TODO(cfg-model): actuator_config_t has no per-slot AK model field. Default
  * every PROTO_CUBEMARS slot to CUBEMARS_MIT_DEFAULT_MODEL (same maturity as
- * damiao_limits() hardcoding DM4310). cubemars_set_model() is the hook for a
- * future CFG/diag wire — do not speculative-bump host CFG schema here.
+ * damiao_limits() hardcoding DM4310), except a compiled-in Gen2 AKH70-48
+ * slot seed (see k_gen2_akh70_48_slots[] in cubemars.c) — still not real
+ * per-slot CFG, just a second hardcoded default layered on the first.
+ * cubemars_set_model() is the hook for a future CFG/diag wire — do not
+ * speculative-bump host CFG schema here.
  */
 #define CUBEMARS_MIT_DEFAULT_MODEL CUBEMARS_AK80_9
 

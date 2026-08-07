@@ -128,6 +128,7 @@ class _FakeConnection:
         self.actuators_sent = None
         self.servos_cleared = False
         self.mcu_state = None
+        self.plant_apply = None
 
     def _drain_latest_plant_feedback(self):
         return self._frame
@@ -144,6 +145,9 @@ class _FakeConnection:
     def set_mcu_state(self, state, send=True):
         self.mcu_state = state
 
+    def set_plant_apply(self, enable, send=True):
+        self.plant_apply = bool(enable)
+
     def send_once(self):
         pass
 
@@ -156,12 +160,19 @@ def _hub_with(frame: bytes) -> ControlsPcbHub:
 
 
 def test_soft_kill_park_if_bad_vi_parks_on_pack_undervoltage():
+    """Auto-trip now hold-at-torque freezes (soft_kill_freeze), not a hard
+    ESTOP park — see ControlsPcbHub.soft_kill_freeze / debug_dashboard/state.py's
+    soft_kill state machine. Desires are NOT blanked, servos are NOT cleared,
+    and mcu_state is NEVER driven to ESTOP/RECOVERY while frozen this way —
+    only NORMAL + plant_apply=1."""
     hub = _hub_with(_image(pack_v=(3900, 0, 0, 0)))
     parked = hub.soft_kill_park_if_bad_vi(send=False)
     assert parked is True
-    assert hub._connection.servos_cleared is True
-    assert hub._connection.mcu_state == McuState.ESTOP
-    assert hub._connection.actuators_sent is not None
+    assert hub.soft_kill is True
+    assert hub._connection.servos_cleared is False
+    assert hub._connection.mcu_state == McuState.NORMAL
+    assert hub._connection.plant_apply is True
+    assert hub._connection.actuators_sent is None  # nothing blanked
 
 
 def test_soft_kill_park_if_bad_vi_parks_on_overcurrent():

@@ -487,3 +487,33 @@ class DebugAPI:
             self._connection, self._telemetry, bus=bus, node_id=node_id,
             sdo_timeout_ms=sdo_timeout_ms,
         )
+
+    def boot_zeroerr(
+        self,
+        *,
+        bus: int = 1,
+        node_id: int,
+        sdo_timeout_ms: int = 30,
+    ) -> bool:
+        """Stage-1 bring-up: NMT + PDO1 remap only, NO controlword — brake
+        stays engaged, cannot move the shaft. See zeroerr.py's ``boot``."""
+        self._require_debug("hub.debug.boot_zeroerr")
+        return _zeroerr.boot(
+            self._connection, self._telemetry, bus=bus, node_id=node_id,
+            sdo_timeout_ms=sdo_timeout_ms,
+        )
+
+    def read_position_zeroerr(
+        self,
+        *,
+        bus: int = 1,
+        node_id: int,
+        sdo_timeout_ms: int = 30,
+    ) -> Optional[float]:
+        """SDO read of 0x6064 (radians) — no enable, no PDO/NMT-Operational
+        required. Safe before boot_zeroerr, before any CFG slot exists."""
+        self._require_debug("hub.debug.read_position_zeroerr")
+        return _zeroerr.read_position(
+            self._connection, self._telemetry, bus=bus, node_id=node_id,
+            sdo_timeout_ms=sdo_timeout_ms,
+        )

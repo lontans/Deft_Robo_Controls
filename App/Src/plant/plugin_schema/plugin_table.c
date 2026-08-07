@@ -5,14 +5,17 @@
 extern const plugin_ops_t robstride_ops;
 extern const plugin_ops_t damiao_ops;
 extern const plugin_ops_t cubemars_ops;
-extern const plugin_ops_t zeroerr_ops;
 
 static const plugin_ops_t *const handlers[PROTO_COUNT] = {
 	[PROTO_NONE]      = NULL,
 	[PROTO_ROBSTRIDE] = &robstride_ops,
 	[PROTO_DAMIAO]    = &damiao_ops,
 	[PROTO_CUBEMARS]  = &cubemars_ops,
-	[PROTO_ZEROERR]   = &zeroerr_ops,
+	/* ZeroErr has no generic single-frame ops — actuator.c always calls
+	 * zeroerr_apply_cycle/zeroerr_on_rx_frame directly and never reaches
+	 * this table for PROTO_ZEROERR. NULL here is correct/handled (see
+	 * plugin_pack_tx/plugin_parse_rx below), not a placeholder to fill in. */
+	[PROTO_ZEROERR]   = NULL,
 };
 
 plugin_status_t plugin_pack_tx(const actuator_config_t *cfg,

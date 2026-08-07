@@ -36,6 +36,10 @@ class ControlsPcbHub:
         self._connection = connection
         self._telemetry = telemetry
         self._debug = DebugAPI(connection, telemetry)
+        # Dashboard soft_kill state machine (debug_dashboard/state.py) — see
+        # soft_kill_freeze(). Purely host-side bookkeeping; the wire only ever
+        # sees NORMAL + plant_apply=1 while frozen (see soft_kill_freeze docstring).
+        self._soft_kill: bool = False
 
     @classmethod
     def connect(
@@ -121,12 +125,19 @@ class ControlsPcbHub:
         return float(hz) if hz is not None else None
 
     def set_auto_soft_kill(self, enabled: bool) -> None:
-        """Enable/disable plant-TX soft-kill park hooks (PDU SOFT_KILL_REQ + V/I).
+        """Enable/disable plant-TX soft-kill freeze hooks (PDU SOFT_KILL_REQ + V/I).
 
-        Product teleop leaves this on. The debug dashboard observe mode turns
-        it off so Connect does not latch ESTOP from a residual PDU soft-kill
-        or host V/I check before the operator opts into plant control.
+        Product teleop leaves this on. The debug dashboard's Follow/idle path
+        turns it off so Connect does not latch a frozen hold from a residual
+        PDU soft-kill or host V/I check before the operator enters Active.
         No-op when ``listen_pdu`` is False (bench without a PDU peer).
+
+        The auto-trip path (real overcurrent/undervoltage, or an upstream PDU
+        asserting a kill request) now hold-at-torque freezes
+        (:meth:`soft_kill_freeze`) rather than hard-ESTOP-parking
+        (:meth:`soft_kill_park`) — see debug_dashboard/state.py's soft_kill
+        state machine. ``soft_kill_park`` remains available separately for an
+        explicit hard-ESTOP (Advanced panel button).
         """
         if enabled and self._listen_pdu:
 
@@ -326,6 +337,55 @@ class ControlsPcbHub:
             return None
         return pdb_status_from_frame(raw)
 
+    @property
+    def soft_kill(self) -> bool:
+        """True while frozen (hold-at-torque) — see :meth:`soft_kill_freeze`."""
+        return self._soft_kill
+
+    def soft_kill_freeze(self, *, send: bool = True) -> None:
+        """Freeze: stop updating held desires, stay NORMAL + plant_apply=1.
+
+        Unlike :meth:`soft_kill_park`, this does NOT blank desires and does
+        NOT call ``set_mcu_state`` — the point is to hold whatever position
+        (kp/kd/position) is *currently* held, at full torque, rather than
+        de-energize. Firmware ``plant_recovery_all()`` de-energizes the wire
+        the instant ``mcu_state`` becomes RECOVERY/ESTOP, and
+        ``Connection.set_mcu_state`` clears all held desires the moment that
+        happens too (see link/connection.py) — so hold-at-torque is
+        structurally incompatible with ever calling
+        ``set_mcu_state(RECOVERY/ESTOP)`` while frozen. This method only
+        arms ``plant_apply=1`` + confirms ``mcu_state`` is NORMAL (never
+        touches RECOVERY/ESTOP) and flips :attr:`soft_kill` True — callers
+        (debug_dashboard/state.py) are responsible for actually not calling
+        ``set_actuator``/etc. again while frozen; this method alone does not
+        prevent new commands from being issued, it only marks the intent and
+        makes sure the wire stays in a state where "stop touching desires"
+        is a valid freeze. See debug_dashboard/state.py for the enforcement
+        side (the dashboard state machine raises before reaching this hub
+        when :attr:`soft_kill` is True and a motion call comes in).
+
+        # TODO(soft_kill_freeze divergence handling): a future improvement
+        # should detect when a frozen target is unreachable (large sustained
+        # feedback/target divergence — e.g. a stalled/jammed/overloaded joint
+        # fighting to hold an unreachable position) and back off/adjust the
+        # held command rather than keep forcing it indefinitely.
+        # actions/teleop.py's existing HOLD_FLAG_RAD/HOLD_KD_BOOST_* constants
+        # (in TeleopEngine._tick_actuators' "arrived — hold" branch, which
+        # already flags large tracking error and reactively boosts kd) are
+        # the natural extension point for this later. Not implemented now.
+        """
+        self._soft_kill = True
+        self._connection.set_mcu_state(McuState.NORMAL, send=False)
+        self._connection.set_plant_apply(True, send=send)
+
+    def soft_kill_unfreeze(self) -> None:
+        """Clear the frozen flag — callers may resume updating held desires.
+
+        Does not itself change anything on the wire (no send) — the next
+        motion command simply stops being blocked.
+        """
+        self._soft_kill = False
+
     def soft_kill_park(self, *, send: bool = True) -> PdbStatus | None:
         """Product soft-kill park: clear desires/servos and latch ``McuState.ESTOP``.
 
@@ -344,29 +404,33 @@ class ControlsPcbHub:
         return self.pdb_status()
 
     def soft_kill_park_if_requested(self, *, send: bool = True) -> bool:
-        """If USB kill is ``SOFT_KILL_REQ``, run :meth:`soft_kill_park`.
+        """If USB kill is ``SOFT_KILL_REQ``, run :meth:`soft_kill_freeze`.
 
-        Returns True when a park was performed. No-op when ``listen_pdu`` is False.
+        Returns True when a freeze was performed. No-op when ``listen_pdu``
+        is False. Was ``soft_kill_park`` (hard-ESTOP) before the soft_kill
+        state machine — auto-trip now hold-at-torque freezes instead, see
+        :meth:`soft_kill_freeze`.
         """
         if not self._listen_pdu:
             return False
         status = self.pdb_status()
         if status is None or status.kill_state != KILL_SOFT_REQ:
             return False
-        self.soft_kill_park(send=send)
+        self.soft_kill_freeze(send=send)
         return True
 
     def soft_kill_park_if_bad_vi(self, *, send: bool = True) -> bool:
         """Host-side belt-and-suspenders: independently re-check PDU V/I
         against the shared thresholds (:mod:`deft_controls_sdk.pdb.limits`,
-        mirrored from firmware ``App/Inc/host/pdb_vi_limits.h``) and park
+        mirrored from firmware ``App/Inc/host/pdb_vi_limits.h``) and freeze
         even on firmware that doesn't yet overlay ``SOFT_KILL_REQ`` itself.
 
         Only acts when the peer reports ``NORMAL`` — stale (fails safe to
         ``HARD_ESTOP``/``COMMS_LOSS`` already), ``SOFT_KILL_REQ``/``READY``,
         and ``HARD_ESTOP`` are all already handled by the existing kill-state
-        paths. Returns True when a park was performed.
-        No-op when ``listen_pdu`` is False.
+        paths. Returns True when a freeze was performed.
+        No-op when ``listen_pdu`` is False. Was ``soft_kill_park`` (hard-ESTOP)
+        before the soft_kill state machine — see :meth:`soft_kill_freeze`.
         """
         if not self._listen_pdu:
             return False
@@ -376,5 +440,5 @@ class ControlsPcbHub:
         check = pdb_limits.check_status(status)
         if check is None or not check.violated:
             return False
-        self.soft_kill_park(send=send)
+        self.soft_kill_freeze(send=send)
         return True

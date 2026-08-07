@@ -50,14 +50,6 @@ bool canopen_nmt_send(can_bus_id_t bus, uint8_t cs, uint8_t node_id)
 	return canopen_tx_now(bus, &frame);
 }
 
-bool canopen_sync_send(can_bus_id_t bus)
-{
-	can_frame_t frame;
-
-	canopen_frame_std(&frame, CANOPEN_SYNC_COB, 0u, NULL);
-	return canopen_tx_now(bus, &frame);
-}
-
 static bool canopen_sdo_transact(can_bus_id_t bus, uint8_t node,
                                  const uint8_t req[8], uint8_t *resp,
                                  uint32_t timeout_ms)
@@ -106,25 +98,6 @@ bool canopen_sdo_write_u8(can_bus_id_t bus, uint8_t node, uint16_t index,
 		(uint8_t)(index >> 8),
 		sub,
 		value, 0, 0, 0
-	};
-	uint8_t resp[8];
-
-	if (!canopen_sdo_transact(bus, node, req, resp, timeout_ms))
-		return false;
-	return resp[0] == CANOPEN_SDO_RESP_W;
-}
-
-bool canopen_sdo_write_u16(can_bus_id_t bus, uint8_t node, uint16_t index,
-                           uint8_t sub, uint16_t value, uint32_t timeout_ms)
-{
-	uint8_t req[8] = {
-		CANOPEN_SDO_CMD_W2,
-		(uint8_t)(index & 0xFFu),
-		(uint8_t)(index >> 8),
-		sub,
-		(uint8_t)(value & 0xFFu),
-		(uint8_t)(value >> 8),
-		0, 0
 	};
 	uint8_t resp[8];
 

@@ -53,6 +53,9 @@
 #define PLANT_DXL_PROBE_SCAN         1u
 #define PLANT_DXL_PROBE_PING         2u
 #define PLANT_DXL_PROBE_FIND_BAUD    3u
+#define PLANT_DXL_PROBE_TOGGLE_BAUD  4u
+/* target_id=current ID, id_start=new ID (id_end unused) — see diag.h */
+#define PLANT_DXL_PROBE_SET_ID       5u
 
 typedef struct __attribute__((packed)) {
 	float position;

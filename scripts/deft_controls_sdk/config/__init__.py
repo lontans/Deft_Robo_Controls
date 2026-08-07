@@ -56,6 +56,20 @@ from .assembly import (
     yam_product_assembly,
 )
 from .firmware import default_firmware_elf
+from .gen2 import (
+    GEN2_BASE_SLOTS,
+    GEN2_BASE_WHEEL_SLOTS,
+    GEN2_LEFT_ARM_SLOTS,
+    GEN2_RIGHT_ARM_SLOTS,
+    GEN2_TORSO_SLOTS,
+    gen2_all_profile,
+    gen2_base_wheel_profile,
+    gen2_left_arm_profile,
+    gen2_product_rows,
+    gen2_right_arm_profile,
+    gen2_slots_by_bus,
+    gen2_torso_profile,
+)
 from .led import LED_PRESETS, LedPreset
 from .pdu_link import DEFAULT_BENCH_LISTEN_PDU, DEFAULT_PRODUCT_LISTEN_PDU
 from .profile import (
@@ -153,6 +167,11 @@ __all__ = [
     "DEFAULT_STEER_KD",
     "DEFAULT_STEER_KP",
     "DEFAULT_WHEEL_KD",
+    "GEN2_BASE_SLOTS",
+    "GEN2_BASE_WHEEL_SLOTS",
+    "GEN2_LEFT_ARM_SLOTS",
+    "GEN2_RIGHT_ARM_SLOTS",
+    "GEN2_TORSO_SLOTS",
     "DEFAULT_WHEEL_KP",
     "DEFAULT_WHEEL_TORQUE",
     "JOINT_GAINS",
@@ -196,6 +215,13 @@ __all__ = [
     "ensure_yam_left_arm_cfg",
     "ensure_yam_product_cfg",
     "gains_for_kind",
+    "gen2_all_profile",
+    "gen2_base_wheel_profile",
+    "gen2_left_arm_profile",
+    "gen2_product_rows",
+    "gen2_right_arm_profile",
+    "gen2_slots_by_bus",
+    "gen2_torso_profile",
     "kind_for_component",
     "lift_profile",
     "neck_profile",

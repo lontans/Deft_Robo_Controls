@@ -290,6 +290,30 @@ plugin_status_t robstride_send_zero(const actuator_config_t *cfg, can_frame_t *f
 	return PLUGIN_OK;
 }
 
+plugin_status_t robstride_send_set_can_id(const actuator_config_t *cfg,
+                                          uint8_t new_can_id,
+                                          can_frame_t *frame_out)
+{
+	if (cfg == NULL || frame_out == NULL)
+		return PLUGIN_ERR_PARAM;
+	if (!cfg->enabled)
+		return PLUGIN_ERR_UNSUPPORTED;
+
+	/* Vendor RobStride_Set_CAN_ID: dest=old id, data16=(new_id<<8)|host_id. */
+	uint8_t motor_id = (uint8_t)(cfg->motor_id & 0xFF);
+	uint16_t data16 = (uint16_t)(((uint16_t)new_can_id << 8) | RS02_HOST_ID);
+	uint32_t ext_id = robstride_build_ext_id(RS02_COMM_SET_CAN_ID, data16, motor_id);
+
+	frame_out->id_type = CAN_ID_EXT;
+	frame_out->id = ext_id & CAN_EXT_MASK;
+	frame_out->dlc = 8;
+
+	for (uint8_t i = 0; i < 8u; i++)
+		frame_out->data[i] = 0;
+
+	return PLUGIN_OK;
+}
+
 plugin_status_t robstride_send_data_save(const actuator_config_t *cfg, can_frame_t *frame_out)
 {
 	if (cfg == NULL || frame_out == NULL)
@@ -988,7 +1012,8 @@ bool robstride_probe_id(can_bus_id_t bus,
 	bool cali = (probe_kind == RS02_PROBE_CALI);
 	bool zero_cmd = (probe_kind == RS02_PROBE_ZERO);
 	bool data_save = (probe_kind == RS02_PROBE_DATA_SAVE);
-	bool bench_cmd = cali || zero_cmd || data_save;
+	bool set_can_id = (probe_kind == RS02_PROBE_SET_CAN_ID);
+	bool bench_cmd = cali || zero_cmd || data_save || set_can_id;
 	bool do_run_mode = !reset_only && !ctrl_fast && !para_read && !para_write && !proactive && !bench_cmd &&
 	                   (probe_kind <= RS02_PROBE_FULL || promiscuous || enable_only);
 	bool do_enable = !reset_only && !ctrl_fast && !para_read && !para_write && !proactive && !bench_cmd &&
@@ -1006,7 +1031,8 @@ bool robstride_probe_id(can_bus_id_t bus,
 	                        (proactive ? 50u :
 	                         (cali ? 0u :
 	                          (zero_cmd ? 500u :
-	                         (data_save ? 800u : 150u)))))));
+	                         (data_save ? 800u :
+	                          (set_can_id ? 500u : 150u))))))));
 	if (bus >= CAN_BUS_CH4)
 		listen_ms = (uint16_t)(listen_ms + listen_ms / 2u + 120u);
 
@@ -1278,6 +1304,38 @@ bool robstride_probe_id(can_bus_id_t bus,
 		}
 	}
 
+	if (set_can_id) {
+		uint8_t new_id = (uint8_t)(param_index & 0xFFu);
+
+		if (new_id == 0u)
+			return false;
+
+		/* Vendor sequence: reset (motor at rest) → comm=0x07 set-ID frame,
+		 * addressed to the OLD id. Motor answers on new_id afterward — the
+		 * caller is responsible for a follow-up DATA_SAVE (kind 18) addressed
+		 * to new_id to persist across power cycle. */
+		if (robstride_send_reset(&cfg, &frame) != PLUGIN_OK)
+			return false;
+		if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
+			return false;
+		HAL_Delay(10);
+
+		if (robstride_send_set_can_id(&cfg, new_id, &frame) != PLUGIN_OK)
+			return false;
+		if (robstride_probe_tx(bus, &frame) != PLUGIN_OK)
+			return false;
+		HAL_Delay(10);
+
+		robstride_listen_rx(bus, new_id, false, listen_ms, out);
+		out->discovered_id = new_id;
+		/* Bench-observed: the motor's first replies right after an ID change
+		 * are often not comm=0x02 FEEDBACK-shaped (ack/echo instead), so
+		 * try_parse_feedback misses them — out->found stays false even though
+		 * the change took (confirmed: a later ENABLE_ONLY on new_id hits).
+		 * Same raw-traffic fallback PARAWRITE already uses below. */
+		return out->found || out->raw_frames_seen > 0u;
+	}
+
 	if (zero_cmd) {
 		if (robstride_send_reset(&cfg, &frame) != PLUGIN_OK)
 			return false;
@@ -1303,7 +1361,9 @@ bool robstride_probe_id(can_bus_id_t bus,
 		HAL_Delay(5);
 
 		robstride_listen_rx(bus, motor_id, false, listen_ms, out);
-		return out->found;
+		/* Same raw-traffic fallback as SET_CAN_ID above — data_save acks are
+		 * not always FEEDBACK-shaped either. */
+		return out->found || out->raw_frames_seen > 0u;
 	}
 
 	if (ctrl_fast) {

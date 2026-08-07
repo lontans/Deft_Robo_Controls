@@ -33,6 +33,13 @@ class CubemarsAkModel(IntEnum):
     AK80_6 = 3
     AK80_9 = 4
     AK80_80 = 5
+    # Not in either CubeMars PDF's §5.3 table (neither mentions "AKH" at
+    # all — checked via full-text extraction). V/T sourced from the
+    # official cubemars.com AKH70-48 V1.0 KV41 product page instead, which
+    # also confirms MIT-mode support ("SERVO and MIT control modes") — see
+    # k_ak_limits[] in App/Src/plant/plugins/cubemars.c for the sourcing
+    # notes this mirrors. Bench-verify before trusting for a hard clamp.
+    AKH70_48 = 6
 
 
 # (v_min, v_max, t_min, t_max) — PDF §5.3 per-module table.
@@ -43,6 +50,11 @@ _AK_LIMITS: Dict[CubemarsAkModel, Tuple[float, float, float, float]] = {
     CubemarsAkModel.AK80_6: (-76.0, 76.0, -12.0, 12.0),
     CubemarsAkModel.AK80_9: (-50.0, 50.0, -18.0, 18.0),
     CubemarsAkModel.AK80_80: (-8.0, 8.0, -144.0, 144.0),
+    # Peak torque 222 N*m (matches the "clamp to peak, not rated" pattern
+    # the other rows use), no-load speed 35 RPM -> 3.665 rad/s. Marketing
+    # spec sheet, not the vendor's CAN-protocol table like the rest of this
+    # dict — see the enum comment above.
+    CubemarsAkModel.AKH70_48: (-3.665, 3.665, -222.0, 222.0),
 }
 
 DEFAULT_MODEL = CubemarsAkModel.AK80_9

@@ -13,6 +13,9 @@ from deft_controls_sdk.link.exchange import (
     is_mcp_bus,
     parse_probe_pdu,
 )
+# Not in the curated link.exchange re-export set (bench-only, mirrors
+# robstride_calibrate.py's direct-from-bench import).
+from deft_controls_sdk.link.exchange.bench import PROBE_DATA_SAVE, PROBE_SET_CAN_ID
 
 from .lease import lease
 from .stream_pause import pause_plant_stream
@@ -31,10 +34,19 @@ def _send_diag(
     kp: float = 0.0,
     kd: float = 0.0,
     bus: int = 1,
+    param_index: int = 0,
+    param_raw_value: int = 0,
 ) -> Optional[dict]:
     connection.reader.drain()
     frame = build_rs2_probe_command(
-        motor_id, probe_kind, connection.next_seq(), kp=kp, kd=kd, bus=bus
+        motor_id,
+        probe_kind,
+        connection.next_seq(),
+        param_index,
+        param_raw_value,
+        kp=kp,
+        kd=kd,
+        bus=bus,
     )
     return connection.exchange_raw(
         frame,
@@ -92,10 +104,18 @@ def _mcp_discover_timeout(base_s: float) -> float:
 
 
 def _normalize_id_range(start: int, end: int) -> tuple[int, int]:
+    """Clamp to the RS02_PROBE_* discover convention (7-bit id space).
+
+    Both ends must be clamped to 0x7F *before* the swap-if-backwards check —
+    clamping only ``end`` (the old bug) let a caller-side id above 0x7F (e.g.
+    a stray ``0x82``) silently produce a backwards/empty range like
+    ``0x82..0x7F`` that discover would loop over zero times, print "No RS2
+    motor found", and never explain why.
+    """
+    start = max(0, min(0x7F, int(start) & 0xFF))
+    end = max(0, min(0x7F, int(end) & 0xFF))
     if end < start:
         start, end = end, start
-    start = max(0, int(start) & 0xFF)
-    end = min(0x7F, int(end) & 0xFF)
     return start, end
 
 
@@ -325,3 +345,92 @@ def probe(
             else:
                 print(f"OK  {format_probe_line(resp)}")
             return resp
+
+
+def set_can_id(
+    connection: "Connection",
+    telemetry: Optional["TelemetryCache"],
+    *,
+    bus: int,
+    old_id: int,
+    new_id: int,
+    verify: bool = True,
+    save: bool = True,
+) -> dict:
+    """Reassign a RobStride actuator's own CAN ID (vendor comm=0x07).
+
+    FW (``RS02_PROBE_SET_CAN_ID``) resets the motor, then sends the vendor
+    set-CAN_ID frame addressed to ``old_id`` with ``new_id`` in the payload —
+    the motor answers on ``new_id`` from then on (RAM only; not yet saved
+    across a power cycle). This does NOT touch the host-side NVM slot table
+    (``hub.debug.cfg_get/set_table``) — that's a separate, unrelated mapping.
+
+    ``verify``: re-probe ``new_id`` (ENABLE_ONLY) after the change.
+    ``save``: DATA_SAVE addressed to ``new_id`` so it survives power-cycle —
+    only sent if verify was skipped or succeeded (never save on a doubtful id).
+
+    Returns ``{"old_id", "new_id", "set_ok", "verify_ok", "save_ok", ...resp}``.
+    """
+    old_id &= 0xFF
+    new_id &= 0xFF
+    if new_id == 0:
+        raise ValueError("new_id must be 1..255 (0 is not a valid CAN id here)")
+    if new_id == old_id:
+        raise ValueError("new_id must differ from old_id")
+
+    mcp = is_mcp_bus(bus)
+    set_timeout_s = _mcp_discover_timeout(0.65) if mcp else 0.65
+    verify_timeout_s = _mcp_discover_timeout(0.55) if mcp else 0.55
+    save_timeout_s = _mcp_discover_timeout(0.95) if mcp else 0.95
+
+    out: Dict[str, object] = {"old_id": old_id, "new_id": new_id}
+    with pause_plant_stream(connection):
+        with lease(connection, telemetry, bus=bus):
+            if telemetry is not None:
+                telemetry.set_connected(True, mode="discover")
+
+            resp = _send_diag(
+                connection,
+                old_id,
+                PROBE_SET_CAN_ID,
+                set_timeout_s,
+                bus=bus,
+                param_index=new_id,
+            )
+            out["set_resp"] = resp
+            out["set_ok"] = bool(resp and resp.get("found"))
+            print(
+                f"SET_CAN_ID  0x{old_id:02X} -> 0x{new_id:02X}  "
+                f"{format_probe_line(resp) if resp else 'no reply'}"
+            )
+
+            verify_ok = out["set_ok"]
+            if verify:
+                time.sleep(0.1)
+                vresp = _send_diag(
+                    connection, new_id, PROBE_ENABLE_ONLY, verify_timeout_s, bus=bus
+                )
+                out["verify_resp"] = vresp
+                verify_ok = bool(vresp and vresp.get("found"))
+                out["verify_ok"] = verify_ok
+                print(
+                    f"VERIFY  id=0x{new_id:02X}  "
+                    f"{format_probe_line(vresp) if vresp else 'no reply'}"
+                )
+
+            if save:
+                if verify_ok:
+                    sresp = _send_diag(
+                        connection, new_id, PROBE_DATA_SAVE, save_timeout_s, bus=bus
+                    )
+                    out["save_resp"] = sresp
+                    out["save_ok"] = bool(sresp and sresp.get("found"))
+                    print(
+                        f"DATA_SAVE  id=0x{new_id:02X}  "
+                        f"{format_probe_line(sresp) if sresp else 'no reply'}"
+                    )
+                else:
+                    out["save_ok"] = False
+                    print("  SKIP data_save — new id did not verify.")
+
+    return out

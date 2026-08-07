@@ -86,18 +86,18 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(
-                f"Connecting {args.port} in observe mode "
-                "(plant_apply=0, no auto soft-kill)..."
+                f"Connecting {args.port} (mode=debug) — entering Active frozen "
+                "(soft_kill ON: hold-at-torque, NORMAL + plant_apply=1)..."
             )
-            state.connect(args.port, mode="observe")
-            print("Connected (observe). Use Enable control in the UI for plant_apply.")
+            state.connect(args.port)
+            print("Connected, Active, frozen. Use Release soft-kill in the UI before commanding motion.")
     else:
         sp = state.telemetry.state_path
         print(
             "Not connected to COM — UI follows state.json when present:\n"
             f"  {sp}\n"
             "If yam_continuous_all is writing that file, leave Connect alone.\n"
-            "Connect (observe) is safe telemetry only; Enable control arms motors.\n"
+            "Connect enters Active frozen (soft_kill ON) by default — safe; Release soft-kill arms motion.\n"
             "Note: pdb_uart_sim control panel is :8765 — this UI defaults to :8766.",
             flush=True,
         )

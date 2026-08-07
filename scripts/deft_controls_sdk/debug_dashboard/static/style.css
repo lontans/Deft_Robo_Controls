@@ -1,0 +1,415 @@
+:root {
+  --bg: #0a0c11;
+  --panel: #141823;
+  --panel-2: #1b202d;
+  --panel-inset: #0d0f16;
+  --text: #eef1f7;
+  --muted: #8b93a7;
+  --muted-2: #5b6377;
+  --accent: #5b9cf6;
+  --accent-dim: color-mix(in srgb, var(--accent) 18%, transparent);
+  --green: #38cc8e;
+  --yellow: #dfb146;
+  --red: #ee5f5f;
+  --hold: #6fa2e0;
+  --line: #262c3d;
+  --line-soft: color-mix(in srgb, var(--line) 60%, transparent);
+  --radius: 11px;
+  --radius-sm: 7px;
+  --header-h: 3.6rem;
+  --font-ui: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-data: "Cascadia Mono", "Consolas", ui-monospace, "SFMono-Regular", monospace;
+}
+/* Slightly larger baseline than the browser default (16px) — every other
+   size in this file is in rem, so this scales the whole page's text a
+   notch up rather than just one section. */
+html { font-size: 17px; }
+* { box-sizing: border-box; }
+::selection { background: var(--accent-dim); }
+body {
+  margin: 0; font-family: var(--font-ui);
+  background: var(--bg); color: var(--text);
+  min-height: 100vh; line-height: 1.45;
+}
+a { color: var(--accent); }
+
+/* ---------------------------------------------------------------- header */
+header {
+  position: sticky; top: 0; z-index: 20; height: var(--header-h);
+  padding: 0 1.25rem; border-bottom: 1px solid var(--line);
+  display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: center;
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+header h1 { font-size: 1rem; font-weight: 700; margin: 0; letter-spacing: 0.01em; color: var(--muted); }
+header .meta { color: var(--muted); font-size: 0.82rem; }
+
+/* Base styling for every other `.meta` label in the page (secondary/caption
+   text throughout the cards) — without this, elements like the top-of-page
+   connection-state line (#meta) render as unstyled full-weight paragraph
+   text and read like a stray leftover string instead of a caption. */
+.meta { color: var(--muted); font-size: 0.82rem; }
+#meta { margin: 0.7rem 0 0; }
+.spacer { flex: 1 1 auto; }
+.hz-field { display: inline-flex; align-items: center; gap: 0.3rem; }
+.hz-unit { color: var(--muted); font-size: 0.8rem; }
+.grade {
+  font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 0.3rem 0.75rem; border-radius: 999px; font-size: 0.76rem;
+  border: 1px solid transparent; font-family: var(--font-data);
+}
+.grade.green { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
+.grade.yellow { background: color-mix(in srgb, var(--yellow) 20%, transparent); color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 40%, transparent); }
+.grade.red { background: color-mix(in srgb, var(--red) 22%, transparent); color: var(--red); border-color: color-mix(in srgb, var(--red) 42%, transparent); }
+.grade.idle { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); border-color: var(--line); }
+.grade.frozen { background: color-mix(in srgb, var(--hold) 20%, transparent); color: var(--hold); border-color: color-mix(in srgb, var(--hold) 40%, transparent); }
+/* Red is the one grade that means "look at this now" — a slow pulse on the
+   always-visible header pill catches the eye even when scrolled away from
+   the Health card's own (already-pulsing) stat tiles. */
+@keyframes grade-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red) 55%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 0%, transparent); }
+}
+.grade.red { animation: grade-pulse 2.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .grade.red { animation: none; } }
+
+.banner {
+  margin: 0.6rem 0 0; padding: 0.6rem 0.85rem; border-radius: 8px;
+  background: color-mix(in srgb, var(--yellow) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow) 30%, var(--line));
+  color: var(--text); font-size: 0.82rem; line-height: 1.45;
+}
+.banner.ok {
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+  border-color: color-mix(in srgb, var(--green) 26%, var(--line));
+}
+.banner.warn {
+  background: color-mix(in srgb, var(--yellow) 12%, transparent);
+  border-color: color-mix(in srgb, var(--yellow) 34%, var(--line));
+}
+/* "Active — frozen" is a deliberate safe state, not a warning — give it its
+   own blue (--hold) tint so it doesn't read as the same severity as .warn. */
+.banner.hold {
+  background: color-mix(in srgb, var(--hold) 10%, transparent);
+  border-color: color-mix(in srgb, var(--hold) 30%, var(--line));
+}
+
+/* max-width is a soft cap (min() against the viewport), not a fixed box —
+   at 125%+ browser zoom the effective viewport shrinks, and a fixed px cap
+   would bite earlier than intended and read as cramped. Side padding
+   likewise eases off on wide viewports so the content pane actually gets
+   the extra room rather than just wider margins. */
+main {
+  padding: 1.25rem clamp(1rem, 2vw, 1.75rem) 3.5rem;
+  display: grid; gap: 1.1rem;
+  max-width: min(1880px, 97vw); margin: 0 auto;
+}
+
+/* Left rail + single content pane: only the selected section is in view,
+   so page height tracks whatever that one section needs instead of all 7
+   sections' content stacking (or half of them idling in an empty 2x2 grid
+   next to a very tall primary column — the previous shape). The rail is
+   narrow on purpose: it's a destination list, not content, so it shouldn't
+   compete with the panel for width — most of any extra viewport width goes
+   to the panel via the 1fr track. */
+.shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.panels { min-width: 0; }
+.panels > .panel[hidden] { display: none; }
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+}
+
+/* ------------------------------------------------------------- nav rail */
+.rail {
+  position: sticky; top: calc(var(--header-h) + 1.25rem);
+  display: grid; gap: 0.2rem;
+  max-height: calc(100vh - var(--header-h) - 2.5rem); overflow-y: auto;
+}
+.rail-item {
+  display: flex; align-items: flex-start; gap: 0.55rem; text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
+  padding: 0.5rem 0.6rem; color: var(--muted); font-family: var(--font-ui); font-weight: 600;
+  cursor: pointer; width: 100%;
+}
+.rail-item:hover:not(.active) { background: color-mix(in srgb, var(--panel-2) 60%, transparent); color: var(--text); }
+.rail-item.active { background: var(--panel); border-color: var(--line); color: var(--text); box-shadow: 0 1px 0 rgba(0,0,0,0.18); }
+.rail-dot {
+  width: 0.5rem; height: 0.5rem; border-radius: 2px; margin-top: 0.32rem; flex: none;
+  background: var(--muted-2);
+}
+.rail-item.active .rail-dot { background: var(--accent); }
+/* Health's dot always mirrors the live grade — the one status readable
+   without switching to the Health panel first. */
+.rail-item[data-panel="health"][data-grade="green"] .rail-dot { background: var(--green); }
+.rail-item[data-panel="health"][data-grade="yellow"] .rail-dot { background: var(--yellow); }
+.rail-item[data-panel="health"][data-grade="red"] .rail-dot { background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 30%, transparent); }
+.rail-item[data-panel="health"][data-grade="frozen"] .rail-dot { background: var(--hold); }
+.rail-text { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.rail-label { font-size: 0.84rem; line-height: 1.2; }
+.rail-sub { font-size: 0.68rem; color: var(--muted-2); font-weight: 500; }
+.rail-item.active .rail-sub { color: var(--muted); }
+@media (max-width: 860px) {
+  .rail { position: static; max-height: none; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); overflow-x: auto; padding-bottom: 0.3rem; }
+}
+
+.panel-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin: 0 0 0.9rem; }
+.panel-head h2 { margin: 0; }
+
+/* ----------------------------------------------------------- open cards
+   Only one panel is ever on screen at a time now (see .shell above), so
+   the old 4-sided border + drop-shadow — needed back when up to 7 of these
+   sat stacked/tiled against each other and had to read as separate boxes —
+   just reads as a box hemming in the one thing on the page. Keep only the
+   top accent bar (still doing real work on Health: it's the grade color)
+   and let the background-vs-page contrast (--panel vs --bg) carry the rest. */
+.card {
+  background: var(--panel); border-radius: var(--radius);
+  padding: 1.3rem clamp(1.3rem, 2.4vw, 2.4rem) 1.6rem;
+  border-top: 3px solid var(--line);
+}
+.card.tight { padding: 0.75rem 0.9rem; }
+.card h2 {
+  margin: 0 0 0.9rem; font-size: 0.82rem; color: var(--text); opacity: 0.85;
+  text-transform: uppercase; letter-spacing: 0.08em; font-weight: 800;
+  display: flex; align-items: center;
+}
+.card h2::before { content: ""; display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 2px; background: var(--accent); opacity: 0.75; margin-right: 0.55rem; flex: none; }
+.card summary { cursor: pointer; list-style-position: outside; padding: 0.1rem 0; }
+.card summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.card summary h2 { display: inline-flex; margin: 0; }
+.card details[open] > summary { margin-bottom: 0.7rem; }
+.card details.sub { margin-top: 0.7rem; border-top: 1px dashed var(--line); padding-top: 0.7rem; }
+.card details.sub summary { font-size: 0.72rem; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; }
+.card details.sub summary:hover { color: var(--muted); }
+
+/* Health card reads as the focal point of the page: a colored top edge +
+   left-tinted wash driven by the same grade the header pill shows. */
+#healthCard { border-top-color: var(--muted); }
+#healthCard[data-grade="green"] { border-top-color: var(--green); background: linear-gradient(180deg, color-mix(in srgb, var(--green) 5%, var(--panel)) 0%, var(--panel) 9rem); }
+#healthCard[data-grade="yellow"] { border-top-color: var(--yellow); background: linear-gradient(180deg, color-mix(in srgb, var(--yellow) 6%, var(--panel)) 0%, var(--panel) 9rem); }
+#healthCard[data-grade="red"] { border-top-color: var(--red); background: linear-gradient(180deg, color-mix(in srgb, var(--red) 7%, var(--panel)) 0%, var(--panel) 9rem); }
+#healthCard[data-grade="frozen"] { border-top-color: var(--hold); background: linear-gradient(180deg, color-mix(in srgb, var(--hold) 6%, var(--panel)) 0%, var(--panel) 9rem); }
+#healthCard[data-grade="idle"] { border-top-color: var(--line); }
+#healthCard h2::before { background: var(--muted); }
+#healthCard[data-grade="green"] h2::before { background: var(--green); }
+#healthCard[data-grade="yellow"] h2::before { background: var(--yellow); }
+#healthCard[data-grade="red"] h2::before { background: var(--red); }
+#healthCard[data-grade="frozen"] h2::before { background: var(--hold); }
+
+.summary { font-size: 1.3rem; margin: 0 0 0.35rem; font-weight: 700; letter-spacing: -0.01em; }
+ul.context { margin: 0 0 0.2rem; padding-left: 1.1rem; color: var(--muted); font-size: 0.85rem; }
+ul.context li { margin: 0.25rem 0; }
+
+/* --------------------------------------------------------- hero stat row */
+.stat-hero-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin: 0.9rem 0 0.4rem; }
+.stat-tile {
+  border-radius: 10px; padding: 0.65rem 0.9rem 0.7rem; border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.stat-tile .k { display: block; color: var(--muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700; }
+.stat-tile .v { font-family: var(--font-data); font-size: 1.55rem; font-weight: 700; margin-top: 0.2rem; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.stat-tile.ok { border-color: color-mix(in srgb, var(--green) 45%, var(--line)); background: color-mix(in srgb, var(--green) 10%, var(--panel-2)); }
+.stat-tile.ok .v { color: var(--green); }
+.stat-tile.warn { border-color: color-mix(in srgb, var(--yellow) 50%, var(--line)); background: color-mix(in srgb, var(--yellow) 10%, var(--panel-2)); }
+.stat-tile.warn .v { color: var(--yellow); }
+.stat-tile.crit { border-color: color-mix(in srgb, var(--red) 55%, var(--line)); background: color-mix(in srgb, var(--red) 12%, var(--panel-2)); }
+.stat-tile.crit .v { color: var(--red); }
+.stat-tile.hold { border-color: color-mix(in srgb, var(--hold) 50%, var(--line)); background: color-mix(in srgb, var(--hold) 10%, var(--panel-2)); }
+.stat-tile.hold .v { color: var(--hold); }
+.stat-tile.info .v { color: var(--accent); }
+.stat-tile.neutral .v { color: var(--muted); }
+@keyframes stat-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red) 45%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--red) 0%, transparent); }
+}
+.stat-tile.crit { animation: stat-pulse 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .stat-tile.crit { animation: none; } }
+
+/* ------------------------------------------------------- secondary grid */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.7rem; }
+.grid.compact { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 0.55rem; }
+.kv {
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+  border: 1px solid var(--line-soft); border-radius: var(--radius-sm);
+  padding: 0.4rem 0.55rem 0.45rem;
+}
+.kv .k { display: block; color: var(--muted); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.kv .v { font-family: var(--font-data); font-variant-numeric: tabular-nums; font-size: 0.98rem; margin-top: 0.2rem; }
+.grid.compact .kv .v { font-size: 0.85rem; }
+.kv.wide { grid-column: 1 / -1; }
+.kv.wide .v { font-size: 0.78rem; color: var(--muted); font-variant-numeric: normal; font-family: var(--font-ui); }
+
+/* Small caption above a .grid/.grid.compact block that groups otherwise
+   unlabeled kv() tiles (e.g. Health card's "Advanced" details has two back
+   to back grids — host timing vs. raw PDB — with nothing else to tell them
+   apart). */
+.grid-label {
+  margin: 0.7rem 0 0.35rem; font-size: 0.66rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted-2); font-weight: 700;
+}
+.grid-label:first-child { margin-top: 0; }
+
+/* ------------------------------------------------------------- tables */
+.table-surface { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-inset); }
+.table-surface table { margin: 0; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.85rem; font-family: var(--font-data); }
+th, td { text-align: left; padding: 0.5rem 0.55rem; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 700; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--font-ui); position: sticky; top: 0; background: var(--panel-inset); }
+.table-surface tbody tr:nth-child(even) { background: color-mix(in srgb, var(--panel-2) 30%, transparent); }
+.table-surface tbody tr:hover { background: color-mix(in srgb, var(--panel-2) 65%, transparent); }
+tbody tr:last-child td { border-bottom: none; }
+
+/* Advanced actuator table (#actuatorsTable): 14 columns spanning three
+   meaning-groups (feedback / held / apply-new). A vertical rule at each
+   group boundary — matching the thead colspans — lets the eye jump straight
+   to "what's applied" instead of counting columns across a dense row. */
+table.col-grouped th.grp-fb, table.col-grouped th.grp-held, table.col-grouped th.grp-apply { text-align: center; }
+table.col-grouped thead tr:first-child th:not(:first-child) { border-left: 1px solid var(--line); }
+table.col-grouped thead tr:nth-child(2) th:nth-child(2),
+table.col-grouped thead tr:nth-child(2) th:nth-child(7),
+table.col-grouped thead tr:nth-child(2) th:nth-child(11) { border-left: 1px solid var(--line); }
+table.col-grouped tbody td:nth-child(2),
+table.col-grouped tbody td:nth-child(7),
+table.col-grouped tbody td:nth-child(11) { border-left: 1px solid var(--line); }
+table.col-grouped tbody td:nth-child(11),
+table.col-grouped tbody td:nth-child(12),
+table.col-grouped tbody td:nth-child(13) { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+
+/* --------------------------------------------------------------- forms */
+button, select, input {
+  font-family: var(--font-ui); font-size: 0.82rem; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0.42rem 0.75rem;
+}
+select, input { background: var(--bg); font-family: var(--font-data); }
+button { cursor: pointer; font-weight: 600; font-family: var(--font-ui); transition: border-color 0.12s, background 0.12s, opacity 0.12s, transform 0.06s; }
+button:hover:not(:disabled) { border-color: var(--muted-2); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button:disabled { opacity: 0.38; cursor: not-allowed; }
+button.primary { background: color-mix(in srgb, var(--accent) 24%, var(--panel-2)); border-color: color-mix(in srgb, var(--accent) 58%, var(--line)); color: #eaf1ff; font-weight: 700; }
+button.primary:hover:not(:disabled) { border-color: var(--accent); }
+button.record.on { background: color-mix(in srgb, var(--red) 25%, transparent); color: var(--red); border-color: var(--red); }
+button.estop, button.btn-danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 55%, var(--line)); }
+button.estop:hover:not(:disabled), button.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 14%, transparent); }
+button.btn-go { background: color-mix(in srgb, var(--accent) 20%, var(--panel-2)); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+button.btn-stop { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, var(--line)); }
+button.btn-stop:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 12%, transparent); }
+button.btn-idle { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 45%, var(--line)); }
+button.btn-idle:hover:not(:disabled) { background: color-mix(in srgb, var(--yellow) 12%, transparent); }
+button.btn-ghost { background: transparent; }
+button.btn-freeze { color: var(--hold); border-color: color-mix(in srgb, var(--hold) 55%, var(--line)); }
+button.btn-release { color: var(--green); border-color: color-mix(in srgb, var(--green) 55%, var(--line)); }
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.segmented button { border: none; border-radius: 0; background: var(--panel-2); }
+.segmented button:not(:last-child) { border-right: 1px solid var(--line); }
+.segmented button.active { background: color-mix(in srgb, var(--accent) 24%, var(--panel-2)); color: #eaf1ff; }
+.fault-badge { color: var(--red); font-weight: 700; }
+.row { display: flex; gap: 0.55rem; align-items: center; flex-wrap: wrap; }
+.row.toolbar {
+  position: sticky; top: var(--header-h); z-index: 10; background: var(--panel);
+  padding: 0.55rem 0; margin: -0.2rem 0 0.8rem; border-bottom: 1px solid var(--line);
+}
+.err { color: var(--red); font-size: 0.8rem; min-height: 1.1em; margin: 0.45rem 0 0; font-weight: 600; }
+input[type=number] { width: 4.5rem; }
+.streaming-badge { font-size: 0.8rem; color: var(--muted); margin-left: auto; font-family: var(--font-data); }
+.streaming-badge.on { color: var(--green); }
+.active-badge { font-weight: 800; font-family: var(--font-data); }
+.active-badge.active { color: var(--hold); }
+.active-badge.idle { color: var(--muted); }
+td.held { font-variant-numeric: tabular-nums; }
+.unavailable { color: var(--muted-2); font-style: italic; }
+
+/* --------------------------------------------------- teleop joint cards */
+.joint-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.65rem; }
+.joint-card {
+  border: 1px solid var(--line); border-radius: 10px; padding: 0.65rem 0.75rem;
+  background: var(--panel-2); font-size: 0.82rem; transition: border-color 0.12s, box-shadow 0.12s;
+}
+.joint-card.disabled { opacity: 0.5; }
+.joint-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.joint-card[tabindex] { cursor: pointer; }
+.joint-card[tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.joint-card .jc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.4rem; margin-bottom: 0.4rem; }
+.joint-card .jc-label { font-weight: 700; }
+.joint-card .jc-sub { color: var(--muted); font-size: 0.7rem; font-family: var(--font-data); }
+.joint-card .jc-slider { display: flex; align-items: center; gap: 0.5rem; margin: 0.35rem 0; }
+.joint-card input[type=range] { flex: 1 1 auto; width: auto; accent-color: var(--accent); }
+.joint-card .val { font-family: var(--font-data); font-variant-numeric: tabular-nums; text-align: right; min-width: 3.4rem; color: var(--text); font-weight: 700; }
+.joint-card .jc-foot { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.4rem; }
+.joint-card .jc-foot input[type=number] { width: 4rem; }
+.joint-card button { padding: 0.32rem 0.55rem; font-size: 0.76rem; }
+.joint-card .btn-group { display: flex; gap: 0.3rem; }
+.joint-card .cmd { flex-basis: 100%; color: var(--muted); font-size: 0.72rem; margin-top: 0.2rem; font-family: var(--font-data); }
+.joint-card .cmd.flagged { color: var(--yellow); font-weight: 700; }
+.joint-card .jc-limits {
+  display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;
+  margin-top: 0.35rem; font-size: 0.72rem; color: var(--muted);
+}
+.joint-card .jc-limits .fb { font-variant-numeric: tabular-nums; color: var(--text); min-width: 5.5rem; font-family: var(--font-data); }
+.joint-card .jc-limits .cap { font-variant-numeric: tabular-nums; font-family: var(--font-data); }
+.teleop-group { margin-top: 0.9rem; }
+.teleop-group + .teleop-group { border-top: 1px solid var(--line); padding-top: 0.8rem; }
+.teleop-group summary { display: flex; align-items: baseline; gap: 0.5rem; }
+.teleop-group summary .group-title { font-size: 0.85rem; font-weight: 700; }
+.teleop-group[open] summary { margin-bottom: 0.55rem; }
+
+/* ---------------------------------------------------------- panels list */
+.panel-row { display: flex; justify-content: space-between; align-items: baseline; gap: 0.6rem;
+  padding: 0.45rem 0; border-bottom: 1px solid var(--line); font-size: 0.82rem; }
+.panel-row:last-child { border-bottom: none; }
+.panel-row .pr-name { font-weight: 700; }
+.panel-row .pr-blurb { color: var(--muted); font-size: 0.75rem; }
+
+/* Generic status badge — panels catalog + CFG table's conn column */
+.pr-badge { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700;
+  padding: 0.14rem 0.5rem; border-radius: 999px; border: 1px solid var(--line); font-family: var(--font-ui); }
+.pr-badge.ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.pr-badge.missing { color: var(--muted-2); }
+
+/* Take-control header segment — the one control that must always be reachable */
+.take-control .btn-release.active { background: color-mix(in srgb, var(--green) 24%, var(--panel-2)); color: #eaf1ff; }
+.take-control .btn-freeze.active { background: color-mix(in srgb, var(--hold) 24%, var(--panel-2)); color: #eaf1ff; }
+
+/* ------------------------------------------------------- testing groups */
+.section-intro { margin: -0.3rem 0 0.9rem; color: var(--muted); font-size: 0.82rem; max-width: 62ch; line-height: 1.5; }
+.test-groups { display: grid; gap: 0.7rem; }
+.test-group {
+  border: 1px solid var(--line-soft); border-radius: 9px; padding: 0.6rem 0.8rem 0.7rem;
+  background: color-mix(in srgb, var(--panel-2) 40%, transparent);
+}
+.test-group-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.test-group-title { font-weight: 700; font-size: 0.85rem; color: var(--text); }
+.test-group-title .meta { font-weight: 500; }
+.test-group-blurb { color: var(--muted); font-size: 0.76rem; }
+.field-label {
+  display: inline-flex; flex-direction: column; gap: 0.2rem; font-size: 0.66rem;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;
+}
+
+/* --------------------------------------------------------- testing pane */
+.terminal-surface { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-top: 0.7rem; background: var(--panel-inset); }
+.terminal-head {
+  padding: 0.4rem 0.8rem; font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--muted-2); font-weight: 700; background: color-mix(in srgb, var(--panel-2) 65%, transparent);
+  border-bottom: 1px solid var(--line);
+}
+.terminal {
+  padding: 0.55rem 0.8rem 0.75rem; max-height: 22rem; overflow-y: auto;
+  font-family: var(--font-data); font-size: 0.78rem; color: var(--muted);
+}
+.term-empty { color: var(--muted-2); font-style: italic; }
+.term-entry { border-left: 2px solid color-mix(in srgb, var(--accent) 40%, var(--line)); padding: 0.35rem 0 0.4rem 0.65rem; margin: 0 0 0.5rem; }
+.term-entry:last-child { margin-bottom: 0; }
+.term-entry.err { border-left-color: var(--red); }
+.term-head { display: flex; gap: 0.55rem; align-items: baseline; font-family: var(--font-ui); flex-wrap: wrap; }
+.term-ts { color: var(--muted-2); font-size: 0.68rem; font-variant-numeric: tabular-nums; font-family: var(--font-data); }
+.term-label { color: var(--text); font-weight: 700; font-size: 0.78rem; }
+.term-entry.err .term-label { color: var(--red); }
+.term-body { margin: 0.35rem 0 0; font-size: 0.74rem; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+
+/* ------------------------------------------------------------ CFG editor */
+#cfgTableJson {
+  font-family: var(--font-data); font-size: 0.78rem;
+  background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 0.6rem; resize: vertical;
+}

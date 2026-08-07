@@ -87,6 +87,8 @@ void plant_diag_feedback_fill(host_pdu_feedback_t *pdu)
 		memcpy(&pdu->data[4], &g_last_ze_probe.vendor, sizeof(uint32_t));
 		memcpy(&pdu->data[8], &g_last_ze_probe.product, sizeof(uint32_t));
 		memcpy(&pdu->data[12], &g_last_ze_probe.revision, sizeof(uint32_t));
+		memcpy(&pdu->data[16], &g_last_ze_probe.position_rad, sizeof(float));
+		pdu->data[20] = g_last_ze_probe.position_valid ? 1u : 0u;
 		pdu->data[24] = g_last_ze_probe.discovered_id;
 		plant_diag_feedback_stamp_fw_marker(pdu);
 		if (g_ze_feedback_ttl > 0u)

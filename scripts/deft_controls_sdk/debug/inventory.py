@@ -31,30 +31,42 @@ if TYPE_CHECKING:
     from deft_controls_sdk.telemetry import TelemetryCache
 
 # Named presets — never silently use discover's wide DEFAULT_ID_RANGE.
+# CubeMars/ZeroErr follow the same bench/product/full shape as Damiao (no
+# established bench-vs-product ID convention of their own yet) — this just
+# means --preset alone now covers all 4 protocols instead of only RS/DM;
+# pass --cm-range/--ze-range (or ranges=…) to override per protocol.
 RANGE_PRESETS: Dict[str, Dict[str, Tuple[int, int]]] = {
     "bench": {
         "robstride": (0x70, 0x75),
         "damiao": (1, 8),
+        "cubemars": (1, 8),
+        "zeroerr": (1, 8),
     },
     "product": {
         "robstride": (0x01, 0x02),
         "damiao": (1, 7),
+        "cubemars": (1, 7),
+        "zeroerr": (1, 7),
     },
     "yam": {  # alias of product
         "robstride": (0x01, 0x02),
         "damiao": (1, 7),
+        "cubemars": (1, 7),
+        "zeroerr": (1, 7),
     },
     "full": {
         "robstride": (0x01, 0x7F),
         "damiao": (1, 16),
+        "cubemars": (1, 16),
+        "zeroerr": (1, 16),
     },
 }
 
 PRESET_BLURBS: Dict[str, str] = {
-    "bench": "RS 0x70..0x75 + DM 1..8 (bench continuous IDs)",
-    "product": "RS 0x01..0x02 + DM 1..7 (YAM product map)",
+    "bench": "RS 0x70..0x75 + DM/CM/ZE 1..8 (bench continuous IDs)",
+    "product": "RS 0x01..0x02 + DM/CM/ZE 1..7 (YAM product map)",
     "yam": "alias of product",
-    "full": "RS 0x01..0x7F + DM 1..16 — SLOW; opt-in only",
+    "full": "RS 0x01..0x7F + DM/CM/ZE 1..16 — SLOW; opt-in only",
 }
 
 

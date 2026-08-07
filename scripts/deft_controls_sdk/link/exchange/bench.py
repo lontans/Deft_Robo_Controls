@@ -98,6 +98,8 @@ PROBE_CALI = 16
 PROBE_ZERO = 17
 PROBE_DATA_SAVE = 18
 PROBE_PARAWRITE = 19
+# 20/21/22 reserved for MCP smoke/wake/disable probes (not RS2-kind, same byte).
+PROBE_SET_CAN_ID = 23  # comm=0x07; param_index low byte = new CAN id
 
 SESSION_BEGIN = 254
 SESSION_END = 255
@@ -450,6 +452,12 @@ ZE_TAG0, ZE_TAG1, ZE_TAG2 = ord("Z"), ord("E"), ord("0")
 ZE_RESP_TAG = ord("z")
 
 ZE_PROBE_NODE = 0
+# Stage-1 bench probe: zeroerr_boot_blocking (NMT + PDO1 remap only, NO
+# controlword — brake stays engaged, no motion possible). See zeroerr.c.
+ZE_PROBE_BOOT = 1
+# SDO read of 0x6064 (Position Actual Value) — no enable/PDO/NMT-Operational
+# required, safe at any time. See zeroerr_read_position().
+ZE_PROBE_POSITION = 2
 ZE_PROBE_SWEEP = 17
 
 ZEROERR_VENDOR_ID = 0x5A65726F
@@ -499,6 +507,7 @@ def parse_ze_probe_pdu(frame: bytes) -> Optional[dict]:
     vendor, = struct.unpack_from("<I", pdu, 4)
     product, = struct.unpack_from("<I", pdu, 8)
     revision, = struct.unpack_from("<I", pdu, 12)
+    position_rad, = struct.unpack_from("<f", pdu, 16)
     return {
         "probe_id": pdu[1],
         "found": pdu[2] != 0,
@@ -506,6 +515,8 @@ def parse_ze_probe_pdu(frame: bytes) -> Optional[dict]:
         "vendor": vendor,
         "product": product,
         "revision": revision,
+        "position_rad": position_rad,
+        "position_valid": pdu[20] != 0,
         "discovered_id": pdu[24],
     }
 

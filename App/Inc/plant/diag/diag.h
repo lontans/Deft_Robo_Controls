@@ -52,6 +52,13 @@
 #define PLANT_DIAG_ZE_PDU_BUS_MASK   9u
 #define PLANT_DIAG_ZE_QUIET_MS       3000u
 #define PLANT_DIAG_ZE_PROBE_NODE     0u  /* single node identity read */
+/* Stage-1 bench probe: zeroerr_boot_blocking (NMT + PDO1 remap only, NO
+ * controlword — brake stays engaged, node lands at most in Switch On
+ * Disabled/Ready to Switch On). See App/Src/plant/plugins/zeroerr.c. */
+#define PLANT_DIAG_ZE_PROBE_BOOT     1u
+/* SDO read of 0x6064 (Position Actual Value) — no enable/PDO/NMT-Operational
+ * required, safe at any time. See zeroerr_read_position(). */
+#define PLANT_DIAG_ZE_PROBE_POSITION 2u
 #define PLANT_DIAG_ZE_PROBE_SWEEP    17u /* sweep [motor_id..end_id], mirrors *_ID_SWEEP */
 #define PLANT_DM_FB_MAGIC            0xDA000000u
 #define PLANT_DM_FB_TTL_PROBE        250u
@@ -74,11 +81,20 @@
 #define PLANT_DIAG_PROBE_ZERO        RS02_PROBE_ZERO
 #define PLANT_DIAG_PROBE_DATA_SAVE   RS02_PROBE_DATA_SAVE
 #define PLANT_DIAG_PROBE_PARAWRITE   RS02_PROBE_PARAWRITE
+/* comm=0x07 set CAN_ID. param_index low byte = new CAN id (1..0x7F).
+ * Motor is reset first (see robstride_probe_id), so caller need not. */
+#define PLANT_DIAG_PROBE_SET_CAN_ID  RS02_PROBE_SET_CAN_ID
 #define PLANT_DIAG_PROBE_MCP_SMOKE   20u
 #define PLANT_DIAG_PROBE_MCP_WAKE    21u
 #define PLANT_DIAG_PROBE_MCP_DISABLE 22u
 #define PLANT_DXL_PROBE_TOGGLE_BAUD  4u
 #define PLANT_DXL_PROBE_SET_BAUD_1M  PLANT_DXL_PROBE_TOGGLE_BAUD
+/* target_id = current ID, id_start = new ID (id_end unused) — same param-
+ * reuse pattern TOGGLE_BAUD already uses for id_start/id_end as a range.
+ * Bring-up-only: two same-model DXLs share factory ID=1; reassign one
+ * before both land on the same 2 Mbps domain (dxl_toggle_ids_baud would
+ * otherwise create a real ID collision). */
+#define PLANT_DXL_PROBE_SET_ID       5u
 #define PLANT_DIAG_SESSION_BEGIN     254u
 #define PLANT_DIAG_SESSION_END       255u
 #define PLANT_DIAG_PDU_CAN_BUS       11u

@@ -36,14 +36,34 @@ typedef struct {
 	float t_min, t_max;
 } cubemars_ak_limits_t;
 
-/* Per-module V/T (§5.3 table). P/Kp/Kd are shared macros in cubemars.h. */
+/*
+ * Per-module V/T (§5.3 table). P/Kp/Kd are shared macros in cubemars.h.
+ *
+ * CUBEMARS_AKH70_48 is not in either PDF's §5.3 table (neither doc mentions
+ * "AKH" — confirmed via full-text extraction, zero hits). Sourced instead
+ * from the official cubemars.com AKH70-48 V1.0 KV41 product page: peak
+ * torque 222 N*m (t_max, matching the pattern the PDF-sourced rows already
+ * use — e.g. AK80-80's t_max=144 is that model's known peak, not its rated
+ * torque), no-load speed 35 RPM -> 3.665 rad/s (v_max; 48:1 gearbox makes
+ * this a high-torque/low-speed module, consistent with the other rows being
+ * ~1-2 orders of magnitude slower once a model is more heavily geared).
+ * Rated torque (74 N*m) and rated speed (28 RPM) are the continuous-duty
+ * numbers, intentionally not used here — same "clamp to peak envelope, not
+ * continuous rating" convention as the rest of this table.
+ *
+ * This is a marketing spec sheet, not the vendor's own CAN-protocol table
+ * the other rows come from — treat it with the same "verify at the bench,
+ * don't trust blindly" rule already applied to the PDF's own sample code
+ * bugs (see file header) before relying on it for a hard safety clamp.
+ */
 static const cubemars_ak_limits_t k_ak_limits[CUBEMARS_AK_MODEL_COUNT] = {
-	[CUBEMARS_AK10_9]  = { -50.0f,  50.0f,  -65.0f,  65.0f },
-	[CUBEMARS_AK60_6]  = { -50.0f,  50.0f,  -15.0f,  15.0f },
-	[CUBEMARS_AK70_10] = { -50.0f,  50.0f,  -25.0f,  25.0f },
-	[CUBEMARS_AK80_6]  = { -76.0f,  76.0f,  -12.0f,  12.0f },
-	[CUBEMARS_AK80_9]  = { -50.0f,  50.0f,  -18.0f,  18.0f },
-	[CUBEMARS_AK80_80] = {  -8.0f,   8.0f, -144.0f, 144.0f },
+	[CUBEMARS_AK10_9]    = { -50.0f,  50.0f,  -65.0f,  65.0f },
+	[CUBEMARS_AK60_6]    = { -50.0f,  50.0f,  -15.0f,  15.0f },
+	[CUBEMARS_AK70_10]   = { -50.0f,  50.0f,  -25.0f,  25.0f },
+	[CUBEMARS_AK80_6]    = { -76.0f,  76.0f,  -12.0f,  12.0f },
+	[CUBEMARS_AK80_9]    = { -50.0f,  50.0f,  -18.0f,  18.0f },
+	[CUBEMARS_AK80_80]   = {  -8.0f,   8.0f, -144.0f, 144.0f },
+	[CUBEMARS_AKH70_48]  = {  -3.665f, 3.665f, -222.0f, 222.0f },
 };
 
 /* TODO(cfg-model): no CFG field yet — default model until set_model is wired. */
@@ -51,12 +71,32 @@ static cubemars_ak_model_t s_model[ACTUATOR_COUNT];
 static bool                s_model_init;
 static bool                s_cubemars_enable_latched[ACTUATOR_COUNT];
 
+/*
+ * TODO(cfg-model): Gen2 slots 0-3 / 8-11 (arm J1-J4, both arms) and 16
+ * (torso yaw) are AKH70-48 per the Gen2 product layout
+ * (scripts/deft_controls_sdk/config/gen2.py) — every other PROTO_CUBEMARS
+ * slot defaults to AK80-9. s_model[] is RAM-only (not NVM-backed) and
+ * nothing calls cubemars_set_model() from a host RPC today, so this
+ * compiled-in seed is the only thing making those 9 slots use the right
+ * V/T clamp on a fresh boot. Same maturity level as CUBEMARS_MIT_DEFAULT_MODEL
+ * itself (a hardcoded default, not real per-slot CFG) — replace with a real
+ * host-driven set once a CFG/diag wire exists (see cubemars_set_model()
+ * doc comment). If firmware ever serves a non-Gen2 product again, this seed
+ * needs to move behind a product switch instead of being unconditional.
+ */
+static const uint8_t k_gen2_akh70_48_slots[] = { 0u, 1u, 2u, 3u, 8u, 9u, 10u, 11u, 16u };
+
 static void cubemars_ensure_model_defaults(void)
 {
 	if (s_model_init)
 		return;
 	for (uint8_t i = 0; i < ACTUATOR_COUNT; i++)
 		s_model[i] = CUBEMARS_MIT_DEFAULT_MODEL;
+	for (uint8_t i = 0; i < (uint8_t)(sizeof(k_gen2_akh70_48_slots) / sizeof(k_gen2_akh70_48_slots[0])); i++) {
+		uint8_t slot = k_gen2_akh70_48_slots[i];
+		if (slot < ACTUATOR_COUNT)
+			s_model[slot] = CUBEMARS_AKH70_48;
+	}
 	s_model_init = true;
 }
 

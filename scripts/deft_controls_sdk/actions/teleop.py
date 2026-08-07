@@ -32,6 +32,7 @@ from deft_controls_sdk.config.actuator import (
     RIGHT_ARM_SLOTS,
 )
 from deft_controls_sdk.config.profile import (
+    BASE_WHEEL_SLOTS,
     NECK_PITCH_SERVO_SLOT,
     NECK_YAW_SERVO_SLOT,
 )
@@ -130,6 +131,11 @@ HOLD_KD_BOOST_GAIN = 6.0  # kd multiplier growth per rad/s of sag velocity past 
 HOLD_KD_BOOST_MAX = 1.8  # hard cap on the kd multiplier — bounded damping increase, never kp
 HOLD_FLAG_RAD = 0.12  # |feedback - target| beyond this while "holding" -> flagged for the UI
 
+# slot -> wheel-module name, derived from config.profile.BASE_WHEEL_SLOTS (name -> (steer, drive)).
+_SLOT_TO_WHEEL_MODULE: Dict[int, str] = {
+    slot: name for name, slots in BASE_WHEEL_SLOTS.items() for slot in slots
+}
+
 
 @dataclass(frozen=True)
 class SlotSpec:
@@ -146,6 +152,8 @@ class SlotSpec:
     kp_floor: float = 0.0
     cruise_max: float = ARM_CRUISE_MAX
     cruise_default: float = ARM_CRUISE_DEFAULT
+    role: str = "position"  # "position" | "steer" | "drive" -- UI-facing hint, see build_actuator_specs
+    wheel_module: Optional[str] = None  # e.g. "base_wheel_1", from config.profile.BASE_WHEEL_SLOTS
 
 
 def build_actuator_specs(cfg_map: str = "bench") -> Dict[int, SlotSpec]:
@@ -171,6 +179,11 @@ def build_actuator_specs(cfg_map: str = "bench") -> Dict[int, SlotSpec]:
             cruise_max=ARM_CRUISE_MAX, cruise_default=ARM_CRUISE_DEFAULT,
         )
     if cfg_map == "bench":
+        # Bench wiring has no real steer/drive distinction (see module docstring on
+        # build_actuator_specs) -- all 4 rows come back role="drive", which matches how
+        # they're actually jogged today (jog_actuator to a soft rail) closer than the
+        # pseudo-bounded RS_LO/RS_HI range pretends. No wheel_module: bench slots aren't
+        # paired into product wheel modules.
         for slot, label in BASE_BENCH_ROWS:
             is_damiao = slot in BASE_BENCH_DAMIAO_SLOTS
             specs[slot] = SlotSpec(
@@ -180,16 +193,20 @@ def build_actuator_specs(cfg_map: str = "bench") -> Dict[int, SlotSpec]:
                 lo=None if is_damiao else RS_LO, hi=None if is_damiao else RS_HI,
                 seed_relative=is_damiao, kp_floor=DM_BASE_MIN_KP if is_damiao else 0.0,
                 cruise_max=BASE_CRUISE_MAX, cruise_default=BASE_CRUISE_DEFAULT,
+                role="drive",
             )
     else:
-        for label_map, kp, kd in ((BASE_STEER_SLOTS, DEFAULT_STEER_KP, DEFAULT_STEER_KD),
-                                   (BASE_DRIVE_SLOTS, 0.0, DEFAULT_DRIVE_KD)):
+        for label_map, kp, kd, role in (
+            (BASE_STEER_SLOTS, DEFAULT_STEER_KP, DEFAULT_STEER_KD, "steer"),
+            (BASE_DRIVE_SLOTS, 0.0, DEFAULT_DRIVE_KD, "drive"),
+        ):
             for label, slot in label_map.items():
                 specs[slot] = SlotSpec(
                     slot=slot, group="base", label=f"product {label}", protocol="robstride",
                     kp=kp, kd=kd, verified=False,
                     lo=RS_LO, hi=RS_HI, seed_relative=False,
                     cruise_max=BASE_CRUISE_MAX, cruise_default=BASE_CRUISE_DEFAULT,
+                    role=role, wheel_module=_SLOT_TO_WHEEL_MODULE.get(slot),
                 )
     return specs
 
@@ -303,6 +320,7 @@ class TeleopEngine:
             self._act[slot] = {
                 "pos": pos, "target": target, "cruise": cruise,
                 "lo": spec.lo, "hi": spec.hi, "kp": spec.kp, "kd": spec.kd, "kp_floor": spec.kp_floor,
+                "mode": "target",
             }
         self._ensure_thread()
 
@@ -318,6 +336,7 @@ class TeleopEngine:
             self._act[slot] = {
                 "pos": seed, "target": target, "cruise": cruise,
                 "lo": lo, "hi": hi, "kp": spec.kp, "kd": spec.kd, "kp_floor": spec.kp_floor,
+                "mode": "target",
             }
         self._ensure_thread()
 
@@ -339,6 +358,42 @@ class TeleopEngine:
             cur = self._act.get(slot)
             if cur is not None:
                 cur["target"] = cur["pos"]
+                cur["mode"] = "target"
+                cur["rate"] = 0.0
+
+    def set_actuator_rate(
+        self, slot: int, *, spec: SlotSpec, seed: float, rate: float, timeout_s: float = 0.25,
+    ) -> None:
+        """Continuous/rate teleop: integrate `rate` (spec units/s, signed, clamped to
+        +/- spec.cruise_max) into the held position every tick, instead of walking to a
+        fixed target. Keyboard-hold and mouse-drag both drive this by refreshing `rate` on
+        each input event (this method IS the refresh — call it again with a new rate/timeout
+        to update, it does not re-seed if the slot is already engaged in rate mode).
+        If not refreshed within timeout_s, the tick loop zeroes rate itself (fail-safe decay
+        to hold-in-place, not a runaway, on lost network/tab). Call with rate=0.0 to stop
+        explicitly (equivalent to stop_actuator)."""
+        rate = _clamp(float(rate), -spec.cruise_max, spec.cruise_max)
+        deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        with self._lock:
+            cur = self._act.get(slot)
+            if cur is not None and cur.get("mode") == "rate":
+                # Already engaged in rate mode -- refresh only, don't re-seed pos/target/rails.
+                cur["rate"] = rate
+                cur["rate_deadline"] = deadline
+            else:
+                pos = cur["pos"] if cur is not None else seed
+                if spec.lo is None or spec.hi is None:
+                    # Seed-relative slot (e.g. bench Damiao) has no absolute rail -- window
+                    # around the seed the same way engage_actuator_seed_relative does.
+                    lo, hi = pos - DM_BASE_TRAVEL, pos + DM_BASE_TRAVEL
+                else:
+                    lo, hi = spec.lo, spec.hi
+                self._act[slot] = {
+                    "pos": pos, "target": pos, "cruise": spec.cruise_max,
+                    "lo": lo, "hi": hi, "kp": spec.kp, "kd": spec.kd, "kp_floor": spec.kp_floor,
+                    "mode": "rate", "rate": rate, "rate_deadline": deadline,
+                }
+        self._ensure_thread()
 
     def set_actuator_limits(self, slot: int, *, lo: float, hi: float) -> None:
         """Widen/narrow an already-engaged slot's soft rail (limit-scout toggle)."""
@@ -427,40 +482,65 @@ class TeleopEngine:
 
         # Per-tick slew updates (and non-arm / non-brace writes).
         for slot, st in items:
-            pos, target, cruise = st["pos"], st["target"], st["cruise"]
-            step = cruise * self._dt
-            delta = target - pos
-            kd = st["kd"]
-            flagged = False
-            if abs(delta) <= max(step, 1e-6):
-                # Arrived — hold the commanded target (never lead-clamp toward sag).
-                new_pos, vel = target, 0.0
-                sample = fb.get(slot)
-                if sample is not None:
-                    fb_pos = sample.get("position")
-                    fb_vel = sample.get("velocity") or 0.0
-                    if fb_pos is not None and abs(fb_pos - target) > HOLD_FLAG_RAD:
-                        flagged = True
-                    if abs(fb_vel) > HOLD_VEL_DEADBAND:
-                        boost = 1.0 + min(
-                            HOLD_KD_BOOST_GAIN * (abs(fb_vel) - HOLD_VEL_DEADBAND),
-                            HOLD_KD_BOOST_MAX - 1.0,
-                        )
-                        kd = st["kd"] * boost
+            if st.get("mode") == "rate":
+                # Continuous rate-teleop -- integrate held rate into position instead of
+                # walking toward a fixed target. See set_actuator_rate().
+                rate = st.get("rate", 0.0)
+                if time.monotonic() >= st.get("rate_deadline", 0.0):
+                    # Fail-safe decay: no refresh within timeout_s -> hold in place, not a
+                    # runaway, on lost network/tab.
+                    rate = 0.0
+                    with self._lock:
+                        if slot in self._act:
+                            self._act[slot]["rate"] = 0.0
+                step = rate * self._dt
+                new_pos = _clamp(st["pos"] + step, st["lo"], st["hi"])
+                at_rail = new_pos <= st["lo"] + 1e-9 or new_pos >= st["hi"] - 1e-9
+                vel = 0.0 if at_rail else rate
+                kd = st["kd"]
+                flagged = False
+                with self._lock:
+                    if slot in self._act:
+                        # Keep target in sync so stop_actuator() / a later engage_actuator()
+                        # on this slot behaves sanely.
+                        self._act[slot]["target"] = new_pos
             else:
-                direction = 1.0 if delta > 0 else -1.0
-                new_pos, vel = pos + direction * step, direction * cruise
-                new_pos = _clamp(new_pos, st["lo"], st["hi"])
-                # Lead-clamp only while slewing (mouse teleop parity).
-                if slot in left_set:
+                pos, target, cruise = st["pos"], st["target"], st["cruise"]
+                step = cruise * self._dt
+                delta = target - pos
+                kd = st["kd"]
+                flagged = False
+                if abs(delta) <= max(step, 1e-6):
+                    # Arrived — hold the commanded target (never lead-clamp toward sag).
+                    new_pos, vel = target, 0.0
                     sample = fb.get(slot)
-                    fb_pos = sample.get("position") if sample is not None else None
-                    if fb_pos is not None:
-                        idx = LEFT_ARM_SLOTS.index(slot)
-                        new_pos = lead_clamp(
-                            new_pos, float(fb_pos), j2=(idx == J2_INDEX)
-                        )
-                        new_pos = _clamp(new_pos, st["lo"], st["hi"])
+                    if sample is not None:
+                        fb_pos = sample.get("position")
+                        fb_vel = sample.get("velocity") or 0.0
+                        if fb_pos is not None and abs(fb_pos - target) > HOLD_FLAG_RAD:
+                            flagged = True
+                        if abs(fb_vel) > HOLD_VEL_DEADBAND:
+                            boost = 1.0 + min(
+                                HOLD_KD_BOOST_GAIN * (abs(fb_vel) - HOLD_VEL_DEADBAND),
+                                HOLD_KD_BOOST_MAX - 1.0,
+                            )
+                            kd = st["kd"] * boost
+                else:
+                    direction = 1.0 if delta > 0 else -1.0
+                    new_pos, vel = pos + direction * step, direction * cruise
+                    new_pos = _clamp(new_pos, st["lo"], st["hi"])
+                    # Lead-clamp only while slewing (mouse teleop parity).
+                    if slot in left_set:
+                        sample = fb.get(slot)
+                        fb_pos = sample.get("position") if sample is not None else None
+                        if fb_pos is not None:
+                            idx = LEFT_ARM_SLOTS.index(slot)
+                            new_pos = lead_clamp(
+                                new_pos, float(fb_pos), j2=(idx == J2_INDEX)
+                            )
+                            new_pos = _clamp(new_pos, st["lo"], st["hi"])
+            # Shared write-through: both mode branches above converge here (rate-mode and
+            # target-mode both produce new_pos/vel/kd/flagged, one hub.set_actuator call).
             with self._lock:
                 if slot in self._act:
                     self._act[slot]["pos"] = new_pos
